@@ -505,3 +505,80 @@ enum FlagStatus {
   RESOLVED
   FALSE_POSITIVE
 }
+
+// --- Prompt 9: System/Technical Management (backups, feature flags, error
+// logs, API rate-limit monitoring). Everything here is simulated/manual-
+// trigger rather than wired to real infrastructure -- see the module-level
+// comment in system.module.ts for what's a stand-in vs. production-ready. ---
+
+model BackupRecord {
+  id           String       @id @default(uuid())
+  triggeredBy  String // AdminUser id, or "SYSTEM" for scheduled
+  type         BackupType
+  status       BackupStatus
+  sizeMb       Float?
+  fileLocation String? // placeholder path/URL, real storage wiring comes later
+  startedAt    DateTime     @default(now())
+  completedAt  DateTime?
+  errorMessage String?
+
+  @@index([startedAt])
+}
+
+enum BackupType {
+  MANUAL
+  SCHEDULED
+}
+
+enum BackupStatus {
+  IN_PROGRESS
+  SUCCESS
+  FAILED
+}
+
+model FeatureFlag {
+  id             String   @id @default(uuid())
+  key            String   @unique // e.g. "new_dashboard_ui", "ai_categorization_beta"
+  name           String
+  description    String?
+  isEnabled      Boolean  @default(false)
+  rolloutPercent Int      @default(0) // 0-100, for gradual rollout
+  targetPlanIds  String[] // empty = all plans
+  updatedAt      DateTime @updatedAt
+  updatedBy      String?
+}
+
+model ErrorLog {
+  id           String      @id @default(uuid())
+  source       ErrorSource
+  message      String
+  stackTrace   String?     @db.Text
+  severity     Severity // reused from Prompt 8 -- same schema file
+  metadata     Json?
+  resolved     Boolean     @default(false)
+  resolvedBy   String?
+  resolvedAt   DateTime?
+  createdAt    DateTime    @default(now())
+
+  @@index([resolved, severity])
+  @@index([source, createdAt])
+}
+
+enum ErrorSource {
+  BACKEND_API
+  ADMIN_FRONTEND
+  BACKGROUND_JOB
+}
+
+model ApiRateLimitLog {
+  id             String   @id @default(uuid())
+  endpoint       String
+  windowStart    DateTime
+  requestCount   Int
+  limitExceeded  Boolean  @default(false)
+  identifierType String // "ip" or "admin" or "platform_user"
+  identifier     String
+
+  @@index([endpoint, windowStart])
+  @@index([limitExceeded])
+}

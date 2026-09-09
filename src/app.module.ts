@@ -1,6 +1,6 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
-import { APP_GUARD } from '@nestjs/core';
+import { APP_FILTER, APP_GUARD } from '@nestjs/core';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { AccountTemplatesModule } from './account-templates/account-templates.module.js';
 import { AdminAuthModule } from './admin-auth/admin-auth.module.js';
@@ -22,6 +22,8 @@ import { PrismaModule } from './prisma/prisma.module.js';
 import { RevenueModule } from './revenue/revenue.module.js';
 import { SecurityModule } from './security/security.module.js';
 import { SubscriptionPlansModule } from './subscription-plans/subscription-plans.module.js';
+import { GlobalExceptionFilter } from './system/filters/global-exception.filter.js';
+import { SystemModule } from './system/system.module.js';
 import { TicketsModule } from './tickets/tickets.module.js';
 import { TranslationsModule } from './translations/translations.module.js';
 
@@ -52,8 +54,13 @@ import { TranslationsModule } from './translations/translations.module.js';
     AnalyticsModule,
     AuditLogsModule,
     SecurityModule,
+    SystemModule,
   ],
   controllers: [AppController],
-  providers: [AppService, { provide: APP_GUARD, useClass: ThrottlerGuard }],
+  providers: [
+    AppService,
+    { provide: APP_GUARD, useClass: ThrottlerGuard },
+    { provide: APP_FILTER, useClass: GlobalExceptionFilter },
+  ],
 })
 export class AppModule {}

@@ -6,6 +6,7 @@ import {
   BillingCycle,
   CategoryDirection,
   DiscountType,
+  ErrorSource,
   FeatureRequestStatus,
   LegalDocType,
   PlatformUserStatus,
@@ -911,6 +912,142 @@ async function seedSuspiciousActivityFlags(superAdminId: string, supportAdminId:
   });
 }
 
+async function seedBackupRecords(superAdminId: string) {
+  if ((await prisma.backupRecord.count()) > 0) {
+    console.log('Skipping backup record seed -- rows already exist.');
+    return;
+  }
+
+  faker.seed(50);
+  const DAYS = 30;
+  const RECORD_COUNT = 11;
+  // Two arbitrary indices (not the very first/last) get a simulated failure.
+  const failedIndexes = new Set([3, 7]);
+  const manualIndexes = new Set([5, RECORD_COUNT - 1]);
+
+  const records: Prisma.BackupRecordCreateManyInput[] = [];
+
+  for (let i = 0; i < RECORD_COUNT; i++) {
+    // Oldest first, roughly evenly spaced across the last 30 days.
+    const daysAgo = DAYS - Math.round((i / (RECORD_COUNT - 1)) * DAYS);
+    const startedAt = new Date(Date.now() - daysAgo * 24 * 60 * 60 * 1000);
+    const isFailed = failedIndexes.has(i);
+    const isManual = manualIndexes.has(i);
+    const sizeMb = Math.round((120 + i * 5 + faker.number.float({ min: -3, max: 3 })) * 10) / 10;
+
+    records.push({
+      triggeredBy: isManual ? superAdminId : 'SYSTEM',
+      type: isManual ? 'MANUAL' : 'SCHEDULED',
+      status: isFailed ? 'FAILED' : 'SUCCESS',
+      sizeMb: isFailed ? null : sizeMb,
+      fileLocation: isFailed ? null : `s3://backups/db-${startedAt.toISOString().slice(0, 10)}.sql.gz`,
+      errorMessage: isFailed ? 'Connection timeout to storage bucket' : null,
+      startedAt,
+      completedAt: new Date(startedAt.getTime() + faker.number.int({ min: 3, max: 12 }) * 60 * 1000),
+    });
+  }
+
+  await prisma.backupRecord.createMany({ data: records });
+}
+
+async function seedFeatureFlags(superAdminId: string) {
+  const flags: { key: string; name: string; description: string; isEnabled: boolean; rolloutPercent: number }[] = [
+    { key: 'recurring_transactions', name: 'Recurring Transactions', description: 'Let users schedule transactions that repeat automatically.', isEnabled: true, rolloutPercent: 100 },
+    { key: 'loan_management', name: 'Loan Management', description: 'Track loans given or taken with repayment schedules.', isEnabled: false, rolloutPercent: 0 },
+    { key: 'pdf_export', name: 'PDF Export', description: 'Export reports as a PDF (Pro plans only).', isEnabled: true, rolloutPercent: 100 },
+    { key: 'multi_currency_beta', name: 'Multi-Currency (Beta)', description: 'Track balances in multiple currencies alongside BDT.', isEnabled: true, rolloutPercent: 25 },
+    { key: 'ai_auto_categorization', name: 'AI Auto-Categorization', description: 'Automatically categorize transactions using AI.', isEnabled: true, rolloutPercent: 50 },
+    { key: 'shared_workspaces', name: 'Shared Family Workspace', description: 'Multiple family members logging into one shared personal workspace.', isEnabled: false, rolloutPercent: 0 },
+    { key: 'dark_mode', name: 'Dark Mode', description: 'A dark theme option for the mobile app.', isEnabled: true, rolloutPercent: 100 },
+    { key: 'bank_statement_import', name: 'Bank Statement Import (CSV)', description: 'Import transactions directly from a bank-exported CSV file.', isEnabled: false, rolloutPercent: 10 },
+    { key: 'voice_expense_entry', name: 'Voice-Based Expense Entry', description: 'Add an expense by speaking instead of typing.', isEnabled: false, rolloutPercent: 0 },
+  ];
+
+  // upsert (not skip-if-any-exist) so re-running the seed keeps flag
+  // metadata in sync with this file, same reasoning as seedSubscriptionPlans.
+  for (const flag of flags) {
+    await prisma.featureFlag.upsert({
+      where: { key: flag.key },
+      update: {},
+      create: { ...flag, updatedBy: superAdminId },
+    });
+  }
+}
+
+async function seedErrorLogs(superAdminId: string) {
+  if ((await prisma.errorLog.count()) > 0) {
+    console.log('Skipping error log seed -- rows already exist.');
+    return;
+  }
+
+  faker.seed(51);
+  const SAMPLE_ERRORS: { message: string; source: ErrorSource; severity: Severity }[] = [
+    { message: 'Unhandled promise rejection in payment webhook handler', source: 'BACKEND_API', severity: 'HIGH' },
+    { message: "TypeError: Cannot read properties of undefined (reading 'id')", source: 'ADMIN_FRONTEND', severity: 'MEDIUM' },
+    { message: 'Database connection pool exhausted', source: 'BACKEND_API', severity: 'CRITICAL' },
+    { message: 'Scheduled report generation job timed out', source: 'BACKGROUND_JOB', severity: 'MEDIUM' },
+    { message: 'Failed to parse coupon validation response', source: 'BACKEND_API', severity: 'LOW' },
+    { message: 'React hydration mismatch on /admin/payments', source: 'ADMIN_FRONTEND', severity: 'LOW' },
+    { message: 'Email delivery failed: SMTP connection refused', source: 'BACKGROUND_JOB', severity: 'HIGH' },
+    { message: 'Rate limiter Redis connection dropped', source: 'BACKEND_API', severity: 'CRITICAL' },
+    { message: 'Unexpected null in invoice PDF template', source: 'BACKEND_API', severity: 'MEDIUM' },
+    { message: 'Chunk load error on dashboard bundle', source: 'ADMIN_FRONTEND', severity: 'LOW' },
+  ];
+
+  const ERROR_COUNT = 18;
+  for (let i = 0; i < ERROR_COUNT; i++) {
+    const sample = faker.helpers.arrayElement(SAMPLE_ERRORS);
+    const createdAt = faker.date.recent({ days: 14 });
+    const isResolved = faker.number.int({ min: 1, max: 100 }) <= 75;
+
+    await prisma.errorLog.create({
+      data: {
+        source: sample.source,
+        message: sample.message,
+        stackTrace: `Error: ${sample.message}\n    at process (${sample.source.toLowerCase()}.ts:${faker.number.int({ min: 10, max: 400 })}:${faker.number.int({ min: 1, max: 80 })})\n    at handler (index.ts:12:5)`,
+        severity: sample.severity,
+        resolved: isResolved,
+        resolvedBy: isResolved ? superAdminId : null,
+        resolvedAt: isResolved ? faker.date.soon({ days: 1, refDate: createdAt }) : null,
+        createdAt,
+      },
+    });
+  }
+}
+
+async function seedApiRateLimitLogs() {
+  if ((await prisma.apiRateLimitLog.count()) > 0) {
+    console.log('Skipping API rate limit log seed -- rows already exist.');
+    return;
+  }
+
+  faker.seed(52);
+  const ENDPOINTS = ['/admin/auth/login', '/admin/users', '/admin/tickets', '/admin/analytics/track', '/admin/payments'];
+  const IDENTIFIER_TYPES = ['ip', 'admin', 'platform_user'];
+
+  const LOG_COUNT = 30;
+  const logs: Prisma.ApiRateLimitLogCreateManyInput[] = [];
+
+  for (let i = 0; i < LOG_COUNT; i++) {
+    // First 3 are forced over-limit so the "a couple of rows with
+    // limitExceeded: true" seed requirement is guaranteed rather than left
+    // to chance, matching the seedPayments pattern for forced REFUNDED rows.
+    const limitExceeded = i < 3 || faker.number.int({ min: 1, max: 100 }) <= 8;
+    const identifierType = faker.helpers.arrayElement(IDENTIFIER_TYPES);
+
+    logs.push({
+      endpoint: faker.helpers.arrayElement(ENDPOINTS),
+      windowStart: faker.date.recent({ days: 7 }),
+      requestCount: limitExceeded ? faker.number.int({ min: 101, max: 200 }) : faker.number.int({ min: 5, max: 95 }),
+      limitExceeded,
+      identifierType,
+      identifier: identifierType === 'ip' ? faker.internet.ipv4() : faker.string.uuid(),
+    });
+  }
+
+  await prisma.apiRateLimitLog.createMany({ data: logs });
+}
+
 async function main() {
   const { superAdminId, supportAdminId } = await seedAdmins();
   await seedSubAdmins(superAdminId);
@@ -929,6 +1066,10 @@ async function main() {
   await seedDailyActiveSnapshots();
   await seedLoginAttempts();
   await seedSuspiciousActivityFlags(superAdminId, supportAdminId);
+  await seedBackupRecords(superAdminId);
+  await seedFeatureFlags(superAdminId);
+  await seedErrorLogs(superAdminId);
+  await seedApiRateLimitLogs();
 }
 
 main()
