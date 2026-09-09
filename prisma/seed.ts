@@ -1048,6 +1048,155 @@ async function seedApiRateLimitLogs() {
   await prisma.apiRateLimitLog.createMany({ data: logs });
 }
 
+async function seedNotificationTemplates() {
+  const templates: {
+    key: string;
+    channel: 'EMAIL' | 'SMS' | 'IN_APP_PUSH';
+    subjectEn?: string;
+    subjectBn?: string;
+    bodyEn: string;
+    bodyBn: string;
+    variables: string[];
+  }[] = [
+    {
+      key: 'welcome',
+      channel: 'EMAIL',
+      subjectEn: 'Welcome to {{appName}}!',
+      subjectBn: '{{appName}}-এ স্বাগতম!',
+      bodyEn: 'Hi {{userName}}, welcome aboard! Start tracking your income and expenses today.',
+      bodyBn: 'হ্যালো {{userName}}, স্বাগতম! আজই আপনার আয়-ব্যয় ট্র্যাক করা শুরু করুন।',
+      variables: ['userName', 'appName'],
+    },
+    {
+      key: 'subscription_expiring',
+      channel: 'EMAIL',
+      subjectEn: 'Your {{planName}} subscription expires in 3 days',
+      subjectBn: 'আপনার {{planName}} সাবস্ক্রিপশন ৩ দিনে শেষ হচ্ছে',
+      bodyEn: 'Hi {{userName}}, your {{planName}} plan expires on {{expiryDate}}. Renew now to avoid interruption.',
+      bodyBn: 'হ্যালো {{userName}}, আপনার {{planName}} প্ল্যান {{expiryDate}} তারিখে শেষ হবে। বিঘ্ন এড়াতে এখনই নবায়ন করুন।',
+      variables: ['userName', 'planName', 'expiryDate'],
+    },
+    {
+      key: 'payment_failed',
+      channel: 'SMS',
+      bodyEn: 'Hi {{userName}}, your payment of {{amount}} {{currency}} failed. Please update your payment method.',
+      bodyBn: 'হ্যালো {{userName}}, আপনার {{amount}} {{currency}} পেমেন্ট ব্যর্থ হয়েছে। অনুগ্রহ করে আপনার পেমেন্ট মেথড আপডেট করুন।',
+      variables: ['userName', 'amount', 'currency'],
+    },
+    {
+      key: 'payment_successful',
+      channel: 'EMAIL',
+      subjectEn: 'Payment received -- invoice {{invoiceNumber}}',
+      subjectBn: 'পেমেন্ট গৃহীত -- ইনভয়েস {{invoiceNumber}}',
+      bodyEn: 'Hi {{userName}}, we received your payment of {{amount}} {{currency}}. Invoice {{invoiceNumber}} is attached.',
+      bodyBn: 'হ্যালো {{userName}}, আমরা আপনার {{amount}} {{currency}} পেমেন্ট পেয়েছি। ইনভয়েস {{invoiceNumber}} সংযুক্ত।',
+      variables: ['userName', 'amount', 'currency', 'invoiceNumber'],
+    },
+    {
+      key: 'ticket_reply',
+      channel: 'IN_APP_PUSH',
+      bodyEn: 'Support replied to your ticket "{{ticketSubject}}". Tap to view.',
+      bodyBn: 'সাপোর্ট আপনার "{{ticketSubject}}" টিকিটে উত্তর দিয়েছে। দেখতে ট্যাপ করুন।',
+      variables: ['ticketSubject'],
+    },
+    {
+      key: 'feature_announcement',
+      channel: 'IN_APP_PUSH',
+      bodyEn: 'New: {{featureName}} is now available. Check it out!',
+      bodyBn: 'নতুন: {{featureName}} এখন উপলব্ধ। দেখে নিন!',
+      variables: ['featureName'],
+    },
+  ];
+
+  for (const template of templates) {
+    await prisma.notificationTemplate.upsert({
+      where: { key: template.key },
+      update: {},
+      create: template,
+    });
+  }
+}
+
+async function seedNotificationLogs() {
+  if ((await prisma.notificationLog.count()) > 0) {
+    console.log('Skipping notification log seed -- rows already exist.');
+    return;
+  }
+
+  const [users, templates] = await Promise.all([
+    prisma.platformUser.findMany({ select: { id: true } }),
+    prisma.notificationTemplate.findMany(),
+  ]);
+  if (users.length === 0 || templates.length === 0) return;
+
+  faker.seed(53);
+  const LOG_COUNT = 35;
+  const logs: Prisma.NotificationLogCreateManyInput[] = [];
+
+  for (let i = 0; i < LOG_COUNT; i++) {
+    const template = faker.helpers.arrayElement(templates);
+    const isFailed = faker.number.int({ min: 1, max: 100 }) <= 10;
+    const createdAt = faker.date.recent({ days: 20 });
+
+    logs.push({
+      platformUserId: faker.helpers.arrayElement(users).id,
+      templateKey: template.key,
+      channel: template.channel,
+      status: isFailed ? 'FAILED' : 'SENT',
+      sentAt: isFailed ? null : createdAt,
+      errorMessage: isFailed
+        ? faker.helpers.arrayElement(['Invalid email address', 'SMS gateway timeout', 'Push token expired'])
+        : null,
+      createdAt,
+    });
+  }
+
+  await prisma.notificationLog.createMany({ data: logs });
+}
+
+async function seedNotificationCampaigns(superAdminId: string) {
+  if ((await prisma.bulkNotificationCampaign.count()) > 0) {
+    console.log('Skipping notification campaign seed -- rows already exist.');
+    return;
+  }
+
+  await prisma.bulkNotificationCampaign.create({
+    data: {
+      title: 'Eid Sale Announcement',
+      templateKey: 'feature_announcement',
+      targetFilter: { status: 'ACTIVE' },
+      channel: 'IN_APP_PUSH',
+      status: 'DRAFT',
+      createdBy: superAdminId,
+    },
+  });
+
+  await prisma.bulkNotificationCampaign.create({
+    data: {
+      title: 'Welcome Back Reminder',
+      templateKey: 'feature_announcement',
+      targetFilter: {},
+      channel: 'EMAIL',
+      status: 'SENT',
+      sentCount: 142,
+      failedCount: 6,
+      createdBy: superAdminId,
+    },
+  });
+
+  await prisma.bulkNotificationCampaign.create({
+    data: {
+      title: 'Subscription Renewal Push',
+      templateKey: 'subscription_expiring',
+      targetFilter: { status: 'ACTIVE' },
+      channel: 'SMS',
+      status: 'SCHEDULED',
+      scheduledFor: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000),
+      createdBy: superAdminId,
+    },
+  });
+}
+
 async function main() {
   const { superAdminId, supportAdminId } = await seedAdmins();
   await seedSubAdmins(superAdminId);
@@ -1070,6 +1219,9 @@ async function main() {
   await seedFeatureFlags(superAdminId);
   await seedErrorLogs(superAdminId);
   await seedApiRateLimitLogs();
+  await seedNotificationTemplates();
+  await seedNotificationLogs();
+  await seedNotificationCampaigns(superAdminId);
 }
 
 main()

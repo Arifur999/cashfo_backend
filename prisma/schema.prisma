@@ -582,3 +582,67 @@ model ApiRateLimitLog {
   @@index([endpoint, windowStart])
   @@index([limitExceeded])
 }
+
+// --- Prompt 10: Notification Management. Sending is simulated -- no real
+// email/SMS/push provider is wired up yet, see notifications.module.ts. ---
+
+model NotificationTemplate {
+  id        String              @id @default(uuid())
+  key       String              @unique // e.g. "subscription_expiring", "payment_failed", "welcome"
+  channel   NotificationChannel
+  subjectEn String? // for email
+  subjectBn String?
+  bodyEn    String              @db.Text
+  bodyBn    String              @db.Text
+  variables String[] // e.g. ["userName", "planName", "expiryDate"] -- documents what {{placeholders}} are available
+  isActive  Boolean             @default(true)
+  updatedAt DateTime            @updatedAt
+}
+
+enum NotificationChannel {
+  EMAIL
+  SMS
+  IN_APP_PUSH
+}
+
+model NotificationLog {
+  id             String                @id @default(uuid())
+  platformUserId String
+  templateKey    String
+  channel        NotificationChannel
+  status         NotificationLogStatus
+  sentAt         DateTime?
+  errorMessage   String?
+  createdAt      DateTime              @default(now())
+
+  @@index([platformUserId, createdAt])
+  @@index([templateKey])
+}
+
+enum NotificationLogStatus {
+  QUEUED
+  SENT
+  FAILED
+}
+
+model BulkNotificationCampaign {
+  id           String              @id @default(uuid())
+  title        String
+  templateKey  String
+  targetFilter Json // e.g. { "planId": "xxx", "status": "ACTIVE" } -- describes who it goes to
+  channel      NotificationChannel
+  status       CampaignStatus      @default(DRAFT)
+  scheduledFor DateTime?
+  sentCount    Int                 @default(0)
+  failedCount  Int                 @default(0)
+  createdBy    String
+  createdAt    DateTime            @default(now())
+}
+
+enum CampaignStatus {
+  DRAFT
+  SCHEDULED
+  SENDING
+  SENT
+  CANCELLED
+}

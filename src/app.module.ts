@@ -12,10 +12,12 @@ import { AppService } from './app.service.js';
 import { AuditLogsModule } from './audit-logs/audit-logs.module.js';
 import { CategoriesModule } from './categories/categories.module.js';
 import { CouponsModule } from './coupons/coupons.module.js';
+import { DashboardModule } from './dashboard/dashboard.module.js';
 import { FeatureRequestsModule } from './feature-requests/feature-requests.module.js';
 import { HealthModule } from './health/health.module.js';
 import { InvoicesModule } from './invoices/invoices.module.js';
 import { LegalDocumentsModule } from './legal-documents/legal-documents.module.js';
+import { NotificationsModule } from './notifications/notifications.module.js';
 import { PaymentsModule } from './payments/payments.module.js';
 import { PlatformUsersModule } from './platform-users/platform-users.module.js';
 import { PrismaModule } from './prisma/prisma.module.js';
@@ -55,6 +57,8 @@ import { TranslationsModule } from './translations/translations.module.js';
     AuditLogsModule,
     SecurityModule,
     SystemModule,
+    NotificationsModule,
+    DashboardModule,
   ],
   controllers: [AppController],
   providers: [
