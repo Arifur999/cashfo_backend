@@ -23,17 +23,21 @@ export class AdminAuthService {
     private readonly tokenBlacklist: TokenBlacklistService,
   ) {}
 
-  async login(dto: LoginDto, ipAddress?: string) {
+  async login(dto: LoginDto, ipAddress?: string, userAgent?: string) {
     const admin = await this.prisma.adminUser.findUnique({ where: { email: dto.email } });
+
     if (!admin) {
+      await this.recordLoginAttempt(dto.email, ipAddress, userAgent, false, 'account_not_found');
       throw new UnauthorizedException('Invalid email or password');
     }
     if (admin.status !== 'ACTIVE') {
+      await this.recordLoginAttempt(dto.email, ipAddress, userAgent, false, 'account_suspended');
       throw new UnauthorizedException('This account has been suspended');
     }
 
     const passwordMatches = await bcrypt.compare(dto.password, admin.passwordHash);
     if (!passwordMatches) {
+      await this.recordLoginAttempt(dto.email, ipAddress, userAgent, false, 'invalid_password');
       throw new UnauthorizedException('Invalid email or password');
     }
 
@@ -51,6 +55,9 @@ export class AdminAuthService {
           ipAddress,
         },
       }),
+      this.prisma.loginAttempt.create({
+        data: { email: dto.email, ipAddress: ipAddress ?? 'unknown', userAgent, success: true },
+      }),
     ]);
 
     return {
@@ -58,6 +65,12 @@ export class AdminAuthService {
       refreshToken,
       adminUser: { id: admin.id, name: admin.name, email: admin.email, role: admin.role },
     };
+  }
+
+  private async recordLoginAttempt(email: string, ipAddress: string | undefined, userAgent: string | undefined, success: boolean, failureReason: string) {
+    await this.prisma.loginAttempt.create({
+      data: { email, ipAddress: ipAddress ?? 'unknown', userAgent, success, failureReason },
+    });
   }
 
   async refresh(refreshToken: string) {

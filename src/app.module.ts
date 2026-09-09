@@ -9,6 +9,7 @@ import { AnalyticsModule } from './analytics/analytics.module.js';
 import { AnnouncementsModule } from './announcements/announcements.module.js';
 import { AppController } from './app.controller.js';
 import { AppService } from './app.service.js';
+import { AuditLogsModule } from './audit-logs/audit-logs.module.js';
 import { CategoriesModule } from './categories/categories.module.js';
 import { CouponsModule } from './coupons/coupons.module.js';
 import { FeatureRequestsModule } from './feature-requests/feature-requests.module.js';
@@ -19,6 +20,7 @@ import { PaymentsModule } from './payments/payments.module.js';
 import { PlatformUsersModule } from './platform-users/platform-users.module.js';
 import { PrismaModule } from './prisma/prisma.module.js';
 import { RevenueModule } from './revenue/revenue.module.js';
+import { SecurityModule } from './security/security.module.js';
 import { SubscriptionPlansModule } from './subscription-plans/subscription-plans.module.js';
 import { TicketsModule } from './tickets/tickets.module.js';
 import { TranslationsModule } from './translations/translations.module.js';
@@ -48,6 +50,8 @@ import { TranslationsModule } from './translations/translations.module.js';
     TicketsModule,
     FeatureRequestsModule,
     AnalyticsModule,
+    AuditLogsModule,
+    SecurityModule,
   ],
   controllers: [AppController],
   providers: [AppService, { provide: APP_GUARD, useClass: ThrottlerGuard }],

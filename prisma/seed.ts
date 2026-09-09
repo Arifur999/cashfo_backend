@@ -11,6 +11,8 @@ import {
   PlatformUserStatus,
   Prisma,
   PrismaClient,
+  Severity,
+  SuspiciousActivityType,
   TicketCategory,
   TicketPriority,
   TicketStatus,
@@ -71,6 +73,29 @@ async function seedAdmins() {
   console.warn('\n⚠️  Default admin created — change this password immediately after first login.\n');
 
   return { superAdminId: superAdmin.id, supportAdminId: supportAdmin.id };
+}
+
+// Prompt 8: additional test accounts distinct from seedAdmins()'s originals --
+// mainly here because FINANCE_ADMIN never had a seeded account before this
+// (Prompt 4's revenue-visibility check had no way to be tested end-to-end),
+// plus more accounts for exercising the new Admin Accounts management UI.
+async function seedSubAdmins(superAdminId: string) {
+  const accounts: { name: string; email: string; role: AdminRole }[] = [
+    { name: 'Support Admin 2', email: 'support-admin@example.com', role: AdminRole.SUPPORT_ADMIN },
+    { name: 'Finance Admin', email: 'finance-admin@example.com', role: AdminRole.FINANCE_ADMIN },
+    { name: 'Content Admin 2', email: 'content-admin@example.com', role: AdminRole.CONTENT_ADMIN },
+  ];
+
+  for (const account of accounts) {
+    const passwordHash = await bcrypt.hash('ChangeMe123!', 10);
+    await prisma.adminUser.upsert({
+      where: { email: account.email },
+      update: {},
+      create: { ...account, passwordHash, createdBy: superAdminId },
+    });
+  }
+
+  console.warn('\n⚠️  3 sub-admin test accounts created (support-admin@, finance-admin@, content-admin@example.com — password ChangeMe123!) — change immediately after first login.\n');
 }
 
 async function seedSubscriptionPlans() {
@@ -765,8 +790,130 @@ async function seedDailyActiveSnapshots() {
   await prisma.dailyActiveSnapshot.createMany({ data: snapshots });
 }
 
+async function seedLoginAttempts() {
+  if ((await prisma.loginAttempt.count()) > 0) {
+    console.log('Skipping login attempt seed -- rows already exist.');
+    return;
+  }
+
+  faker.seed(48);
+  const admins = await prisma.adminUser.findMany({ select: { email: true } });
+  const emails = admins.map((a) => a.email);
+  if (emails.length === 0) return;
+
+  const attempts: Prisma.LoginAttemptCreateManyInput[] = [];
+
+  // General background traffic: mostly successful, spread over the last 30
+  // days, from varied IPs -- the realistic baseline the Login Monitoring
+  // table needs to not look empty/artificial.
+  for (let i = 0; i < 40; i++) {
+    const success = faker.number.int({ min: 1, max: 100 }) <= 90;
+    attempts.push({
+      email: faker.helpers.arrayElement(emails),
+      ipAddress: faker.internet.ipv4(),
+      userAgent: faker.internet.userAgent(),
+      success,
+      failureReason: success ? null : faker.helpers.arrayElement(['invalid_password', 'account_suspended']),
+      createdAt: faker.date.recent({ days: 30 }),
+    });
+  }
+
+  // Older cluster (3 days ago) -- already has a matching, reviewed
+  // SuspiciousActivityFlag seeded in seedSuspiciousActivityFlags(), showing
+  // what a resolved historical incident looks like.
+  const oldClusterIp = '198.51.100.23';
+  const oldClusterBase = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
+  for (let i = 0; i < 6; i++) {
+    attempts.push({
+      email: 'admin@example.com',
+      ipAddress: oldClusterIp,
+      userAgent: faker.internet.userAgent(),
+      success: false,
+      failureReason: 'invalid_password',
+      createdAt: new Date(oldClusterBase.getTime() + i * 90 * 1000),
+    });
+  }
+
+  // Fresh cluster, timestamped relative to "now" rather than a fixed date --
+  // deliberately left un-flagged so POST /admin/security/flags/run-detection
+  // has a live pattern to catch (5+ failures/IP within 15 min) whenever this
+  // seed is run, not just at the moment the seed script happened to execute.
+  const freshClusterIp = '203.0.113.77';
+  const now = Date.now();
+  for (let i = 0; i < 7; i++) {
+    attempts.push({
+      email: 'admin@example.com',
+      ipAddress: freshClusterIp,
+      userAgent: faker.internet.userAgent(),
+      success: false,
+      failureReason: 'invalid_password',
+      createdAt: new Date(now - (7 - i) * 60 * 1000),
+    });
+  }
+
+  await prisma.loginAttempt.createMany({ data: attempts });
+}
+
+async function seedSuspiciousActivityFlags(superAdminId: string, supportAdminId: string) {
+  if ((await prisma.suspiciousActivityFlag.count()) > 0) {
+    console.log('Skipping suspicious activity flag seed -- rows already exist.');
+    return;
+  }
+
+  faker.seed(49);
+  const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
+
+  await prisma.suspiciousActivityFlag.create({
+    data: {
+      type: SuspiciousActivityType.MULTIPLE_FAILED_LOGINS,
+      description: '6 failed login attempts from 198.51.100.23 within 15 minutes.',
+      relatedIp: '198.51.100.23',
+      severity: Severity.HIGH,
+      status: 'RESOLVED',
+      reviewedBy: superAdminId,
+      reviewedAt: new Date(threeDaysAgo.getTime() + 60 * 60 * 1000),
+      createdAt: threeDaysAgo,
+    },
+  });
+
+  await prisma.suspiciousActivityFlag.create({
+    data: {
+      type: SuspiciousActivityType.UNUSUAL_LOGIN_LOCATION,
+      description: 'Admin login from an unrecognized country -- possible VPN or new device.',
+      relatedAdminId: superAdminId,
+      severity: Severity.MEDIUM,
+      status: 'OPEN',
+      createdAt: faker.date.recent({ days: 10 }),
+    },
+  });
+
+  await prisma.suspiciousActivityFlag.create({
+    data: {
+      type: SuspiciousActivityType.IMPERSONATION_SPIKE,
+      description: 'Support admin impersonated 4 different users within one hour.',
+      relatedAdminId: supportAdminId,
+      severity: Severity.LOW,
+      status: 'REVIEWING',
+      createdAt: faker.date.recent({ days: 5 }),
+    },
+  });
+
+  await prisma.suspiciousActivityFlag.create({
+    data: {
+      type: SuspiciousActivityType.OTHER,
+      description: 'Unusually high volume of export requests from a single account.',
+      severity: Severity.CRITICAL,
+      status: 'FALSE_POSITIVE',
+      reviewedBy: superAdminId,
+      reviewedAt: faker.date.recent({ days: 2 }),
+      createdAt: faker.date.recent({ days: 15 }),
+    },
+  });
+}
+
 async function main() {
   const { superAdminId, supportAdminId } = await seedAdmins();
+  await seedSubAdmins(superAdminId);
   const plans = await seedSubscriptionPlans();
   await seedCoupons();
   await seedPlatformUsers(plans);
@@ -780,6 +927,8 @@ async function main() {
   const users = await prisma.platformUser.findMany({ select: { id: true } });
   await seedUsageEvents(users);
   await seedDailyActiveSnapshots();
+  await seedLoginAttempts();
+  await seedSuspiciousActivityFlags(superAdminId, supportAdminId);
 }
 
 main()

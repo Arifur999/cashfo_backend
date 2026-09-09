@@ -20,6 +20,7 @@ model AdminUser {
   role         AdminRole
   status       AdminStatus @default(ACTIVE)
   lastLoginAt  DateTime?
+  createdBy    String? // loose reference to the AdminUser (usually SUPER_ADMIN) who created this account, if any
   createdAt    DateTime    @default(now())
   updatedAt    DateTime    @updatedAt
   auditLogs    AuditLog[]
@@ -451,4 +452,56 @@ model DailyActiveSnapshot {
   newSignups  Int
   totalUsers  Int
   createdAt   DateTime @default(now())
+}
+
+// --- Prompt 8: Security & Audit (login attempts, suspicious activity flags). ---
+
+model LoginAttempt {
+  id            String   @id @default(uuid())
+  email         String
+  ipAddress     String
+  userAgent     String?
+  success       Boolean
+  failureReason String? // e.g. "invalid_password", "account_suspended", "rate_limited"
+  createdAt     DateTime @default(now())
+
+  @@index([email, createdAt])
+  @@index([ipAddress, createdAt])
+}
+
+model SuspiciousActivityFlag {
+  id             String                  @id @default(uuid())
+  type           SuspiciousActivityType
+  description    String
+  relatedAdminId String?
+  relatedIp      String?
+  severity       Severity                @default(MEDIUM)
+  status         FlagStatus              @default(OPEN)
+  reviewedBy     String?
+  reviewedAt     DateTime?
+  createdAt      DateTime                @default(now())
+
+  @@index([status, severity])
+}
+
+enum SuspiciousActivityType {
+  MULTIPLE_FAILED_LOGINS
+  UNUSUAL_LOGIN_LOCATION
+  MASS_DATA_ACCESS
+  IMPERSONATION_SPIKE
+  OTHER
+}
+
+enum Severity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum FlagStatus {
+  OPEN
+  REVIEWING
+  RESOLVED
+  FALSE_POSITIVE
 }
