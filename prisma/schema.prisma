@@ -432,6 +432,10 @@ model UsageEvent {
   country        String? // for geographic breakdown
   city           String?
   createdAt      DateTime   @default(now())
+
+  @@index([platformUserId, createdAt])
+  @@index([eventType])
+  @@index([country])
 }
 
 enum DeviceType {

@@ -9,6 +9,7 @@ import {
   FeatureRequestStatus,
   LegalDocType,
   PlatformUserStatus,
+  Prisma,
   PrismaClient,
   TicketCategory,
   TicketPriority,
@@ -635,6 +636,135 @@ async function seedFeatureRequests() {
   }
 }
 
+async function seedUsageEvents(users: { id: string }[]) {
+  // No natural business key -- skip entirely on reseed rather than growing
+  // the table indefinitely (same reasoning as seedPayments/seedTickets).
+  if ((await prisma.usageEvent.count()) > 0) {
+    console.log('Skipping usage event seed -- rows already exist.');
+    return;
+  }
+  if (users.length === 0) return;
+
+  faker.seed(46);
+
+  // Weighted so expense/income logging dominates, login is frequent, and
+  // reports/budgets are less common -- a realistic feature-usage shape.
+  const EVENT_TYPES: { value: string; weight: number }[] = [
+    { value: 'expense_added', weight: 30 },
+    { value: 'income_added', weight: 25 },
+    { value: 'login', weight: 20 },
+    { value: 'report_viewed', weight: 10 },
+    { value: 'budget_created', weight: 8 },
+    { value: 'workspace_created', weight: 4 },
+    { value: 'account_created', weight: 3 },
+  ];
+
+  // Mobile-first, reflecting a Bangladesh-focused product.
+  const DEVICE_TYPES: { value: 'MOBILE' | 'DESKTOP' | 'TABLET'; weight: number }[] = [
+    { value: 'MOBILE', weight: 65 },
+    { value: 'DESKTOP', weight: 30 },
+    { value: 'TABLET', weight: 5 },
+  ];
+
+  // Mostly domestic with a small diaspora tail rather than 100% Bangladesh --
+  // more realistic without diluting the "Dhaka is the top city" signal.
+  const COUNTRIES: { value: string; weight: number }[] = [
+    { value: 'Bangladesh', weight: 90 },
+    { value: 'United States', weight: 4 },
+    { value: 'United Kingdom', weight: 2 },
+    { value: 'Malaysia', weight: 2 },
+    { value: 'Saudi Arabia', weight: 2 },
+  ];
+
+  const CITIES: { value: string; weight: number }[] = [
+    { value: 'Dhaka', weight: 40 },
+    { value: 'Chattogram', weight: 20 },
+    { value: 'Sylhet', weight: 10 },
+    { value: 'Khulna', weight: 8 },
+    { value: 'Rajshahi', weight: 8 },
+    { value: 'Barishal', weight: 6 },
+    { value: 'Rangpur', weight: 5 },
+    { value: 'Mymensingh', weight: 3 },
+  ];
+
+  const REPORT_TYPES = ['profit_loss', 'cash_flow', 'category_breakdown', 'monthly_summary'];
+
+  // Each user gets one fixed "home" location rather than a fresh random
+  // country/city per event -- otherwise, with only a couple dozen users each
+  // generating hundreds of events, nearly every user would end up touching
+  // nearly every city, and "top city by user count" would saturate instead
+  // of reflecting the weighting.
+  const userLocations = new Map<string, { country: string; city: string | null }>();
+  for (const user of users) {
+    const country = faker.helpers.weightedArrayElement(COUNTRIES);
+    userLocations.set(user.id, {
+      country,
+      city: country === 'Bangladesh' ? faker.helpers.weightedArrayElement(CITIES) : null,
+    });
+  }
+
+  const EVENT_COUNT = 2500;
+  const events: Prisma.UsageEventCreateManyInput[] = [];
+
+  for (let i = 0; i < EVENT_COUNT; i++) {
+    const user = faker.helpers.arrayElement(users);
+    const location = userLocations.get(user.id)!;
+    const eventType = faker.helpers.weightedArrayElement(EVENT_TYPES);
+
+    events.push({
+      platformUserId: user.id,
+      eventType,
+      metadata: eventType === 'report_viewed' ? { reportType: faker.helpers.arrayElement(REPORT_TYPES) } : undefined,
+      deviceType: faker.helpers.weightedArrayElement(DEVICE_TYPES),
+      country: location.country,
+      city: location.city,
+      createdAt: faker.date.recent({ days: 90 }),
+    });
+  }
+
+  await prisma.usageEvent.createMany({ data: events });
+}
+
+async function seedDailyActiveSnapshots() {
+  if ((await prisma.dailyActiveSnapshot.count()) > 0) {
+    console.log('Skipping daily active snapshot seed -- rows already exist.');
+    return;
+  }
+
+  faker.seed(47);
+  const DAYS = 90;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  // A handful of "marketing campaign" days get an outsized signup spike.
+  const campaignDays = new Set<number>();
+  while (campaignDays.size < 4) {
+    campaignDays.add(faker.number.int({ min: 5, max: DAYS - 5 }));
+  }
+
+  let totalUsers = 40;
+  const snapshots: Prisma.DailyActiveSnapshotCreateManyInput[] = [];
+
+  for (let i = DAYS - 1; i >= 0; i--) {
+    const date = new Date(today.getTime() - i * 24 * 60 * 60 * 1000);
+    const dayIndex = DAYS - 1 - i; // 0 = oldest day in the window
+
+    const baseSignups = faker.number.int({ min: 0, max: 3 });
+    const newSignups = campaignDays.has(dayIndex) ? baseSignups + faker.number.int({ min: 8, max: 15 }) : baseSignups;
+    totalUsers += newSignups;
+
+    // Engagement ratio drifts gently upward (~15% -> ~30% of the user base)
+    // plus small day-to-day noise, capped so dailyActive never exceeds totalUsers.
+    const growthFactor = 0.15 + (dayIndex / DAYS) * 0.15;
+    const noise = faker.number.float({ min: -0.03, max: 0.03 });
+    const dailyActive = Math.max(1, Math.min(totalUsers, Math.round(totalUsers * (growthFactor + noise))));
+
+    snapshots.push({ date, dailyActive, newSignups, totalUsers });
+  }
+
+  await prisma.dailyActiveSnapshot.createMany({ data: snapshots });
+}
+
 async function main() {
   const { superAdminId, supportAdminId } = await seedAdmins();
   const plans = await seedSubscriptionPlans();
@@ -647,6 +777,9 @@ async function main() {
   await seedLegalDocuments(superAdminId);
   await seedTickets(superAdminId, supportAdminId);
   await seedFeatureRequests();
+  const users = await prisma.platformUser.findMany({ select: { id: true } });
+  await seedUsageEvents(users);
+  await seedDailyActiveSnapshots();
 }
 
 main()
