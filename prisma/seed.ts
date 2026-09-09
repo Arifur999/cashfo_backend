@@ -1,0 +1,659 @@
+import 'dotenv/config';
+import { faker } from '@faker-js/faker';
+import { PrismaPg } from '@prisma/adapter-pg';
+import {
+  AdminRole,
+  BillingCycle,
+  CategoryDirection,
+  DiscountType,
+  FeatureRequestStatus,
+  LegalDocType,
+  PlatformUserStatus,
+  PrismaClient,
+  TicketCategory,
+  TicketPriority,
+  TicketStatus,
+  WorkspaceType,
+} from '@prisma/client';
+import * as bcrypt from 'bcrypt';
+
+const prisma = new PrismaClient({ adapter: new PrismaPg({ connectionString: process.env.DATABASE_URL }) });
+
+async function seedAdmins() {
+  const superAdminEmail = 'admin@example.com';
+  const superAdminPasswordHash = await bcrypt.hash('ChangeMe123!', 10);
+
+  const superAdmin = await prisma.adminUser.upsert({
+    where: { email: superAdminEmail },
+    update: {},
+    create: {
+      name: 'Super Admin',
+      email: superAdminEmail,
+      passwordHash: superAdminPasswordHash,
+      role: AdminRole.SUPER_ADMIN,
+    },
+  });
+
+  // A second seeded account so the "Impersonate is SUPER_ADMIN only" behavior
+  // (Prompt 2 completion criteria) can be verified without manually editing
+  // the database.
+  const supportAdminEmail = 'support@example.com';
+  const supportAdminPasswordHash = await bcrypt.hash('ChangeMe123!', 10);
+
+  const supportAdmin = await prisma.adminUser.upsert({
+    where: { email: supportAdminEmail },
+    update: {},
+    create: {
+      name: 'Support Admin',
+      email: supportAdminEmail,
+      passwordHash: supportAdminPasswordHash,
+      role: AdminRole.SUPPORT_ADMIN,
+    },
+  });
+
+  // For Prompt 5's "CONTENT_ADMIN can edit, SUPPORT_ADMIN cannot" completion
+  // criterion -- seeded rather than requiring a manual temporary account.
+  const contentAdminEmail = 'content@example.com';
+  const contentAdminPasswordHash = await bcrypt.hash('ChangeMe123!', 10);
+
+  await prisma.adminUser.upsert({
+    where: { email: contentAdminEmail },
+    update: {},
+    create: {
+      name: 'Content Admin',
+      email: contentAdminEmail,
+      passwordHash: contentAdminPasswordHash,
+      role: AdminRole.CONTENT_ADMIN,
+    },
+  });
+
+  console.warn('\n⚠️  Default admin created — change this password immediately after first login.\n');
+
+  return { superAdminId: superAdmin.id, supportAdminId: supportAdmin.id };
+}
+
+async function seedSubscriptionPlans() {
+  const proFeatureLimits = {
+    maxWorkspaces: 5,
+    maxBusinessWorkspaces: 3,
+    maxTransactionsPerMonth: -1,
+    advancedReports: true,
+    pdfExport: true,
+    multiUser: false,
+    incomeGoalTracking: true,
+  };
+
+  const plans = [
+    {
+      slug: 'free',
+      name: 'Free',
+      billingCycle: BillingCycle.FREE,
+      price: 0,
+      trialDays: 0,
+      displayOrder: 0,
+      featureLimits: {
+        maxWorkspaces: 1,
+        maxBusinessWorkspaces: 0,
+        maxTransactionsPerMonth: 50,
+        advancedReports: false,
+        pdfExport: false,
+        multiUser: false,
+        incomeGoalTracking: false,
+      },
+    },
+    {
+      slug: 'monthly-pro',
+      name: 'Monthly Pro',
+      billingCycle: BillingCycle.MONTHLY,
+      price: 299,
+      trialDays: 7,
+      displayOrder: 1,
+      featureLimits: proFeatureLimits,
+    },
+    {
+      slug: 'yearly-pro',
+      name: 'Yearly Pro',
+      billingCycle: BillingCycle.YEARLY,
+      price: 2999,
+      trialDays: 14,
+      displayOrder: 2,
+      featureLimits: proFeatureLimits,
+    },
+    {
+      slug: 'business',
+      name: 'Business',
+      billingCycle: BillingCycle.MONTHLY,
+      price: 799,
+      trialDays: 7,
+      displayOrder: 3,
+      featureLimits: { ...proFeatureLimits, multiUser: true, maxBusinessWorkspaces: -1 },
+    },
+  ];
+
+  for (const plan of plans) {
+    await prisma.subscriptionPlan.upsert({
+      where: { slug: plan.slug },
+      // Re-running the seed keeps existing plans' fields in sync with this
+      // file rather than freezing whatever was there on first insert.
+      update: plan,
+      create: plan,
+    });
+  }
+
+  return prisma.subscriptionPlan.findMany();
+}
+
+async function seedCoupons() {
+  const now = new Date();
+  const in90Days = new Date(now.getTime() + 90 * 24 * 60 * 60 * 1000);
+
+  const coupons = [
+    {
+      code: 'WELCOME20',
+      discountType: DiscountType.PERCENTAGE,
+      discountValue: 20,
+      maxRedemptions: 500,
+      validFrom: now,
+      validUntil: in90Days,
+      applicablePlans: [] as string[],
+    },
+    {
+      code: 'EID50',
+      discountType: DiscountType.FIXED_AMOUNT,
+      discountValue: 50,
+      maxRedemptions: 200,
+      validFrom: now,
+      validUntil: in90Days,
+      applicablePlans: [] as string[],
+    },
+  ];
+
+  for (const coupon of coupons) {
+    await prisma.coupon.upsert({
+      where: { code: coupon.code },
+      update: {},
+      create: coupon,
+    });
+  }
+}
+
+async function seedPlatformUsers(plans: { id: string }[]) {
+  faker.seed(42); // deterministic across reseeds, pairs with upsert-by-email below
+
+  const PLATFORM_USER_COUNT = 18;
+  const statusForIndex = (i: number): PlatformUserStatus => {
+    if (i < 12) return PlatformUserStatus.ACTIVE;
+    if (i < 15) return PlatformUserStatus.SUSPENDED;
+    if (i < 17) return PlatformUserStatus.BANNED;
+    return PlatformUserStatus.PENDING_DELETION;
+  };
+
+  for (let i = 0; i < PLATFORM_USER_COUNT; i++) {
+    const status = statusForIndex(i);
+    const email = faker.internet.email().toLowerCase();
+    const isSuspended = status === PlatformUserStatus.SUSPENDED;
+    const plan = faker.helpers.arrayElement([...plans, null]);
+
+    await prisma.platformUser.upsert({
+      where: { email },
+      update: {},
+      create: {
+        name: faker.person.fullName(),
+        email,
+        phone: faker.helpers.maybe(() => faker.phone.number(), { probability: 0.7 }),
+        status,
+        planId: plan?.id,
+        workspaceCount: faker.number.int({ min: 1, max: 6 }),
+        signupSource: faker.helpers.arrayElement(['web', 'referral', 'app_store', 'play_store']),
+        lastLoginAt: faker.date.recent({ days: 30 }),
+        suspendedAt: isSuspended ? faker.date.recent({ days: 10 }) : null,
+        suspendedReason: isSuspended ? faker.helpers.arrayElement(['Payment dispute', 'Suspicious activity', 'ToS violation under review']) : null,
+        createdAt: faker.date.past({ years: 1 }),
+      },
+    });
+  }
+}
+
+async function seedPayments(plans: { id: string; name: string; price: unknown; currency: string; billingCycle: BillingCycle }[], adminId: string) {
+  // No natural business key to upsert payments on -- skip entirely on
+  // reseed rather than growing the table indefinitely.
+  const existingCount = await prisma.payment.count();
+  if (existingCount > 0) {
+    console.log(`Skipping payment seed -- ${existingCount} payments already exist.`);
+    return;
+  }
+
+  const users = await prisma.platformUser.findMany();
+  const paidPlans = plans.filter((p) => p.billingCycle !== BillingCycle.FREE);
+  if (users.length === 0 || paidPlans.length === 0) return;
+
+  faker.seed(43);
+  const GATEWAYS = ['BKASH', 'NAGAD', 'SSLCOMMERZ', 'CARD', 'MANUAL'] as const;
+  const PAYMENT_COUNT = 35;
+  const sixMonthsAgo = new Date();
+  sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+
+  const year = new Date().getFullYear();
+  let invoiceSeq = 1;
+  const refundCandidateIds: string[] = [];
+
+  for (let i = 0; i < PAYMENT_COUNT; i++) {
+    const user = faker.helpers.arrayElement(users);
+    const plan = faker.helpers.arrayElement(paidPlans);
+    const createdAt = faker.date.between({ from: sixMonthsAgo, to: new Date() });
+    const roll = faker.number.int({ min: 1, max: 100 });
+
+    // First 3 are forced REFUNDED so the "2-3 Refund rows" seed requirement
+    // is guaranteed rather than left to chance; the rest follow a realistic
+    // mostly-success distribution.
+    const status = i < 3 ? 'REFUNDED' : roll <= 75 ? 'SUCCESS' : roll <= 92 ? 'FAILED' : 'REFUNDED';
+
+    const payment = await prisma.payment.create({
+      data: {
+        platformUserId: user.id,
+        planId: plan.id,
+        amount: plan.price as never,
+        currency: plan.currency,
+        gateway: faker.helpers.arrayElement(GATEWAYS),
+        gatewayReferenceId: status === 'FAILED' ? null : `TXN-${faker.string.alphanumeric(10).toUpperCase()}`,
+        status,
+        failureReason:
+          status === 'FAILED'
+            ? faker.helpers.arrayElement(['Insufficient balance', 'Card declined', 'Gateway timeout', 'User cancelled'])
+            : null,
+        paidAt: status !== 'FAILED' ? createdAt : null,
+        createdAt,
+      },
+    });
+
+    if (status === 'SUCCESS' || status === 'REFUNDED') {
+      await prisma.invoice.create({
+        data: {
+          paymentId: payment.id,
+          invoiceNumber: `INV-${year}-${String(invoiceSeq++).padStart(6, '0')}`,
+          issuedTo: `${user.name} <${user.email}>`,
+          lineItems: [{ description: `${plan.name} subscription`, amount: Number(plan.price) }],
+          totalAmount: plan.price as never,
+          createdAt,
+        },
+      });
+    }
+
+    if (status === 'REFUNDED') {
+      refundCandidateIds.push(payment.id);
+    }
+  }
+
+  for (const paymentId of refundCandidateIds.slice(0, 3)) {
+    const payment = await prisma.payment.findUniqueOrThrow({ where: { id: paymentId } });
+    await prisma.refund.create({
+      data: {
+        paymentId,
+        amount: payment.amount,
+        reason: faker.helpers.arrayElement(['Customer requested cancellation', 'Duplicate charge', 'Service issue']),
+        processedBy: adminId,
+        status: 'COMPLETED',
+        createdAt: new Date(payment.createdAt.getTime() + 2 * 24 * 60 * 60 * 1000),
+      },
+    });
+  }
+}
+
+async function seedAccountTemplatesAndCategories() {
+  if ((await prisma.defaultAccountTemplate.count()) > 0) {
+    console.log('Skipping account template seed -- rows already exist.');
+    return;
+  }
+
+  const BOTH: WorkspaceType[] = [WorkspaceType.PERSONAL, WorkspaceType.BUSINESS];
+
+  const cash = await prisma.defaultAccountTemplate.create({
+    data: { name: 'Cash', nameBn: 'নগদ', accountType: 'ASSET', accountSubtype: 'cash', appliesTo: BOTH, displayOrder: 0 },
+  });
+  const bank = await prisma.defaultAccountTemplate.create({
+    data: { name: 'Bank', nameBn: 'ব্যাংক', accountType: 'ASSET', accountSubtype: 'bank', appliesTo: BOTH, displayOrder: 1 },
+  });
+  // Nested under Bank -- demonstrates real parent/child nesting, not just a
+  // flat list grouped by accountType.
+  await prisma.defaultAccountTemplate.create({
+    data: {
+      name: 'bKash',
+      nameBn: 'বিকাশ',
+      accountType: 'ASSET',
+      accountSubtype: 'mfs',
+      parentId: bank.id,
+      appliesTo: BOTH,
+      displayOrder: 0,
+    },
+  });
+  const receivable = await prisma.defaultAccountTemplate.create({
+    data: {
+      name: 'Accounts Receivable',
+      nameBn: 'প্রাপ্য হিসাব',
+      accountType: 'ASSET',
+      accountSubtype: 'receivable',
+      appliesTo: BOTH,
+      displayOrder: 2,
+    },
+  });
+
+  await prisma.defaultAccountTemplate.create({
+    data: { name: 'Accounts Payable', nameBn: 'দেয় হিসাব', accountType: 'LIABILITY', accountSubtype: 'payable', appliesTo: BOTH, displayOrder: 0 },
+  });
+  await prisma.defaultAccountTemplate.create({
+    data: { name: 'Loan Payable', nameBn: 'ঋণ দেনা', accountType: 'LIABILITY', appliesTo: BOTH, displayOrder: 1 },
+  });
+
+  await prisma.defaultAccountTemplate.create({
+    data: { name: "Owner's Capital", nameBn: 'মালিকের মূলধন', accountType: 'EQUITY', appliesTo: [WorkspaceType.BUSINESS], displayOrder: 0 },
+  });
+  await prisma.defaultAccountTemplate.create({
+    data: { name: "Owner's Drawing", nameBn: 'মালিকের উত্তোলন', accountType: 'EQUITY', appliesTo: [WorkspaceType.BUSINESS], displayOrder: 1 },
+  });
+
+  const salesIncome = await prisma.defaultAccountTemplate.create({
+    data: { name: 'Sales Income', nameBn: 'বিক্রয় আয়', accountType: 'INCOME', appliesTo: [WorkspaceType.BUSINESS], displayOrder: 0 },
+  });
+  const salaryIncome = await prisma.defaultAccountTemplate.create({
+    data: { name: 'Salary Income', nameBn: 'বেতন আয়', accountType: 'INCOME', appliesTo: [WorkspaceType.PERSONAL], displayOrder: 1 },
+  });
+  const freelanceIncome = await prisma.defaultAccountTemplate.create({
+    data: { name: 'Freelance Income', nameBn: 'ফ্রিল্যান্স আয়', accountType: 'INCOME', appliesTo: [WorkspaceType.PERSONAL], displayOrder: 2 },
+  });
+
+  const rentExpense = await prisma.defaultAccountTemplate.create({
+    data: { name: 'Rent Expense', nameBn: 'ভাড়া খরচ', accountType: 'EXPENSE', appliesTo: BOTH, displayOrder: 0 },
+  });
+  const utilityExpense = await prisma.defaultAccountTemplate.create({
+    data: { name: 'Utility Expense', nameBn: 'ইউটিলিটি খরচ', accountType: 'EXPENSE', appliesTo: BOTH, displayOrder: 1 },
+  });
+  await prisma.defaultAccountTemplate.create({
+    data: { name: 'Salary Expense', nameBn: 'বেতন খরচ', accountType: 'EXPENSE', appliesTo: [WorkspaceType.BUSINESS], displayOrder: 2 },
+  });
+  await prisma.defaultAccountTemplate.create({
+    data: { name: 'Interest Expense', nameBn: 'সুদ খরচ', accountType: 'EXPENSE', appliesTo: BOTH, displayOrder: 3 },
+  });
+  const foodExpense = await prisma.defaultAccountTemplate.create({
+    data: { name: 'Food & Dining Expense', nameBn: 'খাদ্য ও খাওয়া খরচ', accountType: 'EXPENSE', appliesTo: [WorkspaceType.PERSONAL], displayOrder: 4 },
+  });
+  const transportExpense = await prisma.defaultAccountTemplate.create({
+    data: { name: 'Transportation Expense', nameBn: 'যাতায়াত খরচ', accountType: 'EXPENSE', appliesTo: [WorkspaceType.PERSONAL], displayOrder: 5 },
+  });
+
+  const categories: {
+    name: string;
+    nameBn: string;
+    type: CategoryDirection;
+    icon: string;
+    linkedAccountTemplateId?: string;
+  }[] = [
+    { name: 'Food', nameBn: 'খাবার', type: 'EXPENSE', icon: 'utensils', linkedAccountTemplateId: foodExpense.id },
+    { name: 'Transport', nameBn: 'যাতায়াত', type: 'EXPENSE', icon: 'car', linkedAccountTemplateId: transportExpense.id },
+    { name: 'Rent', nameBn: 'ভাড়া', type: 'EXPENSE', icon: 'home', linkedAccountTemplateId: rentExpense.id },
+    { name: 'Utility Bill', nameBn: 'ইউটিলিটি বিল', type: 'EXPENSE', icon: 'zap', linkedAccountTemplateId: utilityExpense.id },
+    { name: 'Loan Repayment', nameBn: 'ঋণ পরিশোধ', type: 'EXPENSE', icon: 'credit-card' },
+    { name: 'Shopping', nameBn: 'কেনাকাটা', type: 'EXPENSE', icon: 'shopping-cart' },
+    { name: 'Entertainment', nameBn: 'বিনোদন', type: 'EXPENSE', icon: 'film' },
+    { name: 'Salary', nameBn: 'বেতন', type: 'INCOME', icon: 'briefcase', linkedAccountTemplateId: salaryIncome.id },
+    { name: 'Freelance Income', nameBn: 'ফ্রিল্যান্স আয়', type: 'INCOME', icon: 'laptop', linkedAccountTemplateId: freelanceIncome.id },
+    { name: 'Sales', nameBn: 'বিক্রয়', type: 'INCOME', icon: 'shopping-bag', linkedAccountTemplateId: salesIncome.id },
+  ];
+
+  for (let i = 0; i < categories.length; i++) {
+    await prisma.defaultCategory.create({ data: { ...categories[i], displayOrder: i } });
+  }
+
+  // Referenced above so TS doesn't flag them as unused if the list changes later.
+  void receivable;
+}
+
+async function seedTranslations() {
+  const rows: { key: string; en: string; bn: string; context: string }[] = [
+    { key: 'dashboard.total_income', en: 'Total Income', bn: 'মোট আয়', context: 'dashboard' },
+    { key: 'dashboard.total_expense', en: 'Total Expense', bn: 'মোট খরচ', context: 'dashboard' },
+    { key: 'dashboard.net_balance', en: 'Net Balance', bn: 'নিট ব্যালেন্স', context: 'dashboard' },
+    { key: 'dashboard.recent_transactions', en: 'Recent Transactions', bn: 'সাম্প্রতিক লেনদেন', context: 'dashboard' },
+    { key: 'dashboard.welcome_message', en: 'Welcome back!', bn: 'আবার স্বাগতম!', context: 'dashboard' },
+    { key: 'auth.login_title', en: 'Sign In', bn: 'সাইন ইন', context: 'auth' },
+    { key: 'auth.login_button', en: 'Log In', bn: 'লগ ইন', context: 'auth' },
+    { key: 'auth.logout', en: 'Log Out', bn: 'লগ আউট', context: 'auth' },
+    { key: 'auth.forgot_password', en: 'Forgot Password?', bn: 'পাসওয়ার্ড ভুলে গেছেন?', context: 'auth' },
+    { key: 'auth.email_label', en: 'Email', bn: 'ইমেইল', context: 'auth' },
+    { key: 'auth.password_label', en: 'Password', bn: 'পাসওয়ার্ড', context: 'auth' },
+    { key: 'common.save', en: 'Save', bn: 'সংরক্ষণ করুন', context: 'common' },
+    { key: 'common.cancel', en: 'Cancel', bn: 'বাতিল করুন', context: 'common' },
+    { key: 'common.delete', en: 'Delete', bn: 'মুছুন', context: 'common' },
+    { key: 'common.edit', en: 'Edit', bn: 'সম্পাদনা করুন', context: 'common' },
+    { key: 'common.search', en: 'Search', bn: 'খুঁজুন', context: 'common' },
+    { key: 'common.loading', en: 'Loading...', bn: 'লোড হচ্ছে...', context: 'common' },
+    { key: 'common.success', en: 'Success', bn: 'সফল হয়েছে', context: 'common' },
+    { key: 'common.error', en: 'Something went wrong', bn: 'কিছু ভুল হয়েছে', context: 'common' },
+    { key: 'reports.title', en: 'Reports', bn: 'প্রতিবেদন', context: 'reports' },
+    { key: 'reports.export', en: 'Export', bn: 'এক্সপোর্ট', context: 'reports' },
+  ];
+
+  for (const row of rows) {
+    await prisma.translationString.upsert({ where: { key: row.key }, update: {}, create: row });
+  }
+}
+
+async function seedAnnouncements(adminId: string) {
+  if ((await prisma.announcement.count()) > 0) {
+    console.log('Skipping announcement seed -- rows already exist.');
+    return;
+  }
+
+  const now = Date.now();
+  const DAY = 24 * 60 * 60 * 1000;
+
+  await prisma.announcement.create({
+    data: {
+      title: 'Welcome to our platform!',
+      titleBn: 'আমাদের প্ল্যাটফর্মে স্বাগতম!',
+      body: "We're glad to have you here. Explore your dashboard to get started.",
+      bodyBn: 'আপনাকে পেয়ে আমরা আনন্দিত। শুরু করতে আপনার ড্যাশবোর্ড দেখুন।',
+      type: 'INFO',
+      startAt: new Date(now - 5 * DAY),
+      createdBy: adminId,
+    },
+  });
+
+  // Deliberately in the future -- seeded so the ACTIVE vs SCHEDULED date
+  // logic (Prompt 5 completion criteria) is visible immediately without
+  // needing to create test data by hand.
+  await prisma.announcement.create({
+    data: {
+      title: 'Upcoming Eid Sale!',
+      titleBn: 'আসন্ন ঈদ সেল!',
+      body: 'Get ready for exclusive discounts on all Pro plans.',
+      bodyBn: 'সব প্রো প্ল্যানে বিশেষ ছাড়ের জন্য প্রস্তুত থাকুন।',
+      type: 'PROMOTION',
+      startAt: new Date(now + 10 * DAY),
+      endAt: new Date(now + 20 * DAY),
+      createdBy: adminId,
+    },
+  });
+
+  // Deliberately already ended -- same reasoning, covers the EXPIRED case.
+  await prisma.announcement.create({
+    data: {
+      title: 'Completed scheduled maintenance',
+      titleBn: 'নির্ধারিত রক্ষণাবেক্ষণ সম্পন্ন হয়েছে',
+      body: 'Maintenance finished ahead of schedule with no downtime.',
+      bodyBn: 'নির্ধারিত সময়ের আগেই কোনো ডাউনটাইম ছাড়াই রক্ষণাবেক্ষণ সম্পন্ন হয়েছে।',
+      type: 'MAINTENANCE',
+      startAt: new Date(now - 30 * DAY),
+      endAt: new Date(now - 5 * DAY),
+      createdBy: adminId,
+    },
+  });
+}
+
+async function seedLegalDocuments(adminId: string) {
+  const placeholder =
+    'Lorem ipsum dolor sit amet, consectetur adipiscing elit. This is placeholder content -- replace with real legal text before launch.';
+
+  const docs: { type: LegalDocType; contentEn: string }[] = [
+    { type: 'TERMS_OF_SERVICE', contentEn: `Terms of Service\n\n${placeholder}` },
+    { type: 'PRIVACY_POLICY', contentEn: `Privacy Policy\n\n${placeholder}` },
+    { type: 'REFUND_POLICY', contentEn: `Refund Policy\n\n${placeholder}` },
+    { type: 'FAQ', contentEn: `Frequently Asked Questions\n\n${placeholder}` },
+  ];
+
+  for (const doc of docs) {
+    await prisma.legalDocument.upsert({
+      where: { type: doc.type },
+      update: {},
+      create: { type: doc.type, contentEn: doc.contentEn, updatedBy: adminId },
+    });
+  }
+}
+
+async function seedTickets(superAdminId: string, supportAdminId: string) {
+  if ((await prisma.supportTicket.count()) > 0) {
+    console.log('Skipping ticket seed -- rows already exist.');
+    return;
+  }
+
+  const users = await prisma.platformUser.findMany();
+  if (users.length === 0) return;
+
+  faker.seed(44);
+  const CATEGORIES: TicketCategory[] = ['BILLING', 'TECHNICAL', 'ACCOUNT', 'FEATURE_REQUEST', 'BUG_REPORT', 'OTHER'];
+  const PRIORITIES: TicketPriority[] = ['LOW', 'MEDIUM', 'HIGH', 'URGENT'];
+  // Weighted so most tickets land in a realistic mid-lifecycle spread rather
+  // than uniformly across all 5 statuses.
+  const STATUS_POOL: TicketStatus[] = ['OPEN', 'OPEN', 'IN_PROGRESS', 'IN_PROGRESS', 'WAITING_ON_USER', 'RESOLVED', 'RESOLVED', 'CLOSED'];
+  const SAMPLE_SUBJECTS = [
+    'Cannot log in to my account',
+    'Payment failed but I was charged',
+    'How do I export my transactions?',
+    'App crashes when adding an expense',
+    'Requesting refund for accidental upgrade',
+    'Bangla text not displaying correctly',
+    'Feature request: recurring transactions',
+    'My workspace data disappeared',
+    'Unable to change my email address',
+    'Business plan features not unlocked',
+    'Duplicate transactions showing up',
+    'Dark mode request',
+    'Report export is missing categories',
+    'Invoice PDF not downloading',
+    'Suspicious login attempt notification',
+    'Coupon code not applying at checkout',
+    'App is very slow on my phone',
+    'How to add a team member?',
+  ];
+
+  const TICKET_COUNT = 18;
+
+  for (let i = 0; i < TICKET_COUNT; i++) {
+    const user = faker.helpers.arrayElement(users);
+    const status = STATUS_POOL[i % STATUS_POOL.length];
+    const createdAt = faker.date.recent({ days: 60 });
+    const isAssigned = status !== 'OPEN' || faker.datatype.boolean();
+    const isResolved = status === 'RESOLVED' || status === 'CLOSED';
+
+    const ticket = await prisma.supportTicket.create({
+      data: {
+        platformUserId: user.id,
+        subject: SAMPLE_SUBJECTS[i % SAMPLE_SUBJECTS.length],
+        category: faker.helpers.arrayElement(CATEGORIES),
+        priority: faker.helpers.arrayElement(PRIORITIES),
+        status,
+        assignedToAdminId: isAssigned ? faker.helpers.arrayElement([superAdminId, supportAdminId]) : null,
+        createdAt,
+        resolvedAt: isResolved ? faker.date.soon({ days: 3, refDate: createdAt }) : null,
+      },
+    });
+
+    // 2-4 alternating messages, starting with the user's own report.
+    const messageCount = faker.number.int({ min: 2, max: 4 });
+    let messageTime = createdAt;
+    for (let m = 0; m < messageCount; m++) {
+      const isUserTurn = m % 2 === 0;
+      messageTime = new Date(messageTime.getTime() + faker.number.int({ min: 10, max: 600 }) * 60 * 1000);
+      await prisma.ticketMessage.create({
+        data: {
+          ticketId: ticket.id,
+          senderType: isUserTurn ? 'USER' : 'ADMIN',
+          senderId: isUserTurn ? user.id : (ticket.assignedToAdminId ?? supportAdminId),
+          message: isUserTurn
+            ? faker.helpers.arrayElement([
+                "Here's some more detail on the issue I'm facing.",
+                'This is still happening, any update?',
+                'Thanks for looking into this.',
+                ticket.subject,
+              ])
+            : faker.helpers.arrayElement([
+                "Thanks for reaching out -- we're looking into this now.",
+                'Could you share a screenshot or more details?',
+                'This should be fixed now, please let us know if it persists.',
+                "We've escalated this to our team.",
+              ]),
+          createdAt: messageTime,
+        },
+      });
+    }
+  }
+}
+
+async function seedFeatureRequests() {
+  if ((await prisma.featureRequest.count()) > 0) {
+    console.log('Skipping feature request seed -- rows already exist.');
+    return;
+  }
+
+  const users = await prisma.platformUser.findMany();
+  if (users.length === 0) return;
+
+  faker.seed(45);
+  const REQUESTS: { title: string; description: string; status: FeatureRequestStatus; voteCount: number }[] = [
+    { title: 'Recurring transactions', description: 'Let me set up transactions that repeat monthly, like rent or subscriptions.', status: 'PLANNED', voteCount: 142 },
+    { title: 'Dark mode', description: 'A dark theme option for the mobile app.', status: 'IN_PROGRESS', voteCount: 98 },
+    { title: 'Multi-currency support', description: 'Track expenses in USD alongside BDT for freelance income.', status: 'UNDER_REVIEW', voteCount: 76 },
+    { title: 'Bank statement import (CSV)', description: 'Import transactions directly from a bank-exported CSV file.', status: 'UNDER_REVIEW', voteCount: 61 },
+    { title: 'Budget alerts', description: 'Push notification when I am close to a category budget limit.', status: 'SUBMITTED', voteCount: 44 },
+    { title: 'Widget for home screen', description: 'A quick-add-expense widget for the phone home screen.', status: 'SUBMITTED', voteCount: 33 },
+    { title: 'Shared family workspace', description: 'Let multiple family members log expenses into one shared personal workspace.', status: 'SUBMITTED', voteCount: 27 },
+    { title: 'Voice-based expense entry', description: 'Add an expense by speaking instead of typing.', status: 'DECLINED', voteCount: 12 },
+    { title: 'Yearly comparison reports', description: 'Compare this year vs last year spending by category.', status: 'SHIPPED', voteCount: 88 },
+  ];
+
+  for (const request of REQUESTS) {
+    const user = faker.helpers.arrayElement(users);
+    await prisma.featureRequest.create({
+      data: {
+        platformUserId: user.id,
+        title: request.title,
+        description: request.description,
+        status: request.status,
+        voteCount: request.voteCount,
+        createdAt: faker.date.past({ years: 1 }),
+      },
+    });
+  }
+}
+
+async function main() {
+  const { superAdminId, supportAdminId } = await seedAdmins();
+  const plans = await seedSubscriptionPlans();
+  await seedCoupons();
+  await seedPlatformUsers(plans);
+  await seedPayments(plans, superAdminId);
+  await seedAccountTemplatesAndCategories();
+  await seedTranslations();
+  await seedAnnouncements(superAdminId);
+  await seedLegalDocuments(superAdminId);
+  await seedTickets(superAdminId, supportAdminId);
+  await seedFeatureRequests();
+}
+
+main()
+  .catch((error) => {
+    console.error(error);
+    process.exit(1);
+  })
+  .finally(async () => {
+    await prisma.$disconnect();
+  });

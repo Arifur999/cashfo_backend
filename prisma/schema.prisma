@@ -1,0 +1,450 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+// Prisma 7: no `url` here -- the connection string lives in prisma.config.ts
+// (for the CLI/migrations) and is passed explicitly as a driver adapter to
+// the PrismaClient constructor at runtime (see src/prisma/prisma.service.ts).
+datasource db {
+  provider = "postgresql"
+}
+
+// --- Admin domain only for now. End-user tables (transactions, accounts, etc.)
+// come later in the separate user-app build plan. ---
+
+model AdminUser {
+  id           String      @id @default(uuid())
+  name         String
+  email        String      @unique
+  passwordHash String
+  role         AdminRole
+  status       AdminStatus @default(ACTIVE)
+  lastLoginAt  DateTime?
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+  auditLogs    AuditLog[]
+
+  // Note: no separate @@index([email]) here -- @unique already creates a
+  // unique index covering lookups by email, so a second index would be
+  // redundant.
+}
+
+enum AdminRole {
+  SUPER_ADMIN
+  SUPPORT_ADMIN
+  FINANCE_ADMIN
+  CONTENT_ADMIN
+}
+
+enum AdminStatus {
+  ACTIVE
+  SUSPENDED
+}
+
+model AuditLog {
+  id          String    @id @default(uuid())
+  adminUserId String
+  adminUser   AdminUser @relation(fields: [adminUserId], references: [id])
+  action      String // e.g. "ADMIN_LOGIN", "USER_SUSPENDED", "PLAN_UPDATED"
+  entityType  String // e.g. "AdminUser", "PlatformUser", "SubscriptionPlan"
+  entityId    String?
+  oldValue    Json?
+  newValue    Json?
+  ipAddress   String?
+  createdAt   DateTime  @default(now())
+
+  @@index([adminUserId, createdAt])
+  @@index([entityType, entityId])
+}
+
+model PlatformSetting {
+  id        String   @id @default(uuid())
+  key       String   @unique
+  value     Json
+  updatedAt DateTime @updatedAt
+}
+
+// --- Prompt 2: User Management (admin's view of the SaaS's platform users,
+// not the end-user app's own data model). When the real end-user app schema
+// is built later (separate 20-prompt plan), this model will either be merged
+// into it or referenced from it. `plan` already points at the real
+// SubscriptionPlan model (added in Prompt 3) rather than a placeholder stub. ---
+
+model PlatformUser {
+  id              String             @id @default(uuid())
+  name            String
+  email           String             @unique
+  phone           String?
+  status          PlatformUserStatus @default(ACTIVE)
+  planId          String?
+  plan            SubscriptionPlan?  @relation(fields: [planId], references: [id])
+  workspaceCount  Int                @default(1)
+  signupSource    String? // e.g. "web", "referral"
+  lastLoginAt     DateTime?
+  suspendedAt     DateTime?
+  suspendedReason String?
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+
+  // No separate @@index([email]) -- @unique above already covers it.
+  @@index([status])
+  @@index([createdAt])
+}
+
+enum PlatformUserStatus {
+  ACTIVE
+  SUSPENDED
+  BANNED
+  PENDING_DELETION
+}
+
+// --- Prompt 3: Subscriptions (plans, coupons, and plan-change history). ---
+
+model SubscriptionPlan {
+  id            String             @id @default(uuid())
+  name          String // e.g. "Free", "Monthly Pro", "Yearly Pro", "Business"
+  slug          String             @unique // e.g. "free", "monthly-pro"
+  billingCycle  BillingCycle
+  price         Decimal            @db.Decimal(10, 2)
+  currency      String             @default("BDT")
+  trialDays     Int                @default(0)
+  isActive      Boolean            @default(true)
+  featureLimits Json // e.g. { "maxWorkspaces": 1, "maxBusinessWorkspaces": 0, "maxTransactionsPerMonth": 100, "advancedReports": false, "pdfExport": false, "multiUser": false }
+  displayOrder  Int                @default(0)
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+  users         PlatformUser[]
+  couponUsages  CouponRedemption[]
+  payments      Payment[]
+}
+
+enum BillingCycle {
+  FREE
+  MONTHLY
+  YEARLY
+}
+
+model Coupon {
+  id              String       @id @default(uuid())
+  code            String       @unique
+  discountType    DiscountType
+  discountValue   Decimal      @db.Decimal(10, 2)
+  maxRedemptions  Int? // null = unlimited
+  timesRedeemed   Int          @default(0)
+  validFrom       DateTime
+  validUntil      DateTime
+  applicablePlans String[] // array of SubscriptionPlan.id, empty = applies to all
+  isActive        Boolean      @default(true)
+  createdAt       DateTime     @default(now())
+  redemptions     CouponRedemption[]
+}
+
+enum DiscountType {
+  PERCENTAGE
+  FIXED_AMOUNT
+}
+
+model CouponRedemption {
+  id             String           @id @default(uuid())
+  couponId       String
+  coupon         Coupon           @relation(fields: [couponId], references: [id])
+  platformUserId String
+  planId         String
+  plan           SubscriptionPlan @relation(fields: [planId], references: [id])
+  redeemedAt     DateTime         @default(now())
+}
+
+model PlanChangeLog {
+  id             String   @id @default(uuid())
+  platformUserId String
+  fromPlanId     String?
+  toPlanId       String
+  changedBy      String // AdminUser id, or "SYSTEM" if automated
+  reason         String?
+  createdAt      DateTime @default(now())
+}
+
+// --- Prompt 4: Payments (payments, invoices, refunds). ---
+
+model Payment {
+  id                 String           @id @default(uuid())
+  platformUserId     String
+  planId             String
+  plan               SubscriptionPlan @relation(fields: [planId], references: [id])
+  amount             Decimal          @db.Decimal(10, 2)
+  currency           String           @default("BDT")
+  discountApplied    Decimal?         @db.Decimal(10, 2)
+  couponId           String?
+  gateway            PaymentGateway
+  gatewayReferenceId String? // transaction id from bKash/SSLCommerz/etc, nullable until real integration
+  status             PaymentStatus
+  failureReason      String?
+  paidAt             DateTime?
+  createdAt          DateTime         @default(now())
+  invoice            Invoice?
+  refund             Refund?
+
+  @@index([platformUserId, createdAt])
+  @@index([status])
+}
+
+enum PaymentGateway {
+  BKASH
+  NAGAD
+  SSLCOMMERZ
+  CARD
+  MANUAL
+}
+
+enum PaymentStatus {
+  PENDING
+  SUCCESS
+  FAILED
+  REFUNDED
+}
+
+model Invoice {
+  id            String   @id @default(uuid())
+  paymentId     String   @unique
+  payment       Payment  @relation(fields: [paymentId], references: [id])
+  invoiceNumber String   @unique // e.g. INV-2026-000123, auto-generated sequential
+  issuedTo      String // snapshot of user name/email at time of invoice
+  lineItems     Json // [{ description, amount }]
+  totalAmount   Decimal  @db.Decimal(10, 2)
+  pdfUrl        String? // populated later when PDF generation is added
+  createdAt     DateTime @default(now())
+}
+
+model Refund {
+  id          String       @id @default(uuid())
+  paymentId   String       @unique
+  payment     Payment      @relation(fields: [paymentId], references: [id])
+  amount      Decimal      @db.Decimal(10, 2)
+  reason      String
+  processedBy String // AdminUser id
+  status      RefundStatus @default(PENDING)
+  createdAt   DateTime     @default(now())
+}
+
+enum RefundStatus {
+  PENDING
+  COMPLETED
+  REJECTED
+}
+
+// --- Prompt 5: Content Management (default chart-of-accounts/category
+// templates seeded into new workspaces, i18n strings, announcements, legal
+// docs). ---
+
+model DefaultAccountTemplate {
+  id             String                   @id @default(uuid())
+  name           String // e.g. "Cash", "Bank", "Sales Income", "Rent Expense"
+  nameBn         String // Bangla translation
+  accountType    AccountType
+  accountSubtype String? // e.g. "cash", "bank", "mfs", "receivable", "payable"
+  parentId       String?
+  parent         DefaultAccountTemplate?  @relation("ParentChild", fields: [parentId], references: [id])
+  children       DefaultAccountTemplate[] @relation("ParentChild")
+  appliesTo      WorkspaceType[] // which workspace types get this by default: PERSONAL, BUSINESS
+  displayOrder   Int                      @default(0)
+  isActive       Boolean                  @default(true)
+  createdAt      DateTime                 @default(now())
+  updatedAt      DateTime                 @updatedAt
+  categories     DefaultCategory[]
+}
+
+enum AccountType {
+  ASSET
+  LIABILITY
+  EQUITY
+  INCOME
+  EXPENSE
+}
+
+enum WorkspaceType {
+  PERSONAL
+  BUSINESS
+}
+
+model DefaultCategory {
+  id                      String                  @id @default(uuid())
+  name                    String
+  nameBn                  String
+  type                    CategoryDirection // INCOME or EXPENSE
+  icon                    String? // icon identifier string, e.g. "utensils", "car"
+  linkedAccountTemplateId String?
+  linkedAccountTemplate   DefaultAccountTemplate? @relation(fields: [linkedAccountTemplateId], references: [id])
+  isActive                Boolean                 @default(true)
+  displayOrder            Int                     @default(0)
+}
+
+enum CategoryDirection {
+  INCOME
+  EXPENSE
+}
+
+model TranslationString {
+  id        String   @id @default(uuid())
+  key       String   @unique // e.g. "dashboard.total_income"
+  en        String
+  bn        String
+  context   String? // e.g. "dashboard", "auth", "reports" -- for grouping in the admin UI
+  updatedAt DateTime @updatedAt
+  updatedBy String? // AdminUser id
+}
+
+model Announcement {
+  id         String           @id @default(uuid())
+  title      String
+  titleBn    String?
+  body       String
+  bodyBn     String?
+  type       AnnouncementType
+  targetPlan String? // SubscriptionPlan.id, null = all users
+  startAt    DateTime
+  endAt      DateTime?
+  isActive   Boolean          @default(true)
+  createdBy  String // AdminUser id
+  createdAt  DateTime         @default(now())
+}
+
+enum AnnouncementType {
+  INFO
+  WARNING
+  PROMOTION
+  MAINTENANCE
+}
+
+model LegalDocument {
+  id        String       @id @default(uuid())
+  type      LegalDocType @unique
+  contentEn String       @db.Text
+  contentBn String?      @db.Text
+  version   Int          @default(1)
+  updatedAt DateTime     @updatedAt
+  updatedBy String?
+}
+
+enum LegalDocType {
+  TERMS_OF_SERVICE
+  PRIVACY_POLICY
+  REFUND_POLICY
+  FAQ
+}
+
+// --- Prompt 6: Support (tickets, ticket messages, feature requests + votes). ---
+
+model SupportTicket {
+  id                String          @id @default(uuid())
+  platformUserId    String
+  subject           String
+  category          TicketCategory
+  priority          TicketPriority  @default(MEDIUM)
+  status            TicketStatus    @default(OPEN)
+  assignedToAdminId String?
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+  resolvedAt        DateTime?
+  messages          TicketMessage[]
+
+  @@index([status, priority])
+  @@index([platformUserId])
+}
+
+enum TicketCategory {
+  BILLING
+  TECHNICAL
+  ACCOUNT
+  FEATURE_REQUEST
+  BUG_REPORT
+  OTHER
+}
+
+enum TicketPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum TicketStatus {
+  OPEN
+  IN_PROGRESS
+  WAITING_ON_USER
+  RESOLVED
+  CLOSED
+}
+
+model TicketMessage {
+  id            String        @id @default(uuid())
+  ticketId      String
+  ticket        SupportTicket @relation(fields: [ticketId], references: [id])
+  senderType    SenderType
+  senderId      String // AdminUser id or PlatformUser id depending on senderType
+  message       String        @db.Text
+  attachmentUrl String?
+  createdAt     DateTime      @default(now())
+
+  @@index([ticketId, createdAt])
+}
+
+enum SenderType {
+  ADMIN
+  USER
+}
+
+model FeatureRequest {
+  id             String               @id @default(uuid())
+  platformUserId String
+  title          String
+  description    String               @db.Text
+  status         FeatureRequestStatus @default(SUBMITTED)
+  voteCount      Int                  @default(1)
+  createdAt      DateTime             @default(now())
+}
+
+enum FeatureRequestStatus {
+  SUBMITTED
+  UNDER_REVIEW
+  PLANNED
+  IN_PROGRESS
+  SHIPPED
+  DECLINED
+}
+
+model FeatureRequestVote {
+  id               String   @id @default(uuid())
+  featureRequestId String
+  platformUserId   String
+  createdAt        DateTime @default(now())
+
+  @@unique([featureRequestId, platformUserId])
+}
+
+// --- Prompt 7: Analytics (raw usage events + rolled-up daily snapshots). ---
+
+model UsageEvent {
+  id             String     @id @default(uuid())
+  platformUserId String
+  eventType      String // e.g. "income_added", "expense_added", "report_viewed", "budget_created", "login"
+  metadata       Json? // flexible extra data, e.g. { "reportType": "profit_loss" }
+  deviceType     DeviceType
+  country        String? // for geographic breakdown
+  city           String?
+  createdAt      DateTime   @default(now())
+}
+
+enum DeviceType {
+  MOBILE
+  DESKTOP
+  TABLET
+}
+
+model DailyActiveSnapshot {
+  id          String   @id @default(uuid())
+  date        DateTime @unique @db.Date
+  dailyActive Int
+  newSignups  Int
+  totalUsers  Int
+  createdAt   DateTime @default(now())
+}
