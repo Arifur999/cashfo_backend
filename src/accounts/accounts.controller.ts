@@ -24,6 +24,25 @@ export class AccountsController {
     return this.accountsService.list(businessId);
   }
 
+  // Filtered pickers for the Income/Expense/Transfer forms (Prompt 6) --
+  // registered before GET :id so Express doesn't treat these static
+  // segments as an :id value, same reasoning as /businesses/limits in
+  // Prompt 3.
+  @Get('money-accounts')
+  moneyAccounts(@Param('businessId') businessId: string) {
+    return this.accountsService.listMoneyAccounts(businessId);
+  }
+
+  @Get('income-accounts')
+  incomeAccounts(@Param('businessId') businessId: string) {
+    return this.accountsService.listIncomeAccounts(businessId);
+  }
+
+  @Get('expense-accounts')
+  expenseAccounts(@Param('businessId') businessId: string) {
+    return this.accountsService.listExpenseAccounts(businessId);
+  }
+
   // Registered before GET :id so Express doesn't need to worry about
   // "reconcile" vs "id" ambiguity -- moot here anyway since this is POST,
   // but kept for the same reason /businesses/limits was ordered carefully

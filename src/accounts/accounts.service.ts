@@ -6,6 +6,13 @@ import { UpdateAccountDto } from './dto/update-account.dto.js';
 
 const ACCOUNT_TYPE_ORDER: AccountType[] = ['ASSET', 'LIABILITY', 'EQUITY', 'INCOME', 'EXPENSE'];
 
+// "Money accounts" -- the ones a normal user thinks of as "where my money
+// actually is" (Cash/Bank/bKash etc.), as opposed to Income/Expense/Equity
+// accounts which only exist for bookkeeping. Prompt 6's friendly Income/
+// Expense/Transfer wrappers use this to populate their account pickers and
+// to validate Transfer only moves money between real money accounts.
+export const MONEY_ACCOUNT_SUBTYPES = ['cash', 'bank', 'mfs'];
+
 @Injectable()
 export class AccountsService {
   constructor(private readonly prisma: PrismaService) {}
@@ -91,6 +98,30 @@ export class AccountsService {
 
   async getOne(businessId: string, id: string) {
     return this.requireAccount(businessId, id);
+  }
+
+  // Filtered pickers for the friendly Income/Expense/Transfer forms (Prompt
+  // 6) -- keeps Income/Expense/Equity accounts out of "which account did
+  // the money land in" style dropdowns, and vice versa.
+  async listMoneyAccounts(businessId: string) {
+    return this.prisma.account.findMany({
+      where: { businessId, status: 'ACTIVE', accountType: 'ASSET', accountSubtype: { in: MONEY_ACCOUNT_SUBTYPES } },
+      orderBy: { displayOrder: 'asc' },
+    });
+  }
+
+  async listIncomeAccounts(businessId: string) {
+    return this.prisma.account.findMany({
+      where: { businessId, status: 'ACTIVE', accountType: 'INCOME' },
+      orderBy: { displayOrder: 'asc' },
+    });
+  }
+
+  async listExpenseAccounts(businessId: string) {
+    return this.prisma.account.findMany({
+      where: { businessId, status: 'ACTIVE', accountType: 'EXPENSE' },
+      orderBy: { displayOrder: 'asc' },
+    });
   }
 
   async create(businessId: string, dto: CreateAccountDto) {

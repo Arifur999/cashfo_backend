@@ -24,6 +24,7 @@ import { NotificationsModule } from './notifications/notifications.module.js';
 import { PaymentsModule } from './payments/payments.module.js';
 import { PlatformUsersModule } from './platform-users/platform-users.module.js';
 import { PrismaModule } from './prisma/prisma.module.js';
+import { QuickEntriesModule } from './quick-entries/quick-entries.module.js';
 import { RevenueModule } from './revenue/revenue.module.js';
 import { SecurityModule } from './security/security.module.js';
 import { SettingsModule } from './settings/settings.module.js';
@@ -71,6 +72,7 @@ import { UserAuthModule } from './user-auth/user-auth.module.js';
     BusinessesModule,
     AccountsModule,
     TransactionsModule,
+    QuickEntriesModule,
   ],
   controllers: [AppController],
   providers: [

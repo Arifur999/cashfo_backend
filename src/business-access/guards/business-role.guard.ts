@@ -14,7 +14,15 @@ export class BusinessRoleGuard implements CanActivate {
   constructor(private readonly reflector: Reflector) {}
 
   canActivate(context: ExecutionContext): boolean {
-    const roles = this.reflector.get<MemberRole[] | undefined>(BUSINESS_ROLES_KEY, context.getHandler());
+    // getAllAndOverride (not plain get()) so @RequireRole() works whether
+    // it's applied on the individual route handler (e.g. AccountsController's
+    // per-method usage) OR on the whole controller class (e.g.
+    // QuickEntriesController, where every route needs the same
+    // restriction) -- a plain reflector.get(key, context.getHandler())
+    // only ever sees method-level metadata and silently ignores a
+    // class-level @RequireRole(), which let STAFF through undetected until
+    // this was caught in testing.
+    const roles = this.reflector.getAllAndOverride<MemberRole[] | undefined>(BUSINESS_ROLES_KEY, [context.getHandler(), context.getClass()]);
     if (!roles || roles.length === 0) {
       return true;
     }
