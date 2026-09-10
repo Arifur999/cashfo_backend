@@ -23,6 +23,7 @@ import { PlatformUsersModule } from './platform-users/platform-users.module.js';
 import { PrismaModule } from './prisma/prisma.module.js';
 import { RevenueModule } from './revenue/revenue.module.js';
 import { SecurityModule } from './security/security.module.js';
+import { SettingsModule } from './settings/settings.module.js';
 import { SubscriptionPlansModule } from './subscription-plans/subscription-plans.module.js';
 import { GlobalExceptionFilter } from './system/filters/global-exception.filter.js';
 import { SystemModule } from './system/system.module.js';
@@ -59,6 +60,7 @@ import { TranslationsModule } from './translations/translations.module.js';
     SystemModule,
     NotificationsModule,
     DashboardModule,
+    SettingsModule,
   ],
   controllers: [AppController],
   providers: [

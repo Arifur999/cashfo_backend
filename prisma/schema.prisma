@@ -63,6 +63,7 @@ model PlatformSetting {
   key       String   @unique
   value     Json
   updatedAt DateTime @updatedAt
+  updatedBy String?
 }
 
 // --- Prompt 2: User Management (admin's view of the SaaS's platform users,
