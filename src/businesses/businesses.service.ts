@@ -31,21 +31,17 @@ export class BusinessesService {
     }));
   }
 
-  async create(userId: string, dto: CreateBusinessDto) {
-    if (dto.type !== WorkspaceType.BUSINESS) {
-      throw new BadRequestException(
-        'Only BUSINESS-type workspaces can be created here -- every account already has one PERSONAL workspace created automatically at signup.',
-      );
-    }
-
-    // ARCHITECTURAL ASSUMPTION (Prompt 3, documented per spec): the schema
-    // has no User.planId -- billing is tracked per-Business (Business.planId,
-    // set on the admin panel's PlatformUser/Payment side). Until real
-    // multi-workspace billing exists, we treat "the user's plan" as whatever
-    // plan is on their default PERSONAL workspace, and a newly-created
-    // BUSINESS workspace inherits that same plan reference. This means plan
-    // limits are effectively per-user, not per-workspace, for now -- revisit
-    // if/when workspaces need independent billing.
+  // ARCHITECTURAL ASSUMPTION (Prompt 3, documented per spec): the schema has
+  // no User.planId -- billing is tracked per-Business (Business.planId, set
+  // on the admin panel's PlatformUser/Payment side). Until real multi-
+  // workspace billing exists, we treat "the user's plan" as whatever plan is
+  // on their default PERSONAL workspace, and a newly-created BUSINESS
+  // workspace inherits that same plan reference. This means plan limits are
+  // effectively per-user, not per-workspace, for now -- revisit if/when
+  // workspaces need independent billing. Shared by create() and getLimits()
+  // (the latter lets the frontend show/disable the "Create workspace" UI
+  // proactively instead of only finding out via a failed POST).
+  private async getPlanLimitInfo(userId: string) {
     const defaultBusiness = await this.prisma.business.findFirst({
       where: { ownerId: userId, isDefault: true },
       include: { plan: true },
@@ -57,11 +53,29 @@ export class BusinessesService {
     // more than the free tier would.
     const maxBusinessWorkspaces = limits.maxBusinessWorkspaces ?? 0;
 
-    const existingCount = await this.prisma.business.count({
+    const currentCount = await this.prisma.business.count({
       where: { ownerId: userId, type: WorkspaceType.BUSINESS, deletedAt: null },
     });
 
-    if (maxBusinessWorkspaces !== -1 && existingCount >= maxBusinessWorkspaces) {
+    return { maxBusinessWorkspaces, currentCount, planId: defaultBusiness?.planId };
+  }
+
+  async getLimits(userId: string) {
+    const { maxBusinessWorkspaces, currentCount } = await this.getPlanLimitInfo(userId);
+    const atLimit = maxBusinessWorkspaces !== -1 && currentCount >= maxBusinessWorkspaces;
+    return { maxBusinessWorkspaces, currentCount, atLimit };
+  }
+
+  async create(userId: string, dto: CreateBusinessDto) {
+    if (dto.type !== WorkspaceType.BUSINESS) {
+      throw new BadRequestException(
+        'Only BUSINESS-type workspaces can be created here -- every account already has one PERSONAL workspace created automatically at signup.',
+      );
+    }
+
+    const { maxBusinessWorkspaces, currentCount, planId } = await this.getPlanLimitInfo(userId);
+
+    if (maxBusinessWorkspaces !== -1 && currentCount >= maxBusinessWorkspaces) {
       const message =
         maxBusinessWorkspaces === 0
           ? 'Your current plan does not include business workspaces. Upgrade to add one.'
@@ -76,7 +90,7 @@ export class BusinessesService {
           name: dto.name,
           type: WorkspaceType.BUSINESS,
           currency: dto.currency ?? 'BDT',
-          planId: defaultBusiness?.planId,
+          planId,
           isDefault: false,
         },
       });

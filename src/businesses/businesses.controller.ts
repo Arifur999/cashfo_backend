@@ -26,6 +26,15 @@ export class BusinessesController {
     return this.businessesService.create(user.id, dto);
   }
 
+  // Lets the frontend show/disable "Create workspace" proactively instead of
+  // only finding out via a failed POST. Must be registered before GET :id --
+  // otherwise Express would match "limits" as an :id.
+  @UseGuards(UserAuthGuard)
+  @Get('limits')
+  getLimits(@CurrentUser() user: RequestUser) {
+    return this.businessesService.getLimits(user.id);
+  }
+
   // "Switching" workspaces is deliberately NOT a backend endpoint -- see
   // BusinessesModule's top comment for why. There is no PATCH /:id/switch.
 
