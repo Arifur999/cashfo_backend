@@ -1,5 +1,6 @@
 import { Body, Controller, Get, Param, Patch, Post } from '@nestjs/common';
 import { MemberRole } from '@prisma/client';
+import { AccountBalanceService } from './account-balance.service.js';
 import { AccountsService } from './accounts.service.js';
 import { CreateAccountDto } from './dto/create-account.dto.js';
 import { UpdateAccountDto } from './dto/update-account.dto.js';
@@ -13,16 +14,34 @@ import { RequireRole } from '../business-access/decorators/require-role.decorato
 @RequireBusinessMembership()
 @Controller('api/businesses/:businessId/accounts')
 export class AccountsController {
-  constructor(private readonly accountsService: AccountsService) {}
+  constructor(
+    private readonly accountsService: AccountsService,
+    private readonly accountBalanceService: AccountBalanceService,
+  ) {}
 
   @Get()
   list(@Param('businessId') businessId: string) {
     return this.accountsService.list(businessId);
   }
 
+  // Registered before GET :id so Express doesn't need to worry about
+  // "reconcile" vs "id" ambiguity -- moot here anyway since this is POST,
+  // but kept for the same reason /businesses/limits was ordered carefully
+  // in Prompt 3.
+  @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
+  @Post('reconcile')
+  reconcile(@Param('businessId') businessId: string) {
+    return this.accountBalanceService.reconcileWorkspace(businessId);
+  }
+
   @Get(':id')
   getOne(@Param('businessId') businessId: string, @Param('id') id: string) {
     return this.accountsService.getOne(businessId, id);
+  }
+
+  @Get(':id/ledger')
+  ledger(@Param('businessId') businessId: string, @Param('id') id: string) {
+    return this.accountBalanceService.getLedger(businessId, id);
   }
 
   @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)

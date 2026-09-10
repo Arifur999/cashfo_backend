@@ -702,8 +702,9 @@ model Business {
   deletedAt DateTime?
   createdAt DateTime      @default(now())
   updatedAt DateTime      @updatedAt
-  members   BusinessMember[]
-  accounts  Account[]
+  members      BusinessMember[]
+  accounts     Account[]
+  transactions Transaction[]
 
   @@index([ownerId])
 }
@@ -769,6 +770,7 @@ model Account {
   displayOrder    Int           @default(0)
   createdAt       DateTime      @default(now())
   updatedAt       DateTime      @updatedAt
+  entries         TransactionEntry[]
 
   @@index([businessId, accountType])
   @@index([businessId, parentId])
@@ -777,4 +779,85 @@ model Account {
 enum AccountStatus {
   ACTIVE
   ARCHIVED
+}
+
+// =====================================================================
+// Prompt 5: Transaction Engine -- header (Transaction) + line-items
+// (TransactionEntry) double-entry pattern. Every future money-moving
+// feature (Income/Expense in Prompt 6, Transfer in Prompt 7, Receivable/
+// Payable in Prompt 10, ...) is built by calling TransactionsService, not
+// by writing rows here directly.
+// =====================================================================
+
+model Transaction {
+  id              String            @id @default(uuid())
+  businessId      String
+  business        Business          @relation(fields: [businessId], references: [id])
+  transactionType TransactionType
+  transactionDate DateTime          @db.Date
+  referenceNo     String?
+  description     String?
+  // No relation yet -- Contact doesn't exist until Prompt 9. Plain field for
+  // now; add the FK when that model lands.
+  contactId       String?
+  attachmentUrl   String?
+  status          TransactionStatus @default(POSTED)
+  // Prevents duplicate submission from double-clicks/network retries --
+  // createTransaction() returns the existing row instead of erroring when
+  // this key is reused. Unique across the whole table (not per-business) --
+  // client-generated keys (e.g. a UUID) make cross-business collision
+  // astronomically unlikely, and createTransaction() still checks the
+  // matching businessId before returning the existing row either way.
+  idempotencyKey  String?           @unique
+  createdBy       String
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+  voidedAt        DateTime?
+  voidedReason    String?
+  // If this transaction IS a reversal (created by voidTransaction()),
+  // points back at the original it reverses. Plain field, no relation --
+  // a self-relation isn't needed since nothing currently needs to traverse
+  // from the original to find its reversal via a Prisma include (query by
+  // reversalOfId directly on the rare occasion it's needed).
+  reversalOfId    String?
+  entries         TransactionEntry[]
+
+  @@index([businessId, transactionDate])
+  @@index([businessId, status])
+}
+
+enum TransactionType {
+  INCOME
+  EXPENSE
+  TRANSFER
+  JOURNAL
+  SALE
+  PURCHASE
+  PAYMENT
+}
+
+enum TransactionStatus {
+  POSTED
+  VOIDED
+}
+
+model TransactionEntry {
+  id            String      @id @default(uuid())
+  transactionId String
+  transaction   Transaction @relation(fields: [transactionId], references: [id])
+  accountId     String
+  account       Account     @relation(fields: [accountId], references: [id])
+  entryType     EntryType
+  amount        Decimal     @db.Decimal(14, 2)
+  // No relation yet -- Category doesn't exist until a later prompt.
+  categoryId    String?
+  note          String?
+
+  @@index([accountId, transactionId])
+  @@index([transactionId])
+}
+
+enum EntryType {
+  DEBIT
+  CREDIT
 }
