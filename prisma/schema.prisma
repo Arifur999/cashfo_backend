@@ -696,6 +696,10 @@ model Business {
   planId    String?
   plan      SubscriptionPlan? @relation(fields: [planId], references: [id])
   isDefault Boolean       @default(false) // true for the auto-created personal workspace
+  // Soft-delete only -- a workspace may hold financial data in later prompts,
+  // so it's never hard-deleted. null = active. Every list/lookup query must
+  // filter deletedAt: null.
+  deletedAt DateTime?
   createdAt DateTime      @default(now())
   updatedAt DateTime      @updatedAt
   members   BusinessMember[]

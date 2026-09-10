@@ -10,6 +10,7 @@ import { AnnouncementsModule } from './announcements/announcements.module.js';
 import { AppController } from './app.controller.js';
 import { AppService } from './app.service.js';
 import { AuditLogsModule } from './audit-logs/audit-logs.module.js';
+import { BusinessesModule } from './businesses/businesses.module.js';
 import { CategoriesModule } from './categories/categories.module.js';
 import { CouponsModule } from './coupons/coupons.module.js';
 import { DashboardModule } from './dashboard/dashboard.module.js';
@@ -63,6 +64,7 @@ import { UserAuthModule } from './user-auth/user-auth.module.js';
     DashboardModule,
     SettingsModule,
     UserAuthModule,
+    BusinessesModule,
   ],
   controllers: [AppController],
   providers: [
