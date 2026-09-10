@@ -1197,6 +1197,45 @@ async function seedNotificationCampaigns(superAdminId: string) {
   });
 }
 
+// Prompt 4: mirrors AccountsService.seedDefaultAccounts() (backend/src/accounts/accounts.service.ts)
+// using this script's own plain PrismaClient instead of NestJS DI --
+// duplicated rather than imported because seed.ts is a standalone script,
+// same reasoning as it already re-implementing bcrypt hashing inline rather
+// than reaching into a Nest service for it. Only called for workspaces this
+// seed run actually CREATES (guarded by the existing upsert-style checks
+// below), so re-running the seed never double-seeds accounts.
+async function seedAccountsForBusiness(businessId: string, workspaceType: WorkspaceType) {
+  const templates = await prisma.defaultAccountTemplate.findMany({
+    where: { appliesTo: { has: workspaceType }, isActive: true },
+    orderBy: { displayOrder: 'asc' },
+  });
+
+  const templateIdToAccountId = new Map<string, string>();
+  for (const template of templates) {
+    const account = await prisma.account.create({
+      data: {
+        businessId,
+        name: template.name,
+        nameBn: template.nameBn,
+        accountType: template.accountType,
+        accountSubtype: template.accountSubtype,
+        displayOrder: template.displayOrder,
+        isSystemAccount: true,
+      },
+    });
+    templateIdToAccountId.set(template.id, account.id);
+  }
+
+  for (const template of templates) {
+    if (!template.parentId) continue;
+    const newParentId = templateIdToAccountId.get(template.parentId);
+    const newOwnId = templateIdToAccountId.get(template.id);
+    if (newParentId && newOwnId) {
+      await prisma.account.update({ where: { id: newOwnId }, data: { parentId: newParentId } });
+    }
+  }
+}
+
 // End-user app (Prompt 1): seeds real User accounts (distinct from
 // PlatformUser, which is only the admin panel's read-model) plus their
 // Business workspaces, so Prompt 2+ has real accounts to log in as.
@@ -1226,9 +1265,9 @@ async function seedEndUserAppAccounts(plans: { id: string; slug: string }[]) {
       },
     });
 
-    const existingDefault = await prisma.business.findFirst({ where: { ownerId: user.id, isDefault: true } });
-    if (!existingDefault) {
-      await prisma.business.create({
+    let defaultBusiness = await prisma.business.findFirst({ where: { ownerId: user.id, isDefault: true } });
+    if (!defaultBusiness) {
+      defaultBusiness = await prisma.business.create({
         data: {
           ownerId: user.id,
           name: 'Personal',
@@ -1239,13 +1278,20 @@ async function seedEndUserAppAccounts(plans: { id: string; slug: string }[]) {
         },
       });
     }
+    // Checked by account count, not "was this business just created" --
+    // Prompt 4 added account-seeding after these test users already existed
+    // from Prompt 1's original seed run, so this also retroactively backfills
+    // accounts for a business that predates this function ever seeding them.
+    if ((await prisma.account.count({ where: { businessId: defaultBusiness.id } })) === 0) {
+      await seedAccountsForBusiness(defaultBusiness.id, WorkspaceType.PERSONAL);
+    }
 
     if (testUser.secondBusiness) {
-      const existingBusiness = await prisma.business.findFirst({
+      let secondBusiness = await prisma.business.findFirst({
         where: { ownerId: user.id, type: WorkspaceType.BUSINESS },
       });
-      if (!existingBusiness) {
-        await prisma.business.create({
+      if (!secondBusiness) {
+        secondBusiness = await prisma.business.create({
           data: {
             ownerId: user.id,
             name: `${testUser.name}'s Shop`,
@@ -1255,6 +1301,9 @@ async function seedEndUserAppAccounts(plans: { id: string; slug: string }[]) {
             members: { create: { userId: user.id, role: 'OWNER' } },
           },
         });
+      }
+      if ((await prisma.account.count({ where: { businessId: secondBusiness.id } })) === 0) {
+        await seedAccountsForBusiness(secondBusiness.id, WorkspaceType.BUSINESS);
       }
     }
   }

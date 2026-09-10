@@ -3,7 +3,8 @@ import { WorkspaceType } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { CreateBusinessDto } from './dto/create-business.dto.js';
 import { UpdateBusinessDto } from './dto/update-business.dto.js';
-import { RequestBusinessMember } from './interfaces/request-business-member.interface.js';
+import { RequestBusinessMember } from '../business-access/interfaces/request-business-member.interface.js';
+import { AccountsService } from '../accounts/accounts.service.js';
 
 interface FeatureLimits {
   maxBusinessWorkspaces?: number;
@@ -12,7 +13,10 @@ interface FeatureLimits {
 
 @Injectable()
 export class BusinessesService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly accountsService: AccountsService,
+  ) {}
 
   async list(userId: string) {
     const memberships = await this.prisma.businessMember.findMany({
@@ -98,6 +102,11 @@ export class BusinessesService {
       await tx.businessMember.create({
         data: { businessId: business.id, userId, role: 'OWNER' },
       });
+
+      // Prompt 4: a workspace should never exist without its starter Chart
+      // of Accounts -- seeded in the SAME transaction as the workspace/
+      // membership rows above, for the same all-or-nothing reason.
+      await this.accountsService.seedDefaultAccounts(business.id, WorkspaceType.BUSINESS, tx);
 
       return { id: business.id, name: business.name, type: business.type, currency: business.currency, isDefault: business.isDefault, role: 'OWNER' as const };
     });

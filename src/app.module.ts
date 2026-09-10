@@ -3,6 +3,7 @@ import { ConfigModule } from '@nestjs/config';
 import { APP_FILTER, APP_GUARD } from '@nestjs/core';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { AccountTemplatesModule } from './account-templates/account-templates.module.js';
+import { AccountsModule } from './accounts/accounts.module.js';
 import { AdminAuthModule } from './admin-auth/admin-auth.module.js';
 import { AdminUsersModule } from './admin-users/admin-users.module.js';
 import { AnalyticsModule } from './analytics/analytics.module.js';
@@ -10,6 +11,7 @@ import { AnnouncementsModule } from './announcements/announcements.module.js';
 import { AppController } from './app.controller.js';
 import { AppService } from './app.service.js';
 import { AuditLogsModule } from './audit-logs/audit-logs.module.js';
+import { BusinessAccessModule } from './business-access/business-access.module.js';
 import { BusinessesModule } from './businesses/businesses.module.js';
 import { CategoriesModule } from './categories/categories.module.js';
 import { CouponsModule } from './coupons/coupons.module.js';
@@ -40,6 +42,7 @@ import { UserAuthModule } from './user-auth/user-auth.module.js';
     // tight budget.
     ThrottlerModule.forRoot([{ name: 'default', ttl: 60_000, limit: 100 }]),
     PrismaModule,
+    BusinessAccessModule,
     HealthModule,
     AdminAuthModule,
     AdminUsersModule,
@@ -65,6 +68,7 @@ import { UserAuthModule } from './user-auth/user-auth.module.js';
     SettingsModule,
     UserAuthModule,
     BusinessesModule,
+    AccountsModule,
   ],
   controllers: [AppController],
   providers: [

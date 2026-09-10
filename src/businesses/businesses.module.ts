@@ -1,8 +1,7 @@
 import { Module } from '@nestjs/common';
-import { UserAuthModule } from '../user-auth/user-auth.module.js';
+import { AccountsModule } from '../accounts/accounts.module.js';
 import { BusinessesController } from './businesses.controller.js';
 import { BusinessesService } from './businesses.service.js';
-import { BusinessMembershipGuard } from './guards/business-membership.guard.js';
 
 // "Switching" the active workspace is a frontend-only concept (see Prompt 3
 // spec): the backend is stateless about which workspace is "currently
@@ -13,13 +12,16 @@ import { BusinessMembershipGuard } from './guards/business-membership.guard.js';
 // still independently proves membership via @RequireBusinessMembership()
 // regardless of what the frontend "thinks" is active.
 //
-// Exports BusinessMembershipGuard (+ UserAuthModule, transitively) so any
-// future module (Prompt 4+: accounts, transactions, etc.) can just import
-// BusinessesModule to get everything @RequireBusinessMembership() needs.
+// As of Prompt 4: @RequireBusinessMembership() (used by this controller's
+// :id routes) no longer requires importing UserAuthModule/BusinessMembershipGuard
+// here -- both are provided globally by BusinessAccessModule (registered
+// once in AppModule). This module now imports AccountsModule instead, so
+// create() can call AccountsService.seedDefaultAccounts() for new Business
+// workspaces (mirroring UserAuthService.register()'s call for the
+// auto-created default Personal one).
 @Module({
-  imports: [UserAuthModule],
+  imports: [AccountsModule],
   controllers: [BusinessesController],
-  providers: [BusinessesService, BusinessMembershipGuard],
-  exports: [UserAuthModule, BusinessMembershipGuard],
+  providers: [BusinessesService],
 })
 export class BusinessesModule {}

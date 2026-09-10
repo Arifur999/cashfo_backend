@@ -1,10 +1,10 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, UseGuards } from '@nestjs/common';
 import { BusinessesService } from './businesses.service.js';
-import { CurrentBusinessMember } from './decorators/current-business-member.decorator.js';
-import { RequireBusinessMembership } from './decorators/require-business-membership.decorator.js';
 import { CreateBusinessDto } from './dto/create-business.dto.js';
 import { UpdateBusinessDto } from './dto/update-business.dto.js';
-import type { RequestBusinessMember } from './interfaces/request-business-member.interface.js';
+import { CurrentBusinessMember } from '../business-access/decorators/current-business-member.decorator.js';
+import { RequireBusinessMembership } from '../business-access/decorators/require-business-membership.decorator.js';
+import type { RequestBusinessMember } from '../business-access/interfaces/request-business-member.interface.js';
 import { CurrentUser } from '../user-auth/decorators/current-user.decorator.js';
 import { UserAuthGuard } from '../user-auth/guards/user-auth.guard.js';
 import type { RequestUser } from '../user-auth/interfaces/request-user.interface.js';

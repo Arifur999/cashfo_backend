@@ -5,6 +5,7 @@ import { User, WorkspaceType } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { randomUUID } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { AccountsService } from '../accounts/accounts.service.js';
 import { ChangePasswordDto } from './dto/change-password.dto.js';
 import { LoginDto } from './dto/login.dto.js';
 import { RegisterDto } from './dto/register.dto.js';
@@ -24,6 +25,7 @@ export class UserAuthService {
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
     private readonly tokenBlacklist: TokenBlacklistService,
+    private readonly accountsService: AccountsService,
   ) {}
 
   async register(dto: RegisterDto) {
@@ -60,6 +62,11 @@ export class UserAuthService {
           members: { create: { userId: createdUser.id, role: 'OWNER' } },
         },
       });
+
+      // Prompt 4: the default workspace should never exist without its
+      // starter Chart of Accounts -- seeded in this same transaction, same
+      // all-or-nothing reasoning as the user/workspace/membership rows above.
+      await this.accountsService.seedDefaultAccounts(defaultBusiness.id, WorkspaceType.PERSONAL, tx);
 
       return { user: createdUser, defaultBusinessId: defaultBusiness.id };
     });
@@ -157,8 +164,13 @@ export class UserAuthService {
       throw new UnauthorizedException('Account no longer exists');
     }
 
+    // Prompt 3 introduced soft-deleted Business rows (deletedAt) and
+    // MemberStatus -- both existed before this method ever filtered on them,
+    // which meant a soft-deleted workspace, or a REMOVED membership, still
+    // showed up here even though /api/businesses (Prompt 3) correctly
+    // excludes them. Bug, not a deliberate difference -- fixed to match.
     const memberships = await this.prisma.businessMember.findMany({
-      where: { userId },
+      where: { userId, status: 'ACTIVE', business: { deletedAt: null } },
       include: { business: true },
     });
 

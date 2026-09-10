@@ -703,6 +703,7 @@ model Business {
   createdAt DateTime      @default(now())
   updatedAt DateTime      @updatedAt
   members   BusinessMember[]
+  accounts  Account[]
 
   @@index([ownerId])
 }
@@ -735,4 +736,45 @@ enum MemberStatus {
   ACTIVE
   INVITED
   REMOVED
+}
+
+// =====================================================================
+// Prompt 4: Chart of Accounts. Reuses AccountType/WorkspaceType (defined
+// above for the admin panel's DefaultAccountTemplate) rather than
+// duplicating them -- AccountsService.seedDefaultAccounts() copies rows
+// from DefaultAccountTemplate into Account when a Business is created.
+// =====================================================================
+
+model Account {
+  id              String        @id @default(uuid())
+  businessId      String
+  business        Business      @relation(fields: [businessId], references: [id])
+  parentId        String?
+  parent          Account?      @relation("AccountHierarchy", fields: [parentId], references: [id])
+  children        Account[]     @relation("AccountHierarchy")
+  name            String
+  nameBn          String?
+  accountType     AccountType
+  accountSubtype  String?
+  openingBalance  Decimal       @default(0) @db.Decimal(14, 2)
+  // Cached, recalculated by the Transaction Engine (Prompt 5) -- for now
+  // (no transactions exist yet) it's just directly settable.
+  currentBalance  Decimal       @default(0) @db.Decimal(14, 2)
+  // true for accounts copied from DefaultAccountTemplate -- protects them
+  // from accidental deletion (they're still archivable, just not what a
+  // "delete" action would target since there's no delete endpoint here at
+  // all, per Part C -- only archive).
+  isSystemAccount Boolean       @default(false)
+  status          AccountStatus @default(ACTIVE)
+  displayOrder    Int           @default(0)
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  @@index([businessId, accountType])
+  @@index([businessId, parentId])
+}
+
+enum AccountStatus {
+  ACTIVE
+  ARCHIVED
 }

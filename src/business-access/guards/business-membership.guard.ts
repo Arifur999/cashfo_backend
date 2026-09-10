@@ -8,11 +8,11 @@ import { RequestUser } from '../../user-auth/interfaces/request-user.interface.j
 // @RequireBusinessMembership() composed decorator below rather than applying
 // this guard alone, so ordering is never a foot-gun.
 //
-// Reads the target business id from :id (workspace-is-the-resource routes,
-// e.g. GET /api/businesses/:id) or :businessId (nested routes future
-// prompts will add, e.g. /api/businesses/:businessId/accounts). Confirms an
-// ACTIVE BusinessMember row exists and attaches it as `request.businessMember`
-// so downstream handlers can check `.role` without a second query.
+// Reads the target business id from :businessId (nested routes, e.g.
+// /api/businesses/:businessId/accounts) or :id (workspace-is-the-resource
+// routes, e.g. GET /api/businesses/:id). Confirms an ACTIVE BusinessMember
+// row exists and attaches it as `request.businessMember` so downstream
+// handlers (and BusinessRoleGuard) can check `.role` without a second query.
 //
 // Returns the same generic 403 whether the business doesn't exist at all or
 // simply isn't one this user belongs to -- never reveals which.
