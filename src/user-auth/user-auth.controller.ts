@@ -1,31 +1,59 @@
-import { Controller, Post } from '@nestjs/common';
+import { Body, Controller, Get, Patch, Post, Req, UseFilters, UseGuards } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
+import type { Request } from 'express';
+import { ChangePasswordDto } from './dto/change-password.dto.js';
+import { LoginDto } from './dto/login.dto.js';
+import { RefreshDto } from './dto/refresh.dto.js';
+import { RegisterDto } from './dto/register.dto.js';
+import { UpdateLanguageDto } from './dto/update-language.dto.js';
+import { CurrentUser } from './decorators/current-user.decorator.js';
+import { LoginRateLimitFilter } from './filters/login-rate-limit.filter.js';
+import { UserAuthGuard } from './guards/user-auth.guard.js';
+import type { RequestUser } from './interfaces/request-user.interface.js';
 import { UserAuthService } from './user-auth.service.js';
 
-// Route shape mirrors admin-auth's (register/login/refresh/logout/me), under
-// /api/auth instead of /admin/auth. All four throw NotImplementedException
-// for now -- see UserAuthService. Real DTOs (RegisterDto/LoginDto/RefreshDto)
-// and the `me` route land alongside the real implementation in Prompt 2.
 @Controller('api/auth')
 export class UserAuthController {
   constructor(private readonly userAuthService: UserAuthService) {}
 
   @Post('register')
-  register() {
-    return this.userAuthService.register();
+  register(@Body() dto: RegisterDto) {
+    return this.userAuthService.register(dto);
   }
 
+  // Max 5 attempts per 15 minutes per IP, same policy as admin login.
+  @Throttle({ default: { limit: 5, ttl: 15 * 60 * 1000 } })
+  @UseFilters(LoginRateLimitFilter)
   @Post('login')
-  login() {
-    return this.userAuthService.login();
+  login(@Body() dto: LoginDto, @Req() req: Request) {
+    return this.userAuthService.login(dto, req.ip, req.headers['user-agent']);
   }
 
   @Post('refresh')
-  refresh() {
-    return this.userAuthService.refresh();
+  refresh(@Body() dto: RefreshDto) {
+    return this.userAuthService.refresh(dto.refreshToken);
   }
 
   @Post('logout')
-  logout() {
-    return this.userAuthService.logout();
+  logout(@Body() dto: RefreshDto) {
+    return this.userAuthService.logout(dto.refreshToken);
+  }
+
+  @UseGuards(UserAuthGuard)
+  @Get('me')
+  me(@CurrentUser() user: RequestUser) {
+    return this.userAuthService.me(user.id);
+  }
+
+  @UseGuards(UserAuthGuard)
+  @Patch('language')
+  updateLanguage(@CurrentUser() user: RequestUser, @Body() dto: UpdateLanguageDto) {
+    return this.userAuthService.updateLanguage(user.id, dto);
+  }
+
+  @UseGuards(UserAuthGuard)
+  @Post('change-password')
+  changePassword(@CurrentUser() user: RequestUser, @Body() dto: ChangePasswordDto) {
+    return this.userAuthService.changePassword(user.id, dto);
   }
 }
