@@ -77,11 +77,6 @@ model PlatformUser {
   name            String
   email           String             @unique
   phone           String?
-  // Nullable: pre-existing demo/admin-visible rows were never real
-  // registered accounts and have no password. A real signup (via
-  // platform-auth's /auth/register) always sets this.
-  passwordHash    String?
-  emailVerifiedAt DateTime?
   status          PlatformUserStatus @default(ACTIVE)
   planId          String?
   plan            SubscriptionPlan?  @relation(fields: [planId], references: [id])
@@ -123,6 +118,7 @@ model SubscriptionPlan {
   users         PlatformUser[]
   couponUsages  CouponRedemption[]
   payments      Payment[]
+  businesses    Business[] // end-user app (Prompt 1): workspaces on this plan
 }
 
 enum BillingCycle {
@@ -651,4 +647,88 @@ enum CampaignStatus {
   SENDING
   SENT
   CANCELLED
+}
+
+// =====================================================================
+// END-USER APP (separate 20-prompt plan). Same database/schema file as
+// the admin panel above -- extended here, not forked. Prompt 1: identity
+// (User) + workspace (Business/BusinessMember) only. Account/Transaction/
+// Contact tables come in later prompts.
+// =====================================================================
+
+model User {
+  id                String             @id @default(uuid())
+  name              String
+  email             String             @unique
+  phone             String?
+  passwordHash      String
+  preferredLanguage LanguagePreference @default(EN)
+  status            UserStatus         @default(ACTIVE)
+  emailVerifiedAt   DateTime?
+  lastLoginAt       DateTime?
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  memberships       BusinessMember[]
+  ownedBusinesses   Business[]         @relation("BusinessOwner")
+
+  // No separate @@index([email]) -- @unique above already creates a unique
+  // index covering lookups by email (same reasoning as AdminUser/PlatformUser).
+}
+
+enum LanguagePreference {
+  EN
+  BN
+}
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  DELETED
+}
+
+model Business {
+  id        String        @id @default(uuid())
+  ownerId   String
+  owner     User          @relation("BusinessOwner", fields: [ownerId], references: [id])
+  name      String
+  type      WorkspaceType // reuses the enum already defined for DefaultAccountTemplate.appliesTo above
+  currency  String        @default("BDT")
+  planId    String?
+  plan      SubscriptionPlan? @relation(fields: [planId], references: [id])
+  isDefault Boolean       @default(false) // true for the auto-created personal workspace
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+  members   BusinessMember[]
+
+  @@index([ownerId])
+}
+
+model BusinessMember {
+  id         String       @id @default(uuid())
+  businessId String
+  business   Business     @relation(fields: [businessId], references: [id])
+  userId     String
+  user       User         @relation(fields: [userId], references: [id])
+  role       MemberRole   @default(OWNER)
+  invitedAt  DateTime?
+  joinedAt   DateTime     @default(now())
+  status     MemberStatus @default(ACTIVE)
+
+  // @@unique below already gives an index with businessId as its leftmost
+  // column (covers "all members of a business" lookups), so only userId
+  // needs its own separate index here.
+  @@unique([businessId, userId])
+  @@index([userId])
+}
+
+enum MemberRole {
+  OWNER
+  ACCOUNTANT
+  STAFF
+}
+
+enum MemberStatus {
+  ACTIVE
+  INVITED
+  REMOVED
 }

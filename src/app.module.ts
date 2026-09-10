@@ -19,7 +19,6 @@ import { InvoicesModule } from './invoices/invoices.module.js';
 import { LegalDocumentsModule } from './legal-documents/legal-documents.module.js';
 import { NotificationsModule } from './notifications/notifications.module.js';
 import { PaymentsModule } from './payments/payments.module.js';
-import { PlatformAuthModule } from './platform-auth/platform-auth.module.js';
 import { PlatformUsersModule } from './platform-users/platform-users.module.js';
 import { PrismaModule } from './prisma/prisma.module.js';
 import { RevenueModule } from './revenue/revenue.module.js';
@@ -30,6 +29,7 @@ import { GlobalExceptionFilter } from './system/filters/global-exception.filter.
 import { SystemModule } from './system/system.module.js';
 import { TicketsModule } from './tickets/tickets.module.js';
 import { TranslationsModule } from './translations/translations.module.js';
+import { UserAuthModule } from './user-auth/user-auth.module.js';
 
 @Module({
   imports: [
@@ -42,7 +42,6 @@ import { TranslationsModule } from './translations/translations.module.js';
     HealthModule,
     AdminAuthModule,
     AdminUsersModule,
-    PlatformAuthModule,
     PlatformUsersModule,
     SubscriptionPlansModule,
     CouponsModule,
@@ -63,6 +62,7 @@ import { TranslationsModule } from './translations/translations.module.js';
     NotificationsModule,
     DashboardModule,
     SettingsModule,
+    UserAuthModule,
   ],
   controllers: [AppController],
   providers: [

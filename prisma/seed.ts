@@ -1197,6 +1197,71 @@ async function seedNotificationCampaigns(superAdminId: string) {
   });
 }
 
+// End-user app (Prompt 1): seeds real User accounts (distinct from
+// PlatformUser, which is only the admin panel's read-model) plus their
+// Business workspaces, so Prompt 2+ has real accounts to log in as.
+async function seedEndUserAppAccounts(plans: { id: string; slug: string }[]) {
+  const freePlan = plans.find((p) => p.slug === 'free');
+  const proPlan = plans.find((p) => p.slug === 'monthly-pro');
+  const passwordHash = await bcrypt.hash('ChangeMe123!', 10);
+
+  const testUsers: { name: string; email: string; preferredLanguage: 'EN' | 'BN'; secondBusiness?: boolean }[] = [
+    { name: 'Rafiqul Islam', email: 'rafiqul.islam@example.com', preferredLanguage: 'EN' },
+    { name: 'নুসরাত জাহান', email: 'nusrat.jahan@example.com', preferredLanguage: 'BN' },
+    // Gets a second, BUSINESS-type workspace below to exercise the
+    // multi-workspace case -- also the one seeded onto the paid plan.
+    { name: 'Tanvir Ahmed', email: 'tanvir.ahmed@example.com', preferredLanguage: 'EN', secondBusiness: true },
+    { name: 'শিরিন আক্তার', email: 'shirin.akter@example.com', preferredLanguage: 'BN' },
+  ];
+
+  for (const testUser of testUsers) {
+    const user = await prisma.user.upsert({
+      where: { email: testUser.email },
+      update: {},
+      create: {
+        name: testUser.name,
+        email: testUser.email,
+        passwordHash,
+        preferredLanguage: testUser.preferredLanguage,
+      },
+    });
+
+    const existingDefault = await prisma.business.findFirst({ where: { ownerId: user.id, isDefault: true } });
+    if (!existingDefault) {
+      await prisma.business.create({
+        data: {
+          ownerId: user.id,
+          name: 'Personal',
+          type: WorkspaceType.PERSONAL,
+          isDefault: true,
+          planId: testUser.secondBusiness ? proPlan?.id : freePlan?.id,
+          members: { create: { userId: user.id, role: 'OWNER' } },
+        },
+      });
+    }
+
+    if (testUser.secondBusiness) {
+      const existingBusiness = await prisma.business.findFirst({
+        where: { ownerId: user.id, type: WorkspaceType.BUSINESS },
+      });
+      if (!existingBusiness) {
+        await prisma.business.create({
+          data: {
+            ownerId: user.id,
+            name: `${testUser.name}'s Shop`,
+            type: WorkspaceType.BUSINESS,
+            isDefault: false,
+            planId: proPlan?.id,
+            members: { create: { userId: user.id, role: 'OWNER' } },
+          },
+        });
+      }
+    }
+  }
+
+  console.warn('\n⚠️  4 end-user test accounts created (password ChangeMe123! for all) -- rafiqul.islam@, nusrat.jahan@, tanvir.ahmed@, shirin.akter@example.com.\n');
+}
+
 async function main() {
   const { superAdminId, supportAdminId } = await seedAdmins();
   await seedSubAdmins(superAdminId);
@@ -1222,6 +1287,7 @@ async function main() {
   await seedNotificationTemplates();
   await seedNotificationLogs();
   await seedNotificationCampaigns(superAdminId);
+  await seedEndUserAppAccounts(plans);
 }
 
 main()
