@@ -77,6 +77,11 @@ model PlatformUser {
   name            String
   email           String             @unique
   phone           String?
+  // Nullable: pre-existing demo/admin-visible rows were never real
+  // registered accounts and have no password. A real signup (via
+  // platform-auth's /auth/register) always sets this.
+  passwordHash    String?
+  emailVerifiedAt DateTime?
   status          PlatformUserStatus @default(ACTIVE)
   planId          String?
   plan            SubscriptionPlan?  @relation(fields: [planId], references: [id])
