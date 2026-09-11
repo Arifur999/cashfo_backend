@@ -66,4 +66,9 @@ export class ReceivablesPayablesController {
   payablesOverdue(@Param('businessId') businessId: string) {
     return this.service.getOverdue(businessId, 'PAYABLE');
   }
+
+  @Get('loan-management/dashboard')
+  loanDashboard(@Param('businessId') businessId: string) {
+    return this.service.getLoanDashboard(businessId);
+  }
 }

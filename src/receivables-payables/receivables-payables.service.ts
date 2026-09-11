@@ -59,6 +59,34 @@ export interface OverdueRow {
   daysOverdue: number;
 }
 
+export type LoanBalanceDirection = 'DENA' | 'PAWNA' | 'SETTLED';
+
+export interface LoanDashboardRow {
+  contactId: string;
+  contactName: string;
+  contactPhone: string | null;
+  openingBalance: string;
+  // "Receive" = cash that came IN for this loan relationship (a loan we
+  // borrowed, plus any repayments received back from money we lent out).
+  // "Payment" = cash that went OUT (a loan we gave out, plus any
+  // repayments we made on money we borrowed). Same framing as the
+  // reference layout's RECEIVE/PAYMENT columns.
+  totalReceive: string;
+  totalPayment: string;
+  currentBalance: string;
+  direction: LoanBalanceDirection;
+}
+
+export interface LoanDashboard {
+  totalDena: string;
+  totalPawna: string;
+  totalPaid: string;
+  totalReceived: string;
+  netBalance: string;
+  activeAccounts: number;
+  rows: LoanDashboardRow[];
+}
+
 type AgingBucket = 'current' | 'days1to30' | 'days31to60' | 'over60';
 
 function todayUtcMidnight(): Date {
@@ -217,8 +245,10 @@ export class ReceivablesPayablesService {
 
   async getAging(businessId: string, direction: Direction): Promise<AgingReport> {
     const contactType = direction === 'RECEIVABLE' ? 'CUSTOMER' : 'SUPPLIER';
+    // BUSINESS only -- Loan Management contacts (category: LOAN) have their
+    // own dashboard (getLoanDashboard()) and must not bleed into Dena-Pawna.
     const contacts = await this.prisma.contact.findMany({
-      where: { businessId, type: { in: [contactType, 'BOTH'] } },
+      where: { businessId, category: 'BUSINESS', type: { in: [contactType, 'BOTH'] } },
       orderBy: { name: 'asc' },
     });
 
@@ -275,8 +305,9 @@ export class ReceivablesPayablesService {
 
   async getOverdue(businessId: string, direction: Direction): Promise<OverdueRow[]> {
     const contactType = direction === 'RECEIVABLE' ? 'CUSTOMER' : 'SUPPLIER';
+    // BUSINESS only -- see getAging()'s comment.
     const contacts = await this.prisma.contact.findMany({
-      where: { businessId, type: { in: [contactType, 'BOTH'] } },
+      where: { businessId, category: 'BUSINESS', type: { in: [contactType, 'BOTH'] } },
     });
 
     const today = todayUtcMidnight();
@@ -301,6 +332,69 @@ export class ReceivablesPayablesService {
 
     rows.sort((a, b) => b.daysOverdue - a.daysOverdue);
     return rows;
+  }
+
+  // Loan Management's dashboard -- same engine as Dena-Pawna
+  // (computeDirection() against the same Accounts Receivable/Payable
+  // accounts), scoped to category: LOAN contacts (banks/persons you lend
+  // to or borrow from) instead of BUSINESS ones (customers/suppliers).
+  // "Record Sale on Credit" = give a loan (Pawna, they owe you); "Record
+  // Purchase on Credit" = take a loan (Dena, you owe them); the existing
+  // payment endpoints settle either side -- no new write path needed,
+  // this is purely a themed read view over the same data.
+  async getLoanDashboard(businessId: string): Promise<LoanDashboard> {
+    const contacts = await this.prisma.contact.findMany({
+      where: { businessId, category: 'LOAN' },
+      orderBy: { name: 'asc' },
+    });
+
+    let totalDena = new Prisma.Decimal(0);
+    let totalPawna = new Prisma.Decimal(0);
+    let totalPaid = new Prisma.Decimal(0);
+    let totalReceived = new Prisma.Decimal(0);
+    const rows: LoanDashboardRow[] = [];
+
+    for (const contact of contacts) {
+      const receivable = await this.computeDirection(businessId, contact.id, 'RECEIVABLE');
+      const payable = await this.computeDirection(businessId, contact.id, 'PAYABLE');
+      const opening = new Prisma.Decimal(contact.openingBalance);
+      const currentBalance = opening.plus(receivable.remaining).minus(payable.remaining);
+
+      // Cash paid out = loans given (receivable.totalInvoiced) + loans
+      // repaid (payable.totalPaid). Cash received = loans taken
+      // (payable.totalInvoiced) + repayments collected (receivable.totalPaid).
+      const totalPayment = new Prisma.Decimal(receivable.totalInvoiced).plus(payable.totalPaid);
+      const totalReceive = new Prisma.Decimal(payable.totalInvoiced).plus(receivable.totalPaid);
+
+      if (opening.equals(0) && totalPayment.equals(0) && totalReceive.equals(0)) continue;
+
+      totalPaid = totalPaid.plus(totalPayment);
+      totalReceived = totalReceived.plus(totalReceive);
+      if (currentBalance.greaterThan(0)) totalPawna = totalPawna.plus(currentBalance);
+      if (currentBalance.lessThan(0)) totalDena = totalDena.plus(currentBalance.abs());
+
+      const direction: LoanBalanceDirection = currentBalance.greaterThan(0) ? 'PAWNA' : currentBalance.lessThan(0) ? 'DENA' : 'SETTLED';
+      rows.push({
+        contactId: contact.id,
+        contactName: contact.name,
+        contactPhone: contact.phone,
+        openingBalance: opening.toFixed(2),
+        totalReceive: totalReceive.toFixed(2),
+        totalPayment: totalPayment.toFixed(2),
+        currentBalance: currentBalance.toFixed(2),
+        direction,
+      });
+    }
+
+    return {
+      totalDena: totalDena.toFixed(2),
+      totalPawna: totalPawna.toFixed(2),
+      totalPaid: totalPaid.toFixed(2),
+      totalReceived: totalReceived.toFixed(2),
+      netBalance: totalPawna.minus(totalDena).toFixed(2),
+      activeAccounts: rows.length,
+      rows,
+    };
   }
 
   // ---------------------------------------------------------------------
@@ -329,17 +423,21 @@ export class ReceivablesPayablesService {
       return { totalInvoiced: '0.00', totalPaid: '0.00', remaining: '0.00', transactions: [] };
     }
 
-    const [invoices, payments] = await Promise.all([
-      this.prisma.transaction.findMany({
-        where: { businessId, contactId, transactionType: invoiceType, status: 'POSTED' },
-        include: { entries: true },
-        orderBy: [{ transactionDate: 'asc' }, { createdAt: 'asc' }],
-      }),
-      this.prisma.transaction.findMany({
-        where: { businessId, contactId, transactionType: 'PAYMENT', status: 'POSTED' },
-        include: { entries: true },
-      }),
-    ]);
+    // Sequential, not Promise.all -- this local dev Postgres (prisma dev's
+    // built-in server) has grown increasingly prone to dropping connections
+    // under concurrent query load over the course of long sessions; with
+    // getLoanDashboard() now calling this twice (RECEIVABLE + PAYABLE) per
+    // contact in a loop, removing this last bit of internal concurrency is
+    // worth the small latency cost.
+    const invoices = await this.prisma.transaction.findMany({
+      where: { businessId, contactId, transactionType: invoiceType, status: 'POSTED' },
+      include: { entries: true },
+      orderBy: [{ transactionDate: 'asc' }, { createdAt: 'asc' }],
+    });
+    const payments = await this.prisma.transaction.findMany({
+      where: { businessId, contactId, transactionType: 'PAYMENT', status: 'POSTED' },
+      include: { entries: true },
+    });
 
     // A contact of type BOTH can have both a receivable and a payable
     // relationship -- only count payments that actually touch THIS

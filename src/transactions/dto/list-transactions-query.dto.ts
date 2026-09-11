@@ -1,6 +1,6 @@
 import { Type } from 'class-transformer';
 import { IsIn, IsInt, IsISO8601, IsOptional, IsString, Max, Min } from 'class-validator';
-import { TransactionStatus, TransactionType } from '@prisma/client';
+import { ContactCategory, TransactionStatus, TransactionType } from '@prisma/client';
 
 export class ListTransactionsQueryDto {
   @IsOptional()
@@ -27,6 +27,13 @@ export class ListTransactionsQueryDto {
   @IsOptional()
   @IsString()
   contactId?: string;
+
+  // Loan Management: transactions linked to any contact of a given
+  // category (LOAN), not just one specific contact -- powers the Loan
+  // Management Transactions page.
+  @IsOptional()
+  @IsIn(Object.values(ContactCategory))
+  contactCategory?: ContactCategory;
 
   @IsOptional()
   @IsIn(Object.values(TransactionStatus))

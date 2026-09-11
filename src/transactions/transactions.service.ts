@@ -178,6 +178,7 @@ export class TransactionsService {
     if (filters.status) where.status = filters.status;
     if (filters.accountId) where.entries = { some: { accountId: filters.accountId } };
     if (filters.contactId) where.contactId = filters.contactId;
+    if (filters.contactCategory) where.contact = { category: filters.contactCategory };
     if (filters.search) {
       where.OR = [
         { description: { contains: filters.search, mode: 'insensitive' } },

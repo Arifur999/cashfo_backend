@@ -22,6 +22,7 @@ export class ContactsService {
     // unless the caller explicitly asks for one status via ?status=.
     const where: Prisma.ContactWhereInput = { businessId };
     if (filters.type) where.type = filters.type;
+    if (filters.category) where.category = filters.category;
     if (filters.status) where.status = filters.status;
     if (filters.search) {
       where.OR = [
@@ -76,6 +77,7 @@ export class ContactsService {
         businessId,
         name: dto.name,
         type: dto.type,
+        category: dto.category ?? 'BUSINESS',
         phone: dto.phone,
         email: dto.email,
         address: dto.address,

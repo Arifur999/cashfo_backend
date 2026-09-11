@@ -795,11 +795,17 @@ enum AccountStatus {
 // =====================================================================
 
 model Contact {
-  id             String        @id @default(uuid())
+  id             String          @id @default(uuid())
   businessId     String
-  business       Business      @relation(fields: [businessId], references: [id])
+  business       Business        @relation(fields: [businessId], references: [id])
   name           String
   type           ContactType
+  // Business (customer/supplier trade relationships, shown in Dena-Pawna)
+  // vs Loan (bank/person lending relationships, shown in Loan Management).
+  // Purely a categorization/filtering tag -- both categories reuse the
+  // exact same type/openingBalance/Receivable-Payable engine underneath,
+  // per this app's "don't build a parallel system" principle (Prompt 9).
+  category       ContactCategory @default(BUSINESS)
   phone          String?
   email          String?
   address        String?
@@ -811,11 +817,11 @@ model Contact {
   // this is normally >= 0 ("they owe us"); for a SUPPLIER it's normally
   // <= 0 ("we owe them"). The UI frames the input field in plain language
   // per contact type rather than exposing this sign directly to the user.
-  openingBalance Decimal       @default(0) @db.Decimal(14, 2)
-  status         ContactStatus @default(ACTIVE)
+  openingBalance Decimal         @default(0) @db.Decimal(14, 2)
+  status         ContactStatus   @default(ACTIVE)
   notes          String?
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
   transactions   Transaction[]
 
   @@index([businessId, type])
@@ -825,6 +831,11 @@ enum ContactType {
   CUSTOMER
   SUPPLIER
   BOTH
+}
+
+enum ContactCategory {
+  BUSINESS
+  LOAN
 }
 
 enum ContactStatus {

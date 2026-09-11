@@ -49,16 +49,20 @@ export class AccountBalanceService {
       throw new NotFoundException('Account not found');
     }
 
-    const [debitAgg, creditAgg] = await Promise.all([
-      client.transactionEntry.aggregate({
-        where: { accountId, entryType: 'DEBIT' },
-        _sum: { amount: true },
-      }),
-      client.transactionEntry.aggregate({
-        where: { accountId, entryType: 'CREDIT' },
-        _sum: { amount: true },
-      }),
-    ]);
+    // Sequential, not Promise.all -- reconcileWorkspace() calls this once
+    // per account in a loop (outside any interactive transaction, so each
+    // call's queries genuinely compete for separate pool connections), and
+    // this local dev Postgres has grown increasingly prone to dropping
+    // connections under concurrent query load over the course of long
+    // sessions. Negligible latency cost for two quick aggregates.
+    const debitAgg = await client.transactionEntry.aggregate({
+      where: { accountId, entryType: 'DEBIT' },
+      _sum: { amount: true },
+    });
+    const creditAgg = await client.transactionEntry.aggregate({
+      where: { accountId, entryType: 'CREDIT' },
+      _sum: { amount: true },
+    });
 
     const debitTotal = new Prisma.Decimal(debitAgg._sum.amount ?? 0);
     const creditTotal = new Prisma.Decimal(creditAgg._sum.amount ?? 0);
