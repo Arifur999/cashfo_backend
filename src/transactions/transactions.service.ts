@@ -154,7 +154,7 @@ export class TransactionsService {
   async getTransaction(businessId: string, transactionId: string) {
     const transaction = await this.prisma.transaction.findUnique({
       where: { id: transactionId },
-      include: { entries: { include: { account: { select: { id: true, name: true, accountType: true } } } } },
+      include: { entries: { include: { account: { select: { id: true, name: true, accountType: true, accountSubtype: true } } } } },
     });
     if (!transaction || transaction.businessId !== businessId) {
       throw new NotFoundException('Transaction not found');
@@ -189,11 +189,16 @@ export class TransactionsService {
     const [data, total] = await Promise.all([
       this.prisma.transaction.findMany({
         where,
-        // Same shape as getTransaction()'s single-record include -- the
-        // Balance Transfer page (and any other list-level UI that needs to
-        // show which accounts were involved, not just an amount) needs
-        // entry.account.name without a second round trip per row.
-        include: { entries: { include: { account: { select: { id: true, name: true, accountType: true } } } } },
+        // entries.account: same shape as getTransaction()'s single-record
+        // include -- the Balance Transfer page (and any other list-level UI
+        // that needs to show which accounts were involved, not just an
+        // amount) needs entry.account.name without a second round trip per
+        // row. contact: the Loan Management Transactions page needs the
+        // Bank/Person name per row too.
+        include: {
+          entries: { include: { account: { select: { id: true, name: true, accountType: true, accountSubtype: true } } } },
+          contact: { select: { id: true, name: true } },
+        },
         orderBy: [{ transactionDate: 'desc' }, { createdAt: 'desc' }],
         skip: (page - 1) * limit,
         take: limit,

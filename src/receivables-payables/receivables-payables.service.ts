@@ -112,14 +112,31 @@ export class ReceivablesPayablesService {
     private readonly transactionsService: TransactionsService,
   ) {}
 
+  // For a BUSINESS contact this is a credit sale -- revenue recognized
+  // immediately, cash arrives later (Dr Accounts Receivable / Cr Income).
+  // For a LOAN contact this is giving out a loan -- real cash leaves a
+  // money account right now, and none of it is revenue (Dr Accounts
+  // Receivable / Cr the money account). Same transactionType (SALE) and
+  // same AR account either way -- computeDirection() only ever looks at
+  // the entry against the AR account, so nothing downstream (aging,
+  // the Loan Dashboard, the Trial Balance) needs to know which flavor
+  // this was.
   async recordSale(businessId: string, dto: CreateReceivableDto, userId: string) {
     const contact = await this.requireContact(businessId, dto.contactId);
     if (contact.type !== 'CUSTOMER' && contact.type !== 'BOTH') {
       throw new BadRequestException('This contact must be a Customer (or Customer & Supplier) to record a credit sale');
     }
     const arAccount = await this.requireSystemAccount(businessId, 'receivable', 'ASSET', 'Accounts Receivable');
-    const incomeAccountId = dto.incomeAccountId ?? (await this.getDefaultIncomeAccountId(businessId));
-    const incomeAccount = await this.requireAccountOfType(businessId, incomeAccountId, 'INCOME', 'incomeAccountId');
+
+    const otherEntry =
+      contact.category === 'LOAN'
+        ? { accountId: (await this.requireMoneyAccountForLoan(businessId, dto.moneyAccountId)).id, entryType: 'CREDIT' as const }
+        : {
+            accountId: (
+              await this.requireAccountOfType(businessId, dto.incomeAccountId ?? (await this.getDefaultIncomeAccountId(businessId)), 'INCOME', 'incomeAccountId')
+            ).id,
+            entryType: 'CREDIT' as const,
+          };
 
     return this.transactionsService.createTransaction(
       businessId,
@@ -131,21 +148,30 @@ export class ReceivablesPayablesService {
         contactId: contact.id,
         entries: [
           { accountId: arAccount.id, entryType: 'DEBIT', amount: dto.amount },
-          { accountId: incomeAccount.id, entryType: 'CREDIT', amount: dto.amount },
+          { accountId: otherEntry.accountId, entryType: otherEntry.entryType, amount: dto.amount },
         ],
       },
       userId,
     );
   }
 
+  // Mirror of recordSale() above -- for BUSINESS this is a credit purchase
+  // (expense recognized, Dr Expense / Cr Accounts Payable); for LOAN this
+  // is taking out a loan (real cash lands in a money account right now,
+  // none of it an expense: Dr the money account / Cr Accounts Payable).
   async recordPurchase(businessId: string, dto: CreatePayableDto, userId: string) {
     const contact = await this.requireContact(businessId, dto.contactId);
     if (contact.type !== 'SUPPLIER' && contact.type !== 'BOTH') {
       throw new BadRequestException('This contact must be a Supplier (or Customer & Supplier) to record a credit purchase');
     }
     const apAccount = await this.requireSystemAccount(businessId, 'payable', 'LIABILITY', 'Accounts Payable');
-    const expenseAccountId = dto.expenseAccountId ?? (await this.getDefaultExpenseAccountId(businessId));
-    const expenseAccount = await this.requireAccountOfType(businessId, expenseAccountId, 'EXPENSE', 'expenseAccountId');
+
+    const debitAccountId =
+      contact.category === 'LOAN'
+        ? (await this.requireMoneyAccountForLoan(businessId, dto.moneyAccountId)).id
+        : (
+            await this.requireAccountOfType(businessId, dto.expenseAccountId ?? (await this.getDefaultExpenseAccountId(businessId)), 'EXPENSE', 'expenseAccountId')
+          ).id;
 
     return this.transactionsService.createTransaction(
       businessId,
@@ -156,7 +182,7 @@ export class ReceivablesPayablesService {
         description: dto.description,
         contactId: contact.id,
         entries: [
-          { accountId: expenseAccount.id, entryType: 'DEBIT', amount: dto.amount },
+          { accountId: debitAccountId, entryType: 'DEBIT', amount: dto.amount },
           { accountId: apAccount.id, entryType: 'CREDIT', amount: dto.amount },
         ],
       },
@@ -563,6 +589,18 @@ export class ReceivablesPayablesService {
       throw new BadRequestException('moneyAccountId must be a cash/bank/mobile-money account');
     }
     return account;
+  }
+
+  // Same validation as requireMoneyAccount(), plus the "was it even
+  // provided" check recordSale()/recordPurchase() need for a LOAN contact
+  // -- moneyAccountId is optional on the DTO (irrelevant for BUSINESS
+  // contacts), so this is where it becomes mandatory once category: LOAN
+  // is known.
+  private async requireMoneyAccountForLoan(businessId: string, moneyAccountId: string | undefined): Promise<Account> {
+    if (!moneyAccountId) {
+      throw new BadRequestException('moneyAccountId is required for a loan (real cash moves through an account, unlike a business credit sale/purchase)');
+    }
+    return this.requireMoneyAccount(businessId, moneyAccountId);
   }
 
   private async requireAccountOfType(businessId: string, accountId: string, accountType: AccountType, field: string): Promise<Account> {
