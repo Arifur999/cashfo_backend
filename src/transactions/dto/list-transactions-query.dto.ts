@@ -21,6 +21,13 @@ export class ListTransactionsQueryDto {
   @IsString()
   accountId?: string;
 
+  // Prompt 8: transactions linked to a specific Contact -- powers the
+  // contact detail page's Activity tab, reused as-is rather than
+  // duplicating pagination/filtering logic in ContactsService.
+  @IsOptional()
+  @IsString()
+  contactId?: string;
+
   @IsOptional()
   @IsIn(Object.values(TransactionStatus))
   status?: TransactionStatus;

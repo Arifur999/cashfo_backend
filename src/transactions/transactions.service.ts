@@ -175,6 +175,7 @@ export class TransactionsService {
     if (filters.transactionType) where.transactionType = filters.transactionType;
     if (filters.status) where.status = filters.status;
     if (filters.accountId) where.entries = { some: { accountId: filters.accountId } };
+    if (filters.contactId) where.contactId = filters.contactId;
     if (filters.search) {
       where.OR = [
         { description: { contains: filters.search, mode: 'insensitive' } },

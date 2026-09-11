@@ -14,6 +14,7 @@ import { AuditLogsModule } from './audit-logs/audit-logs.module.js';
 import { BusinessAccessModule } from './business-access/business-access.module.js';
 import { BusinessesModule } from './businesses/businesses.module.js';
 import { CategoriesModule } from './categories/categories.module.js';
+import { ContactsModule } from './contacts/contacts.module.js';
 import { CouponsModule } from './coupons/coupons.module.js';
 import { DashboardModule } from './dashboard/dashboard.module.js';
 import { FeatureRequestsModule } from './feature-requests/feature-requests.module.js';
@@ -75,6 +76,7 @@ import { UserAuthModule } from './user-auth/user-auth.module.js';
     TransactionsModule,
     QuickEntriesModule,
     ReportsModule,
+    ContactsModule,
   ],
   controllers: [AppController],
   providers: [

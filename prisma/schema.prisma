@@ -128,17 +128,17 @@ enum BillingCycle {
 }
 
 model Coupon {
-  id              String       @id @default(uuid())
-  code            String       @unique
+  id              String             @id @default(uuid())
+  code            String             @unique
   discountType    DiscountType
-  discountValue   Decimal      @db.Decimal(10, 2)
+  discountValue   Decimal            @db.Decimal(10, 2)
   maxRedemptions  Int? // null = unlimited
-  timesRedeemed   Int          @default(0)
+  timesRedeemed   Int                @default(0)
   validFrom       DateTime
   validUntil      DateTime
   applicablePlans String[] // array of SubscriptionPlan.id, empty = applies to all
-  isActive        Boolean      @default(true)
-  createdAt       DateTime     @default(now())
+  isActive        Boolean            @default(true)
+  createdAt       DateTime           @default(now())
   redemptions     CouponRedemption[]
 }
 
@@ -472,16 +472,16 @@ model LoginAttempt {
 }
 
 model SuspiciousActivityFlag {
-  id             String                  @id @default(uuid())
+  id             String                 @id @default(uuid())
   type           SuspiciousActivityType
   description    String
   relatedAdminId String?
   relatedIp      String?
-  severity       Severity                @default(MEDIUM)
-  status         FlagStatus              @default(OPEN)
+  severity       Severity               @default(MEDIUM)
+  status         FlagStatus             @default(OPEN)
   reviewedBy     String?
   reviewedAt     DateTime?
-  createdAt      DateTime                @default(now())
+  createdAt      DateTime               @default(now())
 
   @@index([status, severity])
 }
@@ -551,16 +551,16 @@ model FeatureFlag {
 }
 
 model ErrorLog {
-  id           String      @id @default(uuid())
-  source       ErrorSource
-  message      String
-  stackTrace   String?     @db.Text
-  severity     Severity // reused from Prompt 8 -- same schema file
-  metadata     Json?
-  resolved     Boolean     @default(false)
-  resolvedBy   String?
-  resolvedAt   DateTime?
-  createdAt    DateTime    @default(now())
+  id         String      @id @default(uuid())
+  source     ErrorSource
+  message    String
+  stackTrace String?     @db.Text
+  severity   Severity // reused from Prompt 8 -- same schema file
+  metadata   Json?
+  resolved   Boolean     @default(false)
+  resolvedBy String?
+  resolvedAt DateTime?
+  createdAt  DateTime    @default(now())
 
   @@index([resolved, severity])
   @@index([source, createdAt])
@@ -687,24 +687,25 @@ enum UserStatus {
 }
 
 model Business {
-  id        String        @id @default(uuid())
-  ownerId   String
-  owner     User          @relation("BusinessOwner", fields: [ownerId], references: [id])
-  name      String
-  type      WorkspaceType // reuses the enum already defined for DefaultAccountTemplate.appliesTo above
-  currency  String        @default("BDT")
-  planId    String?
-  plan      SubscriptionPlan? @relation(fields: [planId], references: [id])
-  isDefault Boolean       @default(false) // true for the auto-created personal workspace
+  id           String            @id @default(uuid())
+  ownerId      String
+  owner        User              @relation("BusinessOwner", fields: [ownerId], references: [id])
+  name         String
+  type         WorkspaceType // reuses the enum already defined for DefaultAccountTemplate.appliesTo above
+  currency     String            @default("BDT")
+  planId       String?
+  plan         SubscriptionPlan? @relation(fields: [planId], references: [id])
+  isDefault    Boolean           @default(false) // true for the auto-created personal workspace
   // Soft-delete only -- a workspace may hold financial data in later prompts,
   // so it's never hard-deleted. null = active. Every list/lookup query must
   // filter deletedAt: null.
-  deletedAt DateTime?
-  createdAt DateTime      @default(now())
-  updatedAt DateTime      @updatedAt
+  deletedAt    DateTime?
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
   members      BusinessMember[]
   accounts     Account[]
   transactions Transaction[]
+  contacts     Contact[]
 
   @@index([ownerId])
 }
@@ -747,29 +748,29 @@ enum MemberStatus {
 // =====================================================================
 
 model Account {
-  id              String        @id @default(uuid())
+  id              String             @id @default(uuid())
   businessId      String
-  business        Business      @relation(fields: [businessId], references: [id])
+  business        Business           @relation(fields: [businessId], references: [id])
   parentId        String?
-  parent          Account?      @relation("AccountHierarchy", fields: [parentId], references: [id])
-  children        Account[]     @relation("AccountHierarchy")
+  parent          Account?           @relation("AccountHierarchy", fields: [parentId], references: [id])
+  children        Account[]          @relation("AccountHierarchy")
   name            String
   nameBn          String?
   accountType     AccountType
   accountSubtype  String?
-  openingBalance  Decimal       @default(0) @db.Decimal(14, 2)
+  openingBalance  Decimal            @default(0) @db.Decimal(14, 2)
   // Cached, recalculated by the Transaction Engine (Prompt 5) -- for now
   // (no transactions exist yet) it's just directly settable.
-  currentBalance  Decimal       @default(0) @db.Decimal(14, 2)
+  currentBalance  Decimal            @default(0) @db.Decimal(14, 2)
   // true for accounts copied from DefaultAccountTemplate -- protects them
   // from accidental deletion (they're still archivable, just not what a
   // "delete" action would target since there's no delete endpoint here at
   // all, per Part C -- only archive).
-  isSystemAccount Boolean       @default(false)
-  status          AccountStatus @default(ACTIVE)
-  displayOrder    Int           @default(0)
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
+  isSystemAccount Boolean            @default(false)
+  status          AccountStatus      @default(ACTIVE)
+  displayOrder    Int                @default(0)
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
   entries         TransactionEntry[]
 
   @@index([businessId, accountType])
@@ -777,6 +778,51 @@ model Account {
 }
 
 enum AccountStatus {
+  ACTIVE
+  ARCHIVED
+}
+
+// =====================================================================
+// Prompt 8: Contacts -- the people/businesses a user transacts with.
+// Foundation for Prompt 9's Receivable/Payable flows (credit sale,
+// partial payment, aging), which will create Transactions with
+// contactId set against Accounts Receivable/Payable.
+// =====================================================================
+
+model Contact {
+  id             String        @id @default(uuid())
+  businessId     String
+  business       Business      @relation(fields: [businessId], references: [id])
+  name           String
+  type           ContactType
+  phone          String?
+  email          String?
+  address        String?
+  photoUrl       String?
+  // Sign convention (relied on by Prompt 9's balance calculations and by
+  // the frontend's color-coding): positive = the business is OWED money by
+  // this contact (money coming IN eventually); negative = the business
+  // OWES this contact money (money going OUT eventually). For a CUSTOMER
+  // this is normally >= 0 ("they owe us"); for a SUPPLIER it's normally
+  // <= 0 ("we owe them"). The UI frames the input field in plain language
+  // per contact type rather than exposing this sign directly to the user.
+  openingBalance Decimal       @default(0) @db.Decimal(14, 2)
+  status         ContactStatus @default(ACTIVE)
+  notes          String?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  transactions   Transaction[]
+
+  @@index([businessId, type])
+}
+
+enum ContactType {
+  CUSTOMER
+  SUPPLIER
+  BOTH
+}
+
+enum ContactStatus {
   ACTIVE
   ARCHIVED
 }
@@ -790,28 +836,30 @@ enum AccountStatus {
 // =====================================================================
 
 model Transaction {
-  id              String            @id @default(uuid())
+  id              String             @id @default(uuid())
   businessId      String
-  business        Business          @relation(fields: [businessId], references: [id])
+  business        Business           @relation(fields: [businessId], references: [id])
   transactionType TransactionType
-  transactionDate DateTime          @db.Date
+  transactionDate DateTime           @db.Date
   referenceNo     String?
   description     String?
-  // No relation yet -- Contact doesn't exist until Prompt 9. Plain field for
-  // now; add the FK when that model lands.
+  // Wired to a real FK in Prompt 8 now that Contact exists -- was a plain
+  // unconstrained field since Prompt 5. Nullable throughout, so this never
+  // touched any existing seeded/test transaction (all had contactId: null).
   contactId       String?
+  contact         Contact?           @relation(fields: [contactId], references: [id])
   attachmentUrl   String?
-  status          TransactionStatus @default(POSTED)
+  status          TransactionStatus  @default(POSTED)
   // Prevents duplicate submission from double-clicks/network retries --
   // createTransaction() returns the existing row instead of erroring when
   // this key is reused. Unique across the whole table (not per-business) --
   // client-generated keys (e.g. a UUID) make cross-business collision
   // astronomically unlikely, and createTransaction() still checks the
   // matching businessId before returning the existing row either way.
-  idempotencyKey  String?           @unique
+  idempotencyKey  String?            @unique
   createdBy       String
-  createdAt       DateTime          @default(now())
-  updatedAt       DateTime          @updatedAt
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
   voidedAt        DateTime?
   voidedReason    String?
   // If this transaction IS a reversal (created by voidTransaction()),
@@ -824,6 +872,7 @@ model Transaction {
 
   @@index([businessId, transactionDate])
   @@index([businessId, status])
+  @@index([contactId])
 }
 
 enum TransactionType {
