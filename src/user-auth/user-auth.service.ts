@@ -185,6 +185,11 @@ export class UserAuthService {
         id: m.business.id,
         name: m.business.name,
         type: m.business.type,
+        // Added Prompt 7 -- every money-displaying page (accounts list,
+        // account detail, reports) needs the active workspace's currency
+        // for formatCurrency(); this avoids an extra per-page fetch of
+        // BusinessDetail just to read one field.
+        currency: m.business.currency,
         role: m.role,
         isDefault: m.business.isDefault,
       })),
