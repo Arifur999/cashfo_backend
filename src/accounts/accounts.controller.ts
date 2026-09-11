@@ -1,8 +1,10 @@
-import { Body, Controller, Get, Param, Patch, Post } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Query } from '@nestjs/common';
 import { MemberRole } from '@prisma/client';
 import { AccountBalanceService } from './account-balance.service.js';
 import { AccountsService } from './accounts.service.js';
 import { CreateAccountDto } from './dto/create-account.dto.js';
+import { LedgerQueryDto } from './dto/ledger-query.dto.js';
+import { SummaryQueryDto } from './dto/summary-query.dto.js';
 import { UpdateAccountDto } from './dto/update-account.dto.js';
 import { RequireBusinessMembership } from '../business-access/decorators/require-business-membership.decorator.js';
 import { RequireRole } from '../business-access/decorators/require-role.decorator.js';
@@ -59,8 +61,13 @@ export class AccountsController {
   }
 
   @Get(':id/ledger')
-  ledger(@Param('businessId') businessId: string, @Param('id') id: string) {
-    return this.accountBalanceService.getLedger(businessId, id);
+  ledger(@Param('businessId') businessId: string, @Param('id') id: string, @Query() query: LedgerQueryDto) {
+    return this.accountBalanceService.getLedger(businessId, id, query);
+  }
+
+  @Get(':id/summary')
+  summary(@Param('businessId') businessId: string, @Param('id') id: string, @Query() query: SummaryQueryDto) {
+    return this.accountBalanceService.getAccountSummary(businessId, id, query);
   }
 
   @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)

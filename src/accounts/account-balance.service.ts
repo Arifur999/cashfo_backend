@@ -4,9 +4,18 @@ import { PrismaService } from '../prisma/prisma.service.js';
 
 // Accounting rule (product blueprint): for ASSET/EXPENSE accounts, DEBIT
 // increases the balance and CREDIT decreases it; for LIABILITY/EQUITY/
-// INCOME accounts, it's the reverse.
-function isDebitPositive(accountType: AccountType): boolean {
+// INCOME accounts, it's the reverse. Exported (Prompt 7) so ReportsService
+// can reuse the exact same rule for the Trial Balance's debit/credit column
+// split rather than redefining it.
+export function isDebitPositive(accountType: AccountType): boolean {
   return accountType === 'ASSET' || accountType === 'EXPENSE';
+}
+
+export interface LedgerFilters {
+  dateFrom?: string;
+  dateTo?: string;
+  page?: number;
+  limit?: number;
 }
 
 @Injectable()
@@ -64,27 +73,70 @@ export class AccountBalanceService {
 
   // Every entry touching this account, chronologically, with a running
   // balance computed the same way recalculateBalance() computes the final
-  // one -- proves the two numbers agree, and gives future reports (Prompt
-  // 12+) a ready-made data source.
-  async getLedger(businessId: string, accountId: string) {
+  // one. Prompt 7 adds dateFrom/dateTo/page/limit:
+  //
+  // - dateFrom/dateTo only narrow which entries are DISPLAYED -- they never
+  //   change what the running balance starts from. balanceBroughtForward is
+  //   openingBalance + every entry strictly BEFORE dateFrom (computed
+  //   separately, in full, regardless of pagination), so the displayed
+  //   running balance is always the TRUE cumulative figure, never a false
+  //   restart at zero just because the view is filtered.
+  // - Pagination: fetches every entry from the start of the (possibly
+  //   date-filtered) range through the END of the requested page, computes
+  //   the running balance over that whole prefix in order, then slices out
+  //   just the requested page for the response. This is deliberately O(page
+  //   * limit) rather than O(limit) -- a running balance is only correct if
+  //   computed from a real starting point through every prior entry in
+  //   order, so a later page's entries genuinely depend on every entry
+  //   before them. Fine at this app's realistic scale (a personal/small-
+  //   business account's entry count); a materialized running-balance-
+  //   checkpoint strategy would be the right fix if accounts ever grow into
+  //   the tens of thousands of entries, but that's premature here.
+  async getLedger(businessId: string, accountId: string, filters: LedgerFilters = {}) {
     const account = await this.prisma.account.findUnique({ where: { id: accountId } });
     if (!account || account.businessId !== businessId) {
       throw new NotFoundException('Account not found');
     }
 
-    // Same "never filter by status" reasoning as recalculateBalance() --
-    // includes VOIDED transactions' original entries AND their reversals,
-    // so the running balance ends up matching currentBalance exactly.
-    const entries = await this.prisma.transactionEntry.findMany({
-      where: { accountId },
-      include: { transaction: true },
-      orderBy: [{ transaction: { transactionDate: 'asc' } }, { transaction: { createdAt: 'asc' } }],
-    });
-
     const debitPositive = isDebitPositive(account.accountType);
-    let running = new Prisma.Decimal(account.openingBalance);
+    const page = filters.page ?? 1;
+    const limit = filters.limit ?? 50;
 
-    const rows = entries.map((entry) => {
+    let balanceBroughtForward = new Prisma.Decimal(account.openingBalance);
+    if (filters.dateFrom) {
+      const priorEntries = await this.prisma.transactionEntry.findMany({
+        where: { accountId, transaction: { transactionDate: { lt: new Date(filters.dateFrom) } } },
+        select: { entryType: true, amount: true },
+      });
+      for (const entry of priorEntries) {
+        const amount = new Prisma.Decimal(entry.amount);
+        const delta = entry.entryType === 'DEBIT' ? (debitPositive ? amount : amount.negated()) : debitPositive ? amount.negated() : amount;
+        balanceBroughtForward = balanceBroughtForward.plus(delta);
+      }
+    }
+
+    const dateFilter: Prisma.DateTimeFilter = {};
+    if (filters.dateFrom) dateFilter.gte = new Date(filters.dateFrom);
+    if (filters.dateTo) dateFilter.lte = new Date(filters.dateTo);
+    const hasDateFilter = Object.keys(dateFilter).length > 0;
+
+    const where: Prisma.TransactionEntryWhereInput = {
+      accountId,
+      ...(hasDateFilter && { transaction: { transactionDate: dateFilter } }),
+    };
+
+    const [total, entriesUpToPageEnd] = await Promise.all([
+      this.prisma.transactionEntry.count({ where }),
+      this.prisma.transactionEntry.findMany({
+        where,
+        include: { transaction: true },
+        orderBy: [{ transaction: { transactionDate: 'asc' } }, { transaction: { createdAt: 'asc' } }],
+        take: page * limit,
+      }),
+    ]);
+
+    let running = balanceBroughtForward;
+    const allRows = entriesUpToPageEnd.map((entry) => {
       const amount = new Prisma.Decimal(entry.amount);
       const delta = entry.entryType === 'DEBIT' ? (debitPositive ? amount : amount.negated()) : debitPositive ? amount.negated() : amount;
       running = running.plus(delta);
@@ -101,12 +153,59 @@ export class AccountBalanceService {
       };
     });
 
+    const pageRows = allRows.slice((page - 1) * limit, page * limit);
+
     return {
       accountId,
       accountName: account.name,
       openingBalance: account.openingBalance,
-      entries: rows,
-      closingBalance: running,
+      balanceBroughtForward: balanceBroughtForward.toFixed(2),
+      entries: pageRows,
+      // Balance at the end of the LAST row actually returned in this page --
+      // not necessarily the account's true current balance if a dateTo
+      // filter or earlier page cuts off before the most recent activity.
+      closingBalance: (pageRows.length > 0 ? pageRows[pageRows.length - 1].runningBalance : balanceBroughtForward).toFixed(2),
+      meta: { page, limit, total, totalPages: Math.ceil(total / limit) },
+    };
+  }
+
+  // Quick stats for the account detail page header. "Money In"/"Money Out"
+  // are from the friendly, balance-direction perspective (matches Prompt
+  // 6's language) -- NOT raw debit/credit: for a debit-positive account
+  // (ASSET/EXPENSE) a DEBIT is "in" and a CREDIT is "out"; reversed for
+  // credit-positive accounts. Accepts the same optional dateFrom/dateTo as
+  // the ledger so the header cards match whatever range the user has
+  // selected.
+  async getAccountSummary(businessId: string, accountId: string, filters: { dateFrom?: string; dateTo?: string } = {}) {
+    const account = await this.prisma.account.findUnique({ where: { id: accountId } });
+    if (!account || account.businessId !== businessId) {
+      throw new NotFoundException('Account not found');
+    }
+
+    const dateFilter: Prisma.DateTimeFilter = {};
+    if (filters.dateFrom) dateFilter.gte = new Date(filters.dateFrom);
+    if (filters.dateTo) dateFilter.lte = new Date(filters.dateTo);
+    const hasDateFilter = Object.keys(dateFilter).length > 0;
+    const where: Prisma.TransactionEntryWhereInput = {
+      accountId,
+      ...(hasDateFilter && { transaction: { transactionDate: dateFilter } }),
+    };
+
+    const [debitAgg, creditAgg, transactionCount] = await Promise.all([
+      this.prisma.transactionEntry.aggregate({ where: { ...where, entryType: 'DEBIT' }, _sum: { amount: true } }),
+      this.prisma.transactionEntry.aggregate({ where: { ...where, entryType: 'CREDIT' }, _sum: { amount: true } }),
+      this.prisma.transactionEntry.count({ where }),
+    ]);
+
+    const debitTotal = new Prisma.Decimal(debitAgg._sum.amount ?? 0);
+    const creditTotal = new Prisma.Decimal(creditAgg._sum.amount ?? 0);
+    const debitPositive = isDebitPositive(account.accountType);
+
+    return {
+      currentBalance: account.currentBalance,
+      totalIn: (debitPositive ? debitTotal : creditTotal).toFixed(2),
+      totalOut: (debitPositive ? creditTotal : debitTotal).toFixed(2),
+      transactionCount,
     };
   }
 
