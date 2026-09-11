@@ -1,5 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { AccountType, Prisma } from '@prisma/client';
+import { MONEY_ACCOUNT_SUBTYPES } from './accounts.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 
 // Accounting rule (product blueprint): for ASSET/EXPENSE accounts, DEBIT
@@ -206,6 +207,70 @@ export class AccountBalanceService {
       totalIn: (debitPositive ? debitTotal : creditTotal).toFixed(2),
       totalOut: (debitPositive ? creditTotal : debitTotal).toFixed(2),
       transactionCount,
+    };
+  }
+
+  // Balance Overview page (the Wallet group's summary dashboard): every
+  // money account with its opening/in/out/current figures, plus workspace-
+  // wide totals. Money accounts are always ASSET type, so debit=in,
+  // credit=out uniformly -- no per-account isDebitPositive check needed
+  // the way getAccountSummary() needs one for a general account. Built as
+  // exactly 2 queries (accounts + one grouped entry aggregate) rather than
+  // one getAccountSummary() call per account -- both to avoid N+1 queries
+  // and because this app's local dev Postgres has shown it can drop
+  // connections under concurrent per-account query fan-out (see the
+  // Receivable/Payable module's comments on the same issue).
+  async getWalletsOverview(businessId: string) {
+    const accounts = await this.prisma.account.findMany({
+      where: { businessId, accountType: 'ASSET', accountSubtype: { in: MONEY_ACCOUNT_SUBTYPES } },
+      orderBy: { displayOrder: 'asc' },
+    });
+    const accountIds = accounts.map((a) => a.id);
+
+    const grouped =
+      accountIds.length === 0
+        ? []
+        : await this.prisma.transactionEntry.groupBy({
+            by: ['accountId', 'entryType'],
+            where: { accountId: { in: accountIds } },
+            _sum: { amount: true },
+          });
+
+    const inByAccount = new Map<string, Prisma.Decimal>();
+    const outByAccount = new Map<string, Prisma.Decimal>();
+    for (const row of grouped) {
+      const amount = new Prisma.Decimal(row._sum.amount ?? 0);
+      const target = row.entryType === 'DEBIT' ? inByAccount : outByAccount;
+      target.set(row.accountId, amount);
+    }
+
+    let totalBalance = new Prisma.Decimal(0);
+    let inactiveAmount = new Prisma.Decimal(0);
+    const rows = accounts.map((account) => {
+      const balance = new Prisma.Decimal(account.currentBalance);
+      totalBalance = totalBalance.plus(balance);
+      if (account.status === 'ARCHIVED') {
+        inactiveAmount = inactiveAmount.plus(balance);
+      }
+      return {
+        id: account.id,
+        name: account.name,
+        nameBn: account.nameBn,
+        accountNumber: account.accountNumber,
+        status: account.status,
+        openingBalance: account.openingBalance.toFixed(2),
+        totalIn: (inByAccount.get(account.id) ?? new Prisma.Decimal(0)).toFixed(2),
+        totalOut: (outByAccount.get(account.id) ?? new Prisma.Decimal(0)).toFixed(2),
+        currentBalance: balance.toFixed(2),
+      };
+    });
+
+    return {
+      totalAccounts: accounts.length,
+      totalBalance: totalBalance.toFixed(2),
+      inactiveAmount: inactiveAmount.toFixed(2),
+      availableBalance: totalBalance.minus(inactiveAmount).toFixed(2),
+      accounts: rows,
     };
   }
 

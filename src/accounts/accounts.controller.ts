@@ -42,6 +42,13 @@ export class AccountsController {
     return this.accountsService.listWallets(businessId);
   }
 
+  // For the Balance Overview page -- per-wallet opening/in/out/current
+  // figures plus workspace-wide totals (see getWalletsOverview()'s comment).
+  @Get('wallets-overview')
+  walletsOverview(@Param('businessId') businessId: string) {
+    return this.accountBalanceService.getWalletsOverview(businessId);
+  }
+
   @Get('income-accounts')
   incomeAccounts(@Param('businessId') businessId: string) {
     return this.accountsService.listIncomeAccounts(businessId);
