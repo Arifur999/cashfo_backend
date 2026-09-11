@@ -188,7 +188,11 @@ export class TransactionsService {
     const [data, total] = await Promise.all([
       this.prisma.transaction.findMany({
         where,
-        include: { entries: true },
+        // Same shape as getTransaction()'s single-record include -- the
+        // Balance Transfer page (and any other list-level UI that needs to
+        // show which accounts were involved, not just an amount) needs
+        // entry.account.name without a second round trip per row.
+        include: { entries: { include: { account: { select: { id: true, name: true, accountType: true } } } } },
         orderBy: [{ transactionDate: 'desc' }, { createdAt: 'desc' }],
         skip: (page - 1) * limit,
         take: limit,
