@@ -35,6 +35,13 @@ export class AccountsController {
     return this.accountsService.listMoneyAccounts(businessId);
   }
 
+  // For the Wallet management page -- same money-account filter, but
+  // includes archived ones (see listWallets()'s comment).
+  @Get('wallets')
+  wallets(@Param('businessId') businessId: string) {
+    return this.accountsService.listWallets(businessId);
+  }
+
   @Get('income-accounts')
   incomeAccounts(@Param('businessId') businessId: string) {
     return this.accountsService.listIncomeAccounts(businessId);

@@ -756,6 +756,11 @@ model Account {
   children        Account[]          @relation("AccountHierarchy")
   name            String
   nameBn          String?
+  // User-facing reference number for a money account (e.g. a bank account
+  // or mobile wallet number) -- purely informational display text, not
+  // validated/used anywhere in the Transaction Engine. Optional since it
+  // doesn't apply to every account (a "Cash" wallet has none).
+  accountNumber   String?
   accountType     AccountType
   accountSubtype  String?
   openingBalance  Decimal            @default(0) @db.Decimal(14, 2)

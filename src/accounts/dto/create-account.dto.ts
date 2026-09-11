@@ -1,4 +1,4 @@
-import { IsEnum, IsNotEmpty, IsOptional, IsString } from 'class-validator';
+import { IsEnum, IsNotEmpty, IsNumberString, IsOptional, IsString } from 'class-validator';
 import { AccountType } from '@prisma/client';
 
 export class CreateAccountDto {
@@ -10,6 +10,10 @@ export class CreateAccountDto {
   @IsString()
   nameBn?: string;
 
+  @IsOptional()
+  @IsString()
+  accountNumber?: string;
+
   @IsEnum(AccountType)
   accountType: AccountType;
 
@@ -20,4 +24,11 @@ export class CreateAccountDto {
   @IsOptional()
   @IsString()
   parentId?: string;
+
+  // One-time starting balance, same "set at creation only" convention as
+  // Contact.openingBalance (Prompt 8) -- see UpdateAccountDto for why it's
+  // not editable afterward.
+  @IsOptional()
+  @IsNumberString()
+  openingBalance?: string;
 }

@@ -102,10 +102,23 @@ export class AccountsService {
 
   // Filtered pickers for the friendly Income/Expense/Transfer forms (Prompt
   // 6) -- keeps Income/Expense/Equity accounts out of "which account did
-  // the money land in" style dropdowns, and vice versa.
+  // the money land in" style dropdowns, and vice versa. ACTIVE only, since
+  // an archived account should never be selectable for a new transaction.
   async listMoneyAccounts(businessId: string) {
     return this.prisma.account.findMany({
       where: { businessId, status: 'ACTIVE', accountType: 'ASSET', accountSubtype: { in: MONEY_ACCOUNT_SUBTYPES } },
+      orderBy: { displayOrder: 'asc' },
+    });
+  }
+
+  // For the Wallet management page -- same money-account filter as
+  // listMoneyAccounts() above, but WITHOUT the status filter, since a
+  // management/listing view should keep showing archived wallets (struck
+  // through in the UI), same "no implicit status filter" convention as
+  // list()/ContactsService.list().
+  async listWallets(businessId: string) {
+    return this.prisma.account.findMany({
+      where: { businessId, accountType: 'ASSET', accountSubtype: { in: MONEY_ACCOUNT_SUBTYPES } },
       orderBy: { displayOrder: 'asc' },
     });
   }
@@ -129,14 +142,23 @@ export class AccountsService {
       await this.requireCompatibleParent(businessId, dto.parentId, dto.accountType);
     }
 
+    // No entries exist yet for a brand-new account, so currentBalance is
+    // simply the opening balance -- no need to round-trip through
+    // AccountBalanceService.recalculateBalance() for a sum that's
+    // guaranteed to be zero entries anyway.
+    const openingBalance = dto.openingBalance ?? 0;
+
     return this.prisma.account.create({
       data: {
         businessId,
         name: dto.name,
         nameBn: dto.nameBn,
+        accountNumber: dto.accountNumber,
         accountType: dto.accountType,
         accountSubtype: dto.accountSubtype,
         parentId: dto.parentId,
+        openingBalance,
+        currentBalance: openingBalance,
         isSystemAccount: false,
       },
     });
@@ -162,6 +184,7 @@ export class AccountsService {
       data: {
         ...(dto.name !== undefined && { name: dto.name }),
         ...(dto.nameBn !== undefined && { nameBn: dto.nameBn }),
+        ...(dto.accountNumber !== undefined && { accountNumber: dto.accountNumber }),
         ...(dto.accountSubtype !== undefined && { accountSubtype: dto.accountSubtype }),
         ...(dto.parentId !== undefined && { parentId: dto.parentId }),
       },

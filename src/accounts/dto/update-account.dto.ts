@@ -16,6 +16,10 @@ export class UpdateAccountDto {
 
   @IsOptional()
   @IsString()
+  accountNumber?: string;
+
+  @IsOptional()
+  @IsString()
   accountSubtype?: string;
 
   @IsOptional()
