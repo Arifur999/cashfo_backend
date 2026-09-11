@@ -1,5 +1,5 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
-import { Account, AccountType, Contact, Prisma } from '@prisma/client';
+import { Account, AccountType, Contact, Prisma, TransactionStatus } from '@prisma/client';
 import { MONEY_ACCOUNT_SUBTYPES } from '../accounts/accounts.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { TransactionsService } from '../transactions/transactions.service.js';
@@ -85,6 +85,33 @@ export interface LoanDashboard {
   netBalance: string;
   activeAccounts: number;
   rows: LoanDashboardRow[];
+}
+
+export interface LoanStatementRow {
+  transactionId: string;
+  date: Date;
+  referenceNo: string | null;
+  description: string | null;
+  category: string;
+  // DEBIT on the AR/AP side of a transaction always mirrors a CREDIT on
+  // that same transaction's money-account side (double-entry) -- which is
+  // exactly the "cash left the business" case (a loan given out, or a
+  // payment made on money borrowed). So debit here means "Paid" and
+  // credit means "Received", regardless of whether the entry happens to
+  // sit on the Accounts Receivable or the Accounts Payable account.
+  debit: string | null;
+  credit: string | null;
+  runningPrincipal: string;
+  status: TransactionStatus;
+}
+
+export interface LoanStatement {
+  contactId: string;
+  contactName: string;
+  openingBalance: string;
+  balanceBroughtForward: string;
+  rows: LoanStatementRow[];
+  closingBalance: string;
 }
 
 type AgingBucket = 'current' | 'days1to30' | 'days31to60' | 'over60';
@@ -267,6 +294,94 @@ export class ReceivablesPayablesService {
     const receivable = await this.computeDirection(businessId, contact.id, 'RECEIVABLE');
     const payable = await this.computeDirection(businessId, contact.id, 'PAYABLE');
     return new Prisma.Decimal(contact.openingBalance).plus(receivable.remaining).minus(payable.remaining);
+  }
+
+  // The Loan Management "Ledger" -- one contact, one date range, running
+  // balance carried forward, same shape as Prompt 7's Account Ledger
+  // (getLedger()) but scoped by contactId across BOTH the Accounts
+  // Receivable AND Accounts Payable system accounts instead of a single
+  // accountId. Both feed ONE unified "Running Principal": a loan contact's
+  // balance can flip between being a receivable (they owe us) and a
+  // payable (we owe them) over time (e.g. they borrow, repay in full,
+  // later we borrow from them), and this statement shows a single running
+  // balance either way, not two separate ledgers.
+  //
+  // IMPORTANT: the delta rule here is DEBIT=+amount / CREDIT=-amount for
+  // EVERY entry, on BOTH the AR and AP account -- NOT Prompt 7's
+  // isDebitPositive(accountType) rule (which would treat AP, a LIABILITY,
+  // the opposite way). This has to match getContactCurrentBalance()'s
+  // definition: currentBalance = opening + receivable.remaining -
+  // payable.remaining, i.e. the AP side is SUBTRACTED. Expanding that (AR's
+  // remaining = debits-credits, AP's remaining = credits-debits) collapses
+  // to a single uniform rule: every DEBIT (on either account) adds, every
+  // CREDIT subtracts. Concretely: giving a loan (AR debit) and repaying a
+  // loan we took (AP debit) both correctly move the balance toward Pawna;
+  // receiving a repayment (AR credit) and taking a loan (AP credit) both
+  // correctly move it toward Dena. A prior version of this method used
+  // isDebitPositive() and got taking-a-loan/repaying-a-loan backwards --
+  // caught by testing a mixed receivable+payable history on one contact.
+  async getLoanStatement(businessId: string, contactId: string, filters: { dateFrom?: string; dateTo?: string } = {}): Promise<LoanStatement> {
+    const contact = await this.requireContact(businessId, contactId);
+
+    const arAccount = await this.prisma.account.findFirst({ where: { businessId, accountSubtype: 'receivable', accountType: 'ASSET' } });
+    const apAccount = await this.prisma.account.findFirst({ where: { businessId, accountSubtype: 'payable', accountType: 'LIABILITY' } });
+    const accountIds = [arAccount?.id, apAccount?.id].filter((id): id is string => !!id);
+
+    let balanceBroughtForward = new Prisma.Decimal(contact.openingBalance);
+    if (filters.dateFrom && accountIds.length > 0) {
+      const priorEntries = await this.prisma.transactionEntry.findMany({
+        where: { accountId: { in: accountIds }, transaction: { contactId, transactionDate: { lt: new Date(filters.dateFrom) } } },
+      });
+      for (const entry of priorEntries) {
+        const amount = new Prisma.Decimal(entry.amount);
+        const delta = entry.entryType === 'DEBIT' ? amount : amount.negated();
+        balanceBroughtForward = balanceBroughtForward.plus(delta);
+      }
+    }
+
+    const dateFilter: Prisma.DateTimeFilter = {};
+    if (filters.dateFrom) dateFilter.gte = new Date(filters.dateFrom);
+    if (filters.dateTo) dateFilter.lte = new Date(filters.dateTo);
+    const hasDateFilter = Object.keys(dateFilter).length > 0;
+
+    const entries =
+      accountIds.length === 0
+        ? []
+        : await this.prisma.transactionEntry.findMany({
+            where: {
+              accountId: { in: accountIds },
+              transaction: { contactId, ...(hasDateFilter && { transactionDate: dateFilter }) },
+            },
+            include: { transaction: true },
+            orderBy: [{ transaction: { transactionDate: 'asc' } }, { transaction: { createdAt: 'asc' } }],
+          });
+
+    let running = balanceBroughtForward;
+    const rows: LoanStatementRow[] = entries.map((entry) => {
+      const amount = new Prisma.Decimal(entry.amount);
+      const delta = entry.entryType === 'DEBIT' ? amount : amount.negated();
+      running = running.plus(delta);
+      return {
+        transactionId: entry.transactionId,
+        date: entry.transaction.transactionDate,
+        referenceNo: entry.transaction.referenceNo,
+        description: entry.transaction.description,
+        category: 'Principal',
+        debit: entry.entryType === 'DEBIT' ? amount.toFixed(2) : null,
+        credit: entry.entryType === 'CREDIT' ? amount.toFixed(2) : null,
+        runningPrincipal: running.toFixed(2),
+        status: entry.transaction.status,
+      };
+    });
+
+    return {
+      contactId,
+      contactName: contact.name,
+      openingBalance: contact.openingBalance.toFixed(2),
+      balanceBroughtForward: balanceBroughtForward.toFixed(2),
+      rows,
+      closingBalance: rows.length > 0 ? rows[rows.length - 1].runningPrincipal : balanceBroughtForward.toFixed(2),
+    };
   }
 
   async getAging(businessId: string, direction: Direction): Promise<AgingReport> {

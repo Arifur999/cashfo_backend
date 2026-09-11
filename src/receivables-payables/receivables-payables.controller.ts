@@ -1,7 +1,8 @@
-import { Body, Controller, Get, Param, Post } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
 import { MemberRole } from '@prisma/client';
 import { CreatePayableDto } from './dto/create-payable.dto.js';
 import { CreateReceivableDto } from './dto/create-receivable.dto.js';
+import { LoanStatementQueryDto } from './dto/loan-statement-query.dto.js';
 import { PayPaymentDto } from './dto/pay-payment.dto.js';
 import { ReceivePaymentDto } from './dto/receive-payment.dto.js';
 import { ReceivablesPayablesService } from './receivables-payables.service.js';
@@ -70,5 +71,10 @@ export class ReceivablesPayablesController {
   @Get('loan-management/dashboard')
   loanDashboard(@Param('businessId') businessId: string) {
     return this.service.getLoanDashboard(businessId);
+  }
+
+  @Get('contacts/:id/loan-statement')
+  loanStatement(@Param('businessId') businessId: string, @Param('id') id: string, @Query() query: LoanStatementQueryDto) {
+    return this.service.getLoanStatement(businessId, id, query);
   }
 }
