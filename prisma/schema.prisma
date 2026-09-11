@@ -836,39 +836,49 @@ enum ContactStatus {
 // =====================================================================
 
 model Transaction {
-  id              String             @id @default(uuid())
-  businessId      String
-  business        Business           @relation(fields: [businessId], references: [id])
-  transactionType TransactionType
-  transactionDate DateTime           @db.Date
-  referenceNo     String?
-  description     String?
+  id                     String             @id @default(uuid())
+  businessId             String
+  business               Business           @relation(fields: [businessId], references: [id])
+  transactionType        TransactionType
+  transactionDate        DateTime           @db.Date
+  referenceNo            String?
+  description            String?
   // Wired to a real FK in Prompt 8 now that Contact exists -- was a plain
   // unconstrained field since Prompt 5. Nullable throughout, so this never
   // touched any existing seeded/test transaction (all had contactId: null).
-  contactId       String?
-  contact         Contact?           @relation(fields: [contactId], references: [id])
-  attachmentUrl   String?
-  status          TransactionStatus  @default(POSTED)
+  contactId              String?
+  contact                Contact?           @relation(fields: [contactId], references: [id])
+  attachmentUrl          String?
+  status                 TransactionStatus  @default(POSTED)
   // Prevents duplicate submission from double-clicks/network retries --
   // createTransaction() returns the existing row instead of erroring when
   // this key is reused. Unique across the whole table (not per-business) --
   // client-generated keys (e.g. a UUID) make cross-business collision
   // astronomically unlikely, and createTransaction() still checks the
   // matching businessId before returning the existing row either way.
-  idempotencyKey  String?            @unique
-  createdBy       String
-  createdAt       DateTime           @default(now())
-  updatedAt       DateTime           @updatedAt
-  voidedAt        DateTime?
-  voidedReason    String?
+  idempotencyKey         String?            @unique
+  createdBy              String
+  createdAt              DateTime           @default(now())
+  updatedAt              DateTime           @updatedAt
+  voidedAt               DateTime?
+  voidedReason           String?
   // If this transaction IS a reversal (created by voidTransaction()),
   // points back at the original it reverses. Plain field, no relation --
   // a self-relation isn't needed since nothing currently needs to traverse
   // from the original to find its reversal via a Prisma include (query by
   // reversalOfId directly on the rare occasion it's needed).
-  reversalOfId    String?
-  entries         TransactionEntry[]
+  reversalOfId           String?
+  // Prompt 9: when set on a SALE/PURCHASE, the date it's due -- drives
+  // aging/overdue. When set on a PAYMENT, which specific outstanding
+  // SALE/PURCHASE this payment targets -- a payment with this left unset
+  // is a general payment, allocated FIFO across the contact's oldest
+  // outstanding transactions at READ time (see
+  // ReceivablesPayablesService.computeDirection()), never by mutating
+  // transaction/entry rows. Plain field, no relation -- same precedent as
+  // reversalOfId above (queried directly, in-memory here, when needed).
+  dueDate                DateTime?          @db.Date
+  appliedToTransactionId String?
+  entries                TransactionEntry[]
 
   @@index([businessId, transactionDate])
   @@index([businessId, status])

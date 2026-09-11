@@ -58,6 +58,8 @@ export class TransactionsService {
           referenceNo: dto.referenceNo,
           description: dto.description,
           contactId: dto.contactId,
+          dueDate: dto.dueDate ? new Date(dto.dueDate) : undefined,
+          appliedToTransactionId: dto.appliedToTransactionId,
           idempotencyKey: dto.idempotencyKey,
           createdBy: userId,
           entries: {

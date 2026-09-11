@@ -18,10 +18,20 @@ export class CreateTransactionDto {
   @IsString()
   referenceNo?: string;
 
-  // No relation yet -- Contact doesn't exist until Prompt 9 (see schema).
   @IsOptional()
   @IsString()
   contactId?: string;
+
+  // Prompt 9: due date for a SALE/PURCHASE (drives aging/overdue), or the
+  // specific outstanding transaction a PAYMENT is applied to -- see the
+  // schema comment on Transaction.dueDate/appliedToTransactionId.
+  @IsOptional()
+  @IsDateString()
+  dueDate?: string;
+
+  @IsOptional()
+  @IsString()
+  appliedToTransactionId?: string;
 
   // At least 2 -- a single-entry "transaction" isn't double-entry
   // bookkeeping. The service layer re-checks this defensively too (see

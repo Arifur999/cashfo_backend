@@ -26,6 +26,7 @@ import { PaymentsModule } from './payments/payments.module.js';
 import { PlatformUsersModule } from './platform-users/platform-users.module.js';
 import { PrismaModule } from './prisma/prisma.module.js';
 import { QuickEntriesModule } from './quick-entries/quick-entries.module.js';
+import { ReceivablesPayablesModule } from './receivables-payables/receivables-payables.module.js';
 import { ReportsModule } from './reports/reports.module.js';
 import { RevenueModule } from './revenue/revenue.module.js';
 import { SecurityModule } from './security/security.module.js';
@@ -77,6 +78,7 @@ import { UserAuthModule } from './user-auth/user-auth.module.js';
     QuickEntriesModule,
     ReportsModule,
     ContactsModule,
+    ReceivablesPayablesModule,
   ],
   controllers: [AppController],
   providers: [

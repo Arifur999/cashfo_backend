@@ -4,10 +4,14 @@ import { PrismaService } from '../prisma/prisma.service.js';
 import { CreateContactDto } from './dto/create-contact.dto.js';
 import { ListContactsQueryDto } from './dto/list-contacts-query.dto.js';
 import { UpdateContactDto } from './dto/update-contact.dto.js';
+import { ReceivablesPayablesService } from '../receivables-payables/receivables-payables.service.js';
 
 @Injectable()
 export class ContactsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly receivablesPayablesService: ReceivablesPayablesService,
+  ) {}
 
   async list(businessId: string, filters: ListContactsQueryDto) {
     const page = filters.page ?? 1;
@@ -37,22 +41,29 @@ export class ContactsService {
       this.prisma.contact.count({ where }),
     ]);
 
+    // currentBalance = openingBalance + outstanding receivable - outstanding
+    // payable (see ReceivablesPayablesService.getContactCurrentBalance()).
+    // Sequential, not Promise.all -- each call does several queries of its
+    // own, and firing all of them for every contact on the page at once
+    // multiplies concurrent DB connection demand for no real benefit at
+    // this app's realistic contact-list-page size. O(page size), same
+    // "acceptable at this app's scale" tradeoff as Prompt 7's ledger
+    // pagination -- just spread over time instead of all at once.
+    const withBalance: (Prisma.ContactGetPayload<object> & { currentBalance: Prisma.Decimal })[] = [];
+    for (const c of data) {
+      withBalance.push({ ...c, currentBalance: await this.receivablesPayablesService.getContactCurrentBalance(businessId, c) });
+    }
+
     return {
-      data: data.map((c) => ({ ...c, currentBalance: c.openingBalance })),
+      data: withBalance,
       meta: { page, limit, total, totalPages: Math.ceil(total / limit) },
     };
   }
 
   async getOne(businessId: string, id: string) {
     const contact = await this.requireContact(businessId, id);
-    // TODO (Prompt 9): once Receivable/Payable transactions exist, extend
-    // this to openingBalance + net of all AR/AP-related entries tied to
-    // this contact (via Transaction.contactId), the same "cached balance
-    // kept in sync by the write path, reconciled against a from-scratch
-    // recalculation" shape used for Account.currentBalance in Prompt 5/7.
-    // For now, with no such transactions possible yet, currentBalance is
-    // exactly openingBalance.
-    return { ...contact, currentBalance: contact.openingBalance };
+    const currentBalance = await this.receivablesPayablesService.getContactCurrentBalance(businessId, contact);
+    return { ...contact, currentBalance };
   }
 
   async create(businessId: string, dto: CreateContactDto) {
@@ -108,10 +119,9 @@ export class ContactsService {
     // Same sign-convention balance used everywhere else on this contact --
     // see the Contact model comment. Zero is the only balance that's safe
     // to archive; anything else means money is still owed either direction.
-    if (Number(contact.openingBalance) !== 0) {
-      throw new BadRequestException(
-        `This contact still has an outstanding balance of ${Math.abs(Number(contact.openingBalance)).toFixed(2)}. Settle it before archiving.`,
-      );
+    const currentBalance = await this.receivablesPayablesService.getContactCurrentBalance(businessId, contact);
+    if (!currentBalance.equals(0)) {
+      throw new BadRequestException(`This contact still has an outstanding balance of ${currentBalance.abs().toFixed(2)}. Settle it before archiving.`);
     }
 
     return this.prisma.contact.update({ where: { id }, data: { status: 'ARCHIVED' } });
