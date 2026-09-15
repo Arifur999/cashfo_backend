@@ -30,9 +30,12 @@ export class PasswordVaultController {
     return this.passwordVaultService.setVaultPassword(user.id, dto);
   }
 
-  // Same rate-limit policy as the main login route -- a vault password is
-  // just as brute-forceable as an account password if left unthrottled.
-  @Throttle({ default: { limit: 5, ttl: 15 * 60 * 1000 } })
+  // Looser than the main login route's 5/15min -- login happens once a
+  // session, but unlocking the vault is a normal, repeated action throughout
+  // a single working session (open the page, step away, come back...), so
+  // login's policy blocked honest re-unlocks in practice. Still a real
+  // brute-force deterrent against a bcrypt-hashed password.
+  @Throttle({ default: { limit: 10, ttl: 10 * 60 * 1000 } })
   @Post('unlock')
   unlock(@CurrentUser() user: RequestUser, @Body() dto: UnlockVaultDto) {
     return this.passwordVaultService.unlock(user.id, dto);
