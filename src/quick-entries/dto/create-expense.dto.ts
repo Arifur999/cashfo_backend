@@ -26,4 +26,8 @@ export class CreateExpenseDto {
   @IsOptional()
   @IsString()
   categoryId?: string;
+
+  @IsOptional()
+  @IsString()
+  note?: string;
 }

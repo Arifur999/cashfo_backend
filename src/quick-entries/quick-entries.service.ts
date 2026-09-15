@@ -33,7 +33,7 @@ export class QuickEntriesService {
         description: dto.description,
         entries: [
           { accountId: toAccount.id, entryType: 'DEBIT', amount: dto.amount },
-          { accountId: incomeAccount.id, entryType: 'CREDIT', amount: dto.amount, categoryId: dto.categoryId },
+          { accountId: incomeAccount.id, entryType: 'CREDIT', amount: dto.amount, categoryId: dto.categoryId, note: dto.note },
         ],
       },
       userId,
@@ -51,7 +51,7 @@ export class QuickEntriesService {
         transactionDate: dto.date,
         description: dto.description,
         entries: [
-          { accountId: expenseAccount.id, entryType: 'DEBIT', amount: dto.amount, categoryId: dto.categoryId },
+          { accountId: expenseAccount.id, entryType: 'DEBIT', amount: dto.amount, categoryId: dto.categoryId, note: dto.note },
           { accountId: fromAccount.id, entryType: 'CREDIT', amount: dto.amount },
         ],
       },

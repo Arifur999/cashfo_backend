@@ -102,6 +102,7 @@ export class ContactsService {
       data: {
         ...(dto.name !== undefined && { name: dto.name }),
         ...(dto.type !== undefined && { type: dto.type }),
+        ...(dto.category !== undefined && { category: dto.category }),
         ...(dto.phone !== undefined && { phone: dto.phone }),
         ...(dto.email !== undefined && { email: dto.email }),
         ...(dto.address !== undefined && { address: dto.address }),
@@ -109,6 +110,27 @@ export class ContactsService {
         ...(dto.notes !== undefined && { notes: dto.notes }),
       },
     });
+  }
+
+  // One "remove this contact" action covering both real cases: permanently
+  // deletes when the contact has NEVER been used on a transaction (checked
+  // by count, not by currentBalance -- a contact could carry a nonzero
+  // openingBalance with zero real activity, and that's still safe to
+  // delete outright); otherwise falls back to archive()'s existing rule
+  // (still enforces "settle the balance first") rather than just rejecting,
+  // so the frontend only needs one button/one confirmation, not a separate
+  // Archive action exposed alongside it.
+  async delete(businessId: string, id: string): Promise<{ id: string; action: 'deleted' | 'archived' }> {
+    await this.requireContact(businessId, id);
+
+    const transactionCount = await this.prisma.transaction.count({ where: { contactId: id } });
+    if (transactionCount === 0) {
+      await this.prisma.contact.delete({ where: { id } });
+      return { id, action: 'deleted' };
+    }
+
+    await this.archive(businessId, id);
+    return { id, action: 'archived' };
   }
 
   async archive(businessId: string, id: string) {

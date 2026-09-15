@@ -1,5 +1,8 @@
-import { Body, Controller, Get, Param, Patch, Post, Query } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, UploadedFile, UseInterceptors } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { MemberRole } from '@prisma/client';
+import type { Request } from 'express';
+import { contactPhotoMulterOptions } from './contact-photo-upload.js';
 import { ContactsService } from './contacts.service.js';
 import { CreateContactDto } from './dto/create-contact.dto.js';
 import { ListContactsQueryDto } from './dto/list-contacts-query.dto.js';
@@ -51,5 +54,24 @@ export class ContactsController {
   @Patch(':id/archive')
   archive(@Param('businessId') businessId: string, @Param('id') id: string) {
     return this.contactsService.archive(businessId, id);
+  }
+
+  @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
+  @Delete(':id')
+  delete(@Param('businessId') businessId: string, @Param('id') id: string) {
+    return this.contactsService.delete(businessId, id);
+  }
+
+  // Not tied to any particular contact -- the Add Contact form uploads a
+  // photo before the contact itself exists, so this just returns a URL for
+  // the form to include as photoUrl on the actual create/update call.
+  @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
+  @Post('upload-photo')
+  @UseInterceptors(FileInterceptor('file', contactPhotoMulterOptions))
+  uploadPhoto(@UploadedFile() file: Express.Multer.File, @Req() req: Request) {
+    if (!file) {
+      throw new BadRequestException('No file was uploaded');
+    }
+    return { url: `${req.protocol}://${req.get('host')}/uploads/contacts/${file.filename}` };
   }
 }

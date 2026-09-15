@@ -2,9 +2,17 @@ import { Injectable } from '@nestjs/common';
 import { AccountType, Prisma } from '@prisma/client';
 import { isDebitPositive } from '../accounts/account-balance.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { CategoryBreakdownQueryDto } from './dto/category-breakdown-query.dto.js';
 import { GeneralLedgerQueryDto } from './dto/general-ledger-query.dto.js';
 
 const ACCOUNT_TYPE_ORDER: AccountType[] = ['ASSET', 'LIABILITY', 'EQUITY', 'INCOME', 'EXPENSE'];
+
+// Same 8 keys as BudgetCategory.color (see budget-category-visuals.ts) --
+// reused here as a deterministic fallback for a category with no matching
+// BudgetCategory row (e.g. one entered by hand via the Advanced Raw Journal
+// Entry form, or one whose BudgetCategory was since deleted), cycled by
+// rank so the chart still gets a distinct color per slice.
+const FALLBACK_COLORS = ['blue', 'green', 'purple', 'orange', 'pink', 'yellow', 'red', 'indigo'];
 
 @Injectable()
 export class ReportsService {
@@ -120,5 +128,98 @@ export class ReportsService {
       totalCredit: totalCredit.toFixed(2),
       isBalanced: totalDebit.equals(totalCredit),
     };
+  }
+
+  // Financial Reports page's two donut cards (Income by Category / Expense
+  // by Category). "total" is the TRUE total across every category in
+  // range, even though "categories" is capped at the top 10 by amount --
+  // so a workspace with more than 10 categories still shows a correct
+  // total/percent breakdown, just with the smaller categories omitted from
+  // the list (same "top N, real total" convention as any typical top-N
+  // report). Same "categoryId != null picks exactly one side of the
+  // double-entry pair" trick used elsewhere (see
+  // BudgetsService.listIncomeGoals()'s comment).
+  async getCategoryBreakdown(businessId: string, query: CategoryBreakdownQueryDto) {
+    const dateFilter: Prisma.DateTimeFilter = {};
+    if (query.dateFrom) dateFilter.gte = new Date(query.dateFrom);
+    if (query.dateTo) dateFilter.lte = new Date(query.dateTo);
+    const hasDateFilter = Object.keys(dateFilter).length > 0;
+
+    const grouped = await this.prisma.transactionEntry.groupBy({
+      by: ['categoryId'],
+      where: {
+        categoryId: { not: null },
+        transaction: { businessId, status: 'POSTED', transactionType: query.type, ...(hasDateFilter && { transactionDate: dateFilter }) },
+      },
+      _sum: { amount: true },
+    });
+
+    const categoryNames = grouped.map((g) => g.categoryId).filter((v): v is string => !!v);
+    const budgetCategories = categoryNames.length
+      ? await this.prisma.budgetCategory.findMany({ where: { businessId, type: query.type, name: { in: categoryNames } } })
+      : [];
+    const colorByName = new Map(budgetCategories.map((c) => [c.name, c.color]));
+
+    const withAmounts = grouped
+      .map((g, i) => ({
+        name: g.categoryId!,
+        amount: new Prisma.Decimal(g._sum.amount ?? 0),
+        color: colorByName.get(g.categoryId!) ?? FALLBACK_COLORS[i % FALLBACK_COLORS.length],
+      }))
+      .sort((a, b) => b.amount.comparedTo(a.amount));
+
+    const total = withAmounts.reduce((sum, row) => sum.plus(row.amount), new Prisma.Decimal(0));
+
+    return {
+      type: query.type,
+      total: total.toFixed(2),
+      categories: withAmounts.slice(0, 10).map((row) => ({
+        name: row.name,
+        amount: row.amount.toFixed(2),
+        percent: total.isZero() ? 0 : Math.round(row.amount.dividedBy(total).times(100).toNumber()),
+        color: row.color,
+      })),
+    };
+  }
+
+  // Financial Reports page's "Income vs Savings" trend chart -- the last
+  // `months` calendar months (oldest first), each with that month's total
+  // Income (same categorized-entry trick as above) and total Savings Goal
+  // contributions (see SavingsGoalsService.getOverview()'s "savedThisMonth"
+  // for the identical per-month aggregate, just repeated across a range
+  // instead of just the current month). Sequential per-month queries
+  // rather than one grouped query spanning the whole range -- simplest way
+  // to get a fixed month bucket per point without a raw SQL date_trunc,
+  // and negligible cost at `months` <= ~24.
+  async getIncomeVsSavingsTrend(businessId: string, months: number) {
+    const now = new Date();
+    const points: { month: string; income: string; savings: string }[] = [];
+
+    for (let i = months - 1; i >= 0; i--) {
+      const monthStart = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      const monthEnd = new Date(now.getFullYear(), now.getMonth() - i + 1, 1);
+
+      const [incomeAgg, savingsAgg] = await Promise.all([
+        this.prisma.transactionEntry.aggregate({
+          _sum: { amount: true },
+          where: {
+            categoryId: { not: null },
+            transaction: { businessId, status: 'POSTED', transactionType: 'INCOME', transactionDate: { gte: monthStart, lt: monthEnd } },
+          },
+        }),
+        this.prisma.savingsGoalEntry.aggregate({
+          _sum: { amount: true },
+          where: { businessId, type: 'CONTRIBUTION', date: { gte: monthStart, lt: monthEnd } },
+        }),
+      ]);
+
+      points.push({
+        month: monthStart.toLocaleDateString(undefined, { month: 'short', year: 'numeric' }),
+        income: new Prisma.Decimal(incomeAgg._sum.amount ?? 0).toFixed(2),
+        savings: new Prisma.Decimal(savingsAgg._sum.amount ?? 0).toFixed(2),
+      });
+    }
+
+    return points;
   }
 }

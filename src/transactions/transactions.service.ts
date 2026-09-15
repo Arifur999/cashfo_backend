@@ -175,8 +175,11 @@ export class TransactionsService {
       };
     }
     if (filters.transactionType) where.transactionType = filters.transactionType;
+    else if (filters.transactionTypes?.length) where.transactionType = { in: filters.transactionTypes };
     if (filters.status) where.status = filters.status;
-    if (filters.accountId) where.entries = { some: { accountId: filters.accountId } };
+    if (filters.accountId || filters.categoryId) {
+      where.entries = { some: { ...(filters.accountId && { accountId: filters.accountId }), ...(filters.categoryId && { categoryId: filters.categoryId }) } };
+    }
     if (filters.contactId) where.contactId = filters.contactId;
     if (filters.contactCategory) where.contact = { category: filters.contactCategory };
     if (filters.search) {

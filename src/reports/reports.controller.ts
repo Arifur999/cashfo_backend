@@ -1,4 +1,5 @@
 import { Controller, Get, Param, Query } from '@nestjs/common';
+import { CategoryBreakdownQueryDto } from './dto/category-breakdown-query.dto.js';
 import { GeneralLedgerQueryDto } from './dto/general-ledger-query.dto.js';
 import { ReportsService } from './reports.service.js';
 import { RequireBusinessMembership } from '../business-access/decorators/require-business-membership.decorator.js';
@@ -20,5 +21,16 @@ export class ReportsController {
   @Get('reports/trial-balance')
   trialBalance(@Param('businessId') businessId: string) {
     return this.reportsService.getTrialBalance(businessId);
+  }
+
+  @Get('reports/category-breakdown')
+  categoryBreakdown(@Param('businessId') businessId: string, @Query() query: CategoryBreakdownQueryDto) {
+    return this.reportsService.getCategoryBreakdown(businessId, query);
+  }
+
+  @Get('reports/income-vs-savings')
+  incomeVsSavings(@Param('businessId') businessId: string, @Query('months') months?: string) {
+    const parsed = Number(months);
+    return this.reportsService.getIncomeVsSavingsTrend(businessId, Number.isFinite(parsed) && parsed > 0 ? Math.min(parsed, 24) : 6);
   }
 }

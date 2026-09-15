@@ -29,4 +29,8 @@ export class CreateIncomeDto {
   @IsOptional()
   @IsString()
   categoryId?: string;
+
+  @IsOptional()
+  @IsString()
+  note?: string;
 }

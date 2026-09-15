@@ -148,6 +148,7 @@ export class AccountBalanceService {
       return {
         entryId: entry.id,
         transactionId: entry.transactionId,
+        transactionType: entry.transaction.transactionType,
         date: entry.transaction.transactionDate,
         description: entry.transaction.description,
         referenceNo: entry.transaction.referenceNo,
@@ -174,13 +175,20 @@ export class AccountBalanceService {
     };
   }
 
-  // Quick stats for the account detail page header. "Money In"/"Money Out"
-  // are from the friendly, balance-direction perspective (matches Prompt
-  // 6's language) -- NOT raw debit/credit: for a debit-positive account
-  // (ASSET/EXPENSE) a DEBIT is "in" and a CREDIT is "out"; reversed for
-  // credit-positive accounts. Accepts the same optional dateFrom/dateTo as
-  // the ledger so the header cards match whatever range the user has
-  // selected.
+  // Quick stats for the account detail page header (and the Ledger page's
+  // summary cards, which pass the same dateFrom/dateTo). "Money In"/"Money
+  // Out" are from the friendly, balance-direction perspective (matches
+  // Prompt 6's language) -- NOT raw debit/credit: for a debit-positive
+  // account (ASSET/EXPENSE) a DEBIT is "in" and a CREDIT is "out"; reversed
+  // for credit-positive accounts.
+  //
+  // TRANSFER-type entries are split out into their own signed "adjustment"
+  // figure (+ money arrived via transfer, - money left), same reasoning as
+  // getWalletsOverview()'s Adjustment column: a transfer moves money
+  // between this business's own accounts, so it isn't real income/spending
+  // and would overstate both totalIn and totalOut if left mixed in. A non-
+  // money account (Income/Expense/Equity) never has TRANSFER entries in
+  // practice, so adjustment is just 0 there -- harmless.
   async getAccountSummary(businessId: string, accountId: string, filters: { dateFrom?: string; dateTo?: string } = {}) {
     const account = await this.prisma.account.findUnique({ where: { id: accountId } });
     if (!account || account.businessId !== businessId) {
@@ -191,39 +199,56 @@ export class AccountBalanceService {
     if (filters.dateFrom) dateFilter.gte = new Date(filters.dateFrom);
     if (filters.dateTo) dateFilter.lte = new Date(filters.dateTo);
     const hasDateFilter = Object.keys(dateFilter).length > 0;
-    const where: Prisma.TransactionEntryWhereInput = {
-      accountId,
-      ...(hasDateFilter && { transaction: { transactionDate: dateFilter } }),
-    };
+    const transactionDateFilter: Prisma.TransactionWhereInput = hasDateFilter ? { transactionDate: dateFilter } : {};
+    const baseWhere: Prisma.TransactionEntryWhereInput = { accountId, ...(hasDateFilter && { transaction: transactionDateFilter }) };
+    const nonTransferWhere: Prisma.TransactionEntryWhereInput = { accountId, transaction: { ...transactionDateFilter, transactionType: { not: 'TRANSFER' } } };
+    const transferWhere: Prisma.TransactionEntryWhereInput = { accountId, transaction: { ...transactionDateFilter, transactionType: 'TRANSFER' } };
 
-    const [debitAgg, creditAgg, transactionCount] = await Promise.all([
-      this.prisma.transactionEntry.aggregate({ where: { ...where, entryType: 'DEBIT' }, _sum: { amount: true } }),
-      this.prisma.transactionEntry.aggregate({ where: { ...where, entryType: 'CREDIT' }, _sum: { amount: true } }),
-      this.prisma.transactionEntry.count({ where }),
+    const [debitAgg, creditAgg, transferDebitAgg, transferCreditAgg, transactionCount] = await Promise.all([
+      this.prisma.transactionEntry.aggregate({ where: { ...nonTransferWhere, entryType: 'DEBIT' }, _sum: { amount: true } }),
+      this.prisma.transactionEntry.aggregate({ where: { ...nonTransferWhere, entryType: 'CREDIT' }, _sum: { amount: true } }),
+      this.prisma.transactionEntry.aggregate({ where: { ...transferWhere, entryType: 'DEBIT' }, _sum: { amount: true } }),
+      this.prisma.transactionEntry.aggregate({ where: { ...transferWhere, entryType: 'CREDIT' }, _sum: { amount: true } }),
+      this.prisma.transactionEntry.count({ where: baseWhere }),
     ]);
 
     const debitTotal = new Prisma.Decimal(debitAgg._sum.amount ?? 0);
     const creditTotal = new Prisma.Decimal(creditAgg._sum.amount ?? 0);
+    const transferDebitTotal = new Prisma.Decimal(transferDebitAgg._sum.amount ?? 0);
+    const transferCreditTotal = new Prisma.Decimal(transferCreditAgg._sum.amount ?? 0);
     const debitPositive = isDebitPositive(account.accountType);
 
     return {
       currentBalance: account.currentBalance,
       totalIn: (debitPositive ? debitTotal : creditTotal).toFixed(2),
       totalOut: (debitPositive ? creditTotal : debitTotal).toFixed(2),
+      adjustment: (debitPositive ? transferDebitTotal.minus(transferCreditTotal) : transferCreditTotal.minus(transferDebitTotal)).toFixed(2),
       transactionCount,
     };
   }
 
   // Balance Overview page (the Wallet group's summary dashboard): every
-  // money account with its opening/in/out/current figures, plus workspace-
-  // wide totals. Money accounts are always ASSET type, so debit=in,
-  // credit=out uniformly -- no per-account isDebitPositive check needed
-  // the way getAccountSummary() needs one for a general account. Built as
-  // exactly 2 queries (accounts + one grouped entry aggregate) rather than
-  // one getAccountSummary() call per account -- both to avoid N+1 queries
-  // and because this app's local dev Postgres has shown it can drop
-  // connections under concurrent per-account query fan-out (see the
-  // Receivable/Payable module's comments on the same issue).
+  // money account with its opening/in/out/savings/adjustment/current
+  // figures, plus workspace-wide totals. Money accounts are always ASSET
+  // type, so debit=in, credit=out uniformly -- no per-account
+  // isDebitPositive check needed the way getAccountSummary() needs one for
+  // a general account.
+  //
+  // "Total In"/"Total Out" are real income/expense-shaped money movement
+  // (income, loan receive/give, etc.) -- TRANSFER entries are split out of
+  // both, since a transfer just moves money between this business's own
+  // accounts, not real income or spending. TRANSFER itself further splits
+  // into two columns: "Savings" (this account funding a Savings Goal
+  // contribution -- see SavingsGoalsService.addContribution()) vs
+  // "Adjustment" (an actual Balance Transfer between two money accounts).
+  // A transfer is classified as "Savings" purely by whether one of its two
+  // entries touches the business's system Savings account (accountSubtype
+  // "savings") -- that account is deliberately excluded from
+  // MONEY_ACCOUNT_SUBTYPES, so it never appears as a pickable "to/from"
+  // account in the regular Balance Transfer form, making this the only way
+  // money ever moves in or out of it. Savings is always an outflow (no
+  // withdraw-from-goal flow exists yet), so it's shown as a plain
+  // magnitude, unlike Adjustment's signed +/-.
   async getWalletsOverview(businessId: string) {
     const accounts = await this.prisma.account.findMany({
       where: { businessId, accountType: 'ASSET', accountSubtype: { in: MONEY_ACCOUNT_SUBTYPES } },
@@ -231,21 +256,41 @@ export class AccountBalanceService {
     });
     const accountIds = accounts.map((a) => a.id);
 
-    const grouped =
+    const [nonTransferGrouped, transferEntries, savingsAccount] =
       accountIds.length === 0
-        ? []
-        : await this.prisma.transactionEntry.groupBy({
-            by: ['accountId', 'entryType'],
-            where: { accountId: { in: accountIds } },
-            _sum: { amount: true },
-          });
+        ? [[], [], null]
+        : await Promise.all([
+            this.prisma.transactionEntry.groupBy({
+              by: ['accountId', 'entryType'],
+              where: { accountId: { in: accountIds }, transaction: { transactionType: { not: 'TRANSFER' } } },
+              _sum: { amount: true },
+            }),
+            this.prisma.transactionEntry.findMany({
+              where: { accountId: { in: accountIds }, transaction: { transactionType: 'TRANSFER' } },
+              include: { transaction: { include: { entries: true } } },
+            }),
+            this.prisma.account.findFirst({ where: { businessId, accountSubtype: 'savings', isSystemAccount: true } }),
+          ]);
 
     const inByAccount = new Map<string, Prisma.Decimal>();
     const outByAccount = new Map<string, Prisma.Decimal>();
-    for (const row of grouped) {
+    for (const row of nonTransferGrouped) {
       const amount = new Prisma.Decimal(row._sum.amount ?? 0);
       const target = row.entryType === 'DEBIT' ? inByAccount : outByAccount;
       target.set(row.accountId, amount);
+    }
+
+    const adjustmentByAccount = new Map<string, Prisma.Decimal>();
+    const savingsByAccount = new Map<string, Prisma.Decimal>();
+    for (const entry of transferEntries) {
+      const amount = new Prisma.Decimal(entry.amount);
+      const isSavingsContribution = !!savingsAccount && entry.transaction.entries.some((e) => e.accountId === savingsAccount.id);
+      if (isSavingsContribution) {
+        savingsByAccount.set(entry.accountId, (savingsByAccount.get(entry.accountId) ?? new Prisma.Decimal(0)).plus(amount));
+      } else {
+        const signed = entry.entryType === 'DEBIT' ? amount : amount.negated();
+        adjustmentByAccount.set(entry.accountId, (adjustmentByAccount.get(entry.accountId) ?? new Prisma.Decimal(0)).plus(signed));
+      }
     }
 
     let totalBalance = new Prisma.Decimal(0);
@@ -265,6 +310,8 @@ export class AccountBalanceService {
         openingBalance: account.openingBalance.toFixed(2),
         totalIn: (inByAccount.get(account.id) ?? new Prisma.Decimal(0)).toFixed(2),
         totalOut: (outByAccount.get(account.id) ?? new Prisma.Decimal(0)).toFixed(2),
+        savings: (savingsByAccount.get(account.id) ?? new Prisma.Decimal(0)).toFixed(2),
+        adjustment: (adjustmentByAccount.get(account.id) ?? new Prisma.Decimal(0)).toFixed(2),
         currentBalance: balance.toFixed(2),
       };
     });

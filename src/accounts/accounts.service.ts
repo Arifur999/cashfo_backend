@@ -123,6 +123,30 @@ export class AccountsService {
     });
   }
 
+  // Savings Goals' own Wallet management page -- a Savings Wallet is a
+  // regular money-shaped Account (ASSET/"savings"), just deliberately
+  // EXCLUDED from MONEY_ACCOUNT_SUBTYPES so it never appears in the
+  // ordinary Income/Expense/Transfer pickers above, or in Balance's own
+  // Wallet/Overview pages -- multiple can exist (e.g. "Islami Bank DPS",
+  // "City Bank FDR"), same as regular money accounts, managed the same way
+  // (WalletFormModal-equivalent create/edit/archive via the generic
+  // Account CRUD below). ACTIVE-only variant is for "which Savings Wallet
+  // does this contribution land in" style pickers; the unfiltered one is
+  // for the management list itself.
+  async listActiveSavingsWallets(businessId: string) {
+    return this.prisma.account.findMany({
+      where: { businessId, status: 'ACTIVE', accountType: 'ASSET', accountSubtype: 'savings' },
+      orderBy: { displayOrder: 'asc' },
+    });
+  }
+
+  async listSavingsWallets(businessId: string) {
+    return this.prisma.account.findMany({
+      where: { businessId, accountType: 'ASSET', accountSubtype: 'savings' },
+      orderBy: { displayOrder: 'asc' },
+    });
+  }
+
   async listIncomeAccounts(businessId: string) {
     return this.prisma.account.findMany({
       where: { businessId, status: 'ACTIVE', accountType: 'INCOME' },

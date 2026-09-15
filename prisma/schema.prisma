@@ -696,6 +696,12 @@ model Business {
   planId       String?
   plan         SubscriptionPlan? @relation(fields: [planId], references: [id])
   isDefault    Boolean           @default(false) // true for the auto-created personal workspace
+  // Overall monthly spending target shown on the Budget Planning page as
+  // "Total budget" -- separate from the sum of BudgetCategory.monthlyLimit
+  // ("Allocated"), which a user may intentionally under- or over-allocate
+  // against. Not month-specific: one standing target, edited via "Manage
+  // Budget"; only the computed "spent" figure varies by the viewed month.
+  monthlyBudgetTarget Decimal?   @db.Decimal(14, 2)
   // Soft-delete only -- a workspace may hold financial data in later prompts,
   // so it's never hard-deleted. null = active. Every list/lookup query must
   // filter deletedAt: null.
@@ -706,6 +712,9 @@ model Business {
   accounts     Account[]
   transactions Transaction[]
   contacts     Contact[]
+  budgetCategories BudgetCategory[]
+  incomeGoals  IncomeGoal[]
+  savingsGoals SavingsGoal[]
 
   @@index([ownerId])
 }
@@ -831,6 +840,8 @@ enum ContactType {
   CUSTOMER
   SUPPLIER
   BOTH
+  RELATIVE
+  OTHER
 }
 
 enum ContactCategory {
@@ -935,4 +946,161 @@ model TransactionEntry {
 enum EntryType {
   DEBIT
   CREDIT
+}
+
+// =====================================================================
+// Budget Planning (type: EXPENSE) and Income Category (type: INCOME) --
+// same underlying shape (name + icon + color + monthly limit) shown on two
+// different pages. "spent" against a category is never stored, it's
+// computed on read by summing that category's own type of transaction
+// (EXPENSE or INCOME) whose TransactionEntry.categoryId matches this
+// category's name for the requested month (same plain-string convention
+// quick-entries.service.ts already uses for categoryId; see its comment on
+// TransactionEntry.categoryId above). Categories are NOT month-specific --
+// one standing set of categories/limits per type, reused across months.
+// =====================================================================
+
+model BudgetCategory {
+  id         String             @id @default(uuid())
+  businessId String
+  business   Business           @relation(fields: [businessId], references: [id])
+  type       BudgetCategoryType @default(EXPENSE)
+  name       String
+  // Nullable -- a category saved without ever picking one from the grid
+  // (e.g. after searching for something with no match) has no icon at all,
+  // rendered as a plain colored circle rather than a default glyph.
+  icon       String?
+  color      String
+  // Required for EXPENSE (each category has its own spending limit,
+  // enforced in BudgetsService.createCategory, not here) -- null for
+  // INCOME, which has no per-category goal at all -- see IncomeGoal below
+  // for the real (month-specific, table-based) income goal concept.
+  monthlyLimit Decimal?         @db.Decimal(14, 2)
+  displayOrder Int              @default(0)
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+
+  @@unique([businessId, type, name])
+  @@index([businessId])
+}
+
+enum BudgetCategoryType {
+  EXPENSE
+  INCOME
+}
+
+// Monthly Income Goal (its own page, /income-goal): a HISTORY of goals, one
+// row per month/year, each with an optional note -- not a single standing
+// value like Business.monthlyBudgetTarget. "earned" for a row is computed
+// on read: the sum of every POSTED INCOME transaction's categorized entry
+// (categoryId != null -- the one side of the double-entry pair that
+// carries it, see quick-entries.service.ts's createIncome) for this
+// business within that row's month/year, regardless of which Income
+// Category it was logged against.
+model IncomeGoal {
+  id         String   @id @default(uuid())
+  businessId String
+  business   Business @relation(fields: [businessId], references: [id])
+  month      Int // 1-12
+  year       Int
+  amount     Decimal  @db.Decimal(14, 2)
+  notes      String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([businessId, year, month])
+  @@index([businessId])
+}
+
+// =====================================================================
+// Savings Goals: a named target (e.g. "Emergency Fund") funded by real
+// contributions from a money account. All contributed cash pools into ONE
+// system Account per business ("Savings", accountSubtype "savings" --
+// deliberately NOT in MONEY_ACCOUNT_SUBTYPES so it stays out of the regular
+// Wallet list/pickers, only reachable via the dedicated Savings Wallet
+// page), auto-created on first contribution -- see
+// SavingsGoalsService.getOrCreateSavingsAccount(). Each SavingsGoal's own
+// currentAmount is never cached; it's computed on read as the signed sum of
+// its SavingsGoalEntry rows (CONTRIBUTION/TRANSFER_IN positive, TRANSFER_OUT
+// negative) -- same "compute on read" philosophy as Contact.currentBalance,
+// appropriate at this feature's realistic per-goal entry volume.
+// =====================================================================
+
+model SavingsGoal {
+  id             String                  @id @default(uuid())
+  businessId     String
+  business       Business                @relation(fields: [businessId], references: [id])
+  name           String
+  targetAmount   Decimal                 @db.Decimal(14, 2)
+  targetDate     DateTime
+  // Manually entered (not derived from targetDate - createdAt) -- drives the
+  // "suggested monthly contribution" (targetAmount / durationMonths) shown
+  // alongside the goal, same as the reference layout's "Monthly Savings"
+  // card.
+  durationMonths Int
+  reminderDate   DateTime?
+  // Only a stored preference for now -- no email/SMS is actually sent yet
+  // (this app has no email provider or Bangladeshi SMS gateway configured).
+  // Wiring up real delivery is a separate, later integration.
+  reminderChannel SavingsReminderChannel?
+  description    String?
+  status         SavingsGoalStatus       @default(ACTIVE)
+  createdAt      DateTime                @default(now())
+  updatedAt      DateTime                @updatedAt
+  entries        SavingsGoalEntry[]
+
+  @@index([businessId])
+}
+
+enum SavingsGoalStatus {
+  ACTIVE
+  PAUSED
+  COMPLETED
+}
+
+enum SavingsReminderChannel {
+  EMAIL
+  PHONE
+}
+
+enum SavingsEntryType {
+  // Real money moved in from a wallet/bank/mfs account -- backed by a real
+  // double-entry Transaction (transactionId set, moneyAccountId set).
+  CONTRIBUTION
+  // Internal reallocation between two goals (Savings Transfer) -- no real
+  // Transaction, since the cash never leaves the pooled Savings account.
+  // Always created in a TRANSFER_OUT/TRANSFER_IN pair (relatedGoalId points
+  // at the other side).
+  TRANSFER_OUT
+  TRANSFER_IN
+}
+
+// moneyAccountId/relatedGoalId/transactionId are deliberately plain string
+// columns, not Prisma relations -- same "no FK for a lightweight cross-
+// reference" convention as TransactionEntry.categoryId. Callers that need
+// the referenced row look it up explicitly.
+model SavingsGoalEntry {
+  id             String           @id @default(uuid())
+  savingsGoalId  String
+  savingsGoal    SavingsGoal      @relation(fields: [savingsGoalId], references: [id])
+  businessId     String
+  type           SavingsEntryType
+  amount         Decimal          @db.Decimal(14, 2)
+  date           DateTime
+  moneyAccountId String?
+  // Only set for CONTRIBUTION -- which Savings Wallet (Account,
+  // accountSubtype "savings") the money actually landed in. Multiple
+  // Savings Wallets can exist per business (e.g. "Islami Bank DPS", "City
+  // Bank FDR"), managed like regular money accounts (see
+  // AccountsService.listSavingsWallets()'s comment) -- this is what tells
+  // a contribution apart from any other, not just moneyAccountId (the
+  // source).
+  savingsAccountId String?
+  relatedGoalId  String?
+  transactionId  String?
+  notes          String?
+  createdAt      DateTime         @default(now())
+
+  @@index([savingsGoalId])
+  @@index([businessId])
 }

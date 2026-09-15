@@ -386,10 +386,12 @@ export class ReceivablesPayablesService {
 
   async getAging(businessId: string, direction: Direction): Promise<AgingReport> {
     const contactType = direction === 'RECEIVABLE' ? 'CUSTOMER' : 'SUPPLIER';
-    // BUSINESS only -- Loan Management contacts (category: LOAN) have their
-    // own dashboard (getLoanDashboard()) and must not bleed into Dena-Pawna.
+    // Not filtered by category -- Dena-Pawna and Loan Management show the
+    // same underlying contact list (see getLoanDashboard()'s comment), just
+    // through different lenses. Only `type` scopes this one to Customer/
+    // Supplier/Both.
     const contacts = await this.prisma.contact.findMany({
-      where: { businessId, category: 'BUSINESS', type: { in: [contactType, 'BOTH'] } },
+      where: { businessId, type: { in: [contactType, 'BOTH'] } },
       orderBy: { name: 'asc' },
     });
 
@@ -446,9 +448,9 @@ export class ReceivablesPayablesService {
 
   async getOverdue(businessId: string, direction: Direction): Promise<OverdueRow[]> {
     const contactType = direction === 'RECEIVABLE' ? 'CUSTOMER' : 'SUPPLIER';
-    // BUSINESS only -- see getAging()'s comment.
+    // Not filtered by category -- see getAging()'s comment.
     const contacts = await this.prisma.contact.findMany({
-      where: { businessId, category: 'BUSINESS', type: { in: [contactType, 'BOTH'] } },
+      where: { businessId, type: { in: [contactType, 'BOTH'] } },
     });
 
     const today = todayUtcMidnight();
@@ -477,15 +479,17 @@ export class ReceivablesPayablesService {
 
   // Loan Management's dashboard -- same engine as Dena-Pawna
   // (computeDirection() against the same Accounts Receivable/Payable
-  // accounts), scoped to category: LOAN contacts (banks/persons you lend
-  // to or borrow from) instead of BUSINESS ones (customers/suppliers).
-  // "Record Sale on Credit" = give a loan (Pawna, they owe you); "Record
-  // Purchase on Credit" = take a loan (Dena, you owe them); the existing
-  // payment endpoints settle either side -- no new write path needed,
-  // this is purely a themed read view over the same data.
+  // accounts). Not filtered by category or type: every contact in the
+  // business is one shared list, and Dena-Pawna / Loan Management are just
+  // two different lenses over it (aging-by-type vs combined Dena/Pawna
+  // totals) rather than two separate contact pools. "Record Sale on
+  // Credit" = give a loan (Pawna, they owe you); "Record Purchase on
+  // Credit" = take a loan (Dena, you owe them); the existing payment
+  // endpoints settle either side -- no new write path needed, this is
+  // purely a themed read view over the same data.
   async getLoanDashboard(businessId: string): Promise<LoanDashboard> {
     const contacts = await this.prisma.contact.findMany({
-      where: { businessId, category: 'LOAN' },
+      where: { businessId },
       orderBy: { name: 'asc' },
     });
 

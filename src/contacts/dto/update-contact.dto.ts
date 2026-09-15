@@ -1,4 +1,4 @@
-import { ContactType } from '@prisma/client';
+import { ContactCategory, ContactType } from '@prisma/client';
 import { IsEnum, IsNotEmpty, IsOptional, IsString } from 'class-validator';
 
 // No openingBalance here -- it's a one-time starting point set at creation,
@@ -15,6 +15,13 @@ export class UpdateContactDto {
   @IsOptional()
   @IsEnum(ContactType)
   type?: ContactType;
+
+  // BUSINESS (Dena-Pawna) vs LOAN (Loan Management) -- lets a contact be
+  // reclassified after creation. Existing transactions aren't touched, only
+  // which dashboard the contact (and its history) appears under.
+  @IsOptional()
+  @IsEnum(ContactCategory)
+  category?: ContactCategory;
 
   @IsOptional()
   @IsString()

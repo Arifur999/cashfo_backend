@@ -49,6 +49,16 @@ export class AccountsController {
     return this.accountBalanceService.getWalletsOverview(businessId);
   }
 
+  @Get('savings-wallets')
+  savingsWallets(@Param('businessId') businessId: string) {
+    return this.accountsService.listSavingsWallets(businessId);
+  }
+
+  @Get('active-savings-wallets')
+  activeSavingsWallets(@Param('businessId') businessId: string) {
+    return this.accountsService.listActiveSavingsWallets(businessId);
+  }
+
   @Get('income-accounts')
   incomeAccounts(@Param('businessId') businessId: string) {
     return this.accountsService.listIncomeAccounts(businessId);

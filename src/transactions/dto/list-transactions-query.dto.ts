@@ -1,5 +1,5 @@
-import { Type } from 'class-transformer';
-import { IsIn, IsInt, IsISO8601, IsOptional, IsString, Max, Min } from 'class-validator';
+import { Transform, Type } from 'class-transformer';
+import { IsArray, IsIn, IsInt, IsISO8601, IsOptional, IsString, Max, Min } from 'class-validator';
 import { ContactCategory, TransactionStatus, TransactionType } from '@prisma/client';
 
 export class ListTransactionsQueryDto {
@@ -15,11 +15,31 @@ export class ListTransactionsQueryDto {
   @IsIn(Object.values(TransactionType))
   transactionType?: TransactionType;
 
+  // The Transactions page's default view (no specific @IsIn(TransactionType)
+  // filter picked): "give me any of these types" rather than an exact
+  // match -- e.g. Income & Expense's Transaction list restricts itself to
+  // ?transactionTypes=INCOME,EXPENSE so Transfers/Sales/Purchases/Payments
+  // (each already shown on their own dedicated page) don't leak in.
+  // Comma-separated in the query string since arrays don't cross that
+  // boundary natively.
+  @IsOptional()
+  @Transform(({ value }) => (typeof value === 'string' ? value.split(',') : value))
+  @IsArray()
+  @IsIn(Object.values(TransactionType), { each: true })
+  transactionTypes?: TransactionType[];
+
   // Transactions touching this account (i.e. it has at least one entry
   // against it), not "transactions belonging to" -- an account concept.
   @IsOptional()
   @IsString()
   accountId?: string;
+
+  // Budget Planning's "View Transactions" link -- categoryId is the same
+  // plain-string value quick-entries.service.ts stores on
+  // TransactionEntry.categoryId, not a real FK (see that model's comment).
+  @IsOptional()
+  @IsString()
+  categoryId?: string;
 
   // Prompt 8: transactions linked to a specific Contact -- powers the
   // contact detail page's Activity tab, reused as-is rather than

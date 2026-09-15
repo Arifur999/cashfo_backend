@@ -11,6 +11,7 @@ import { AnnouncementsModule } from './announcements/announcements.module.js';
 import { AppController } from './app.controller.js';
 import { AppService } from './app.service.js';
 import { AuditLogsModule } from './audit-logs/audit-logs.module.js';
+import { BudgetsModule } from './budgets/budgets.module.js';
 import { BusinessAccessModule } from './business-access/business-access.module.js';
 import { BusinessesModule } from './businesses/businesses.module.js';
 import { CategoriesModule } from './categories/categories.module.js';
@@ -29,6 +30,7 @@ import { QuickEntriesModule } from './quick-entries/quick-entries.module.js';
 import { ReceivablesPayablesModule } from './receivables-payables/receivables-payables.module.js';
 import { ReportsModule } from './reports/reports.module.js';
 import { RevenueModule } from './revenue/revenue.module.js';
+import { SavingsGoalsModule } from './savings-goals/savings-goals.module.js';
 import { SecurityModule } from './security/security.module.js';
 import { SettingsModule } from './settings/settings.module.js';
 import { SubscriptionPlansModule } from './subscription-plans/subscription-plans.module.js';
@@ -79,6 +81,8 @@ import { UserAuthModule } from './user-auth/user-auth.module.js';
     ReportsModule,
     ContactsModule,
     ReceivablesPayablesModule,
+    BudgetsModule,
+    SavingsGoalsModule,
   ],
   controllers: [AppController],
   providers: [
