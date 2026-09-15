@@ -661,6 +661,11 @@ model User {
   name              String
   email             String             @unique
   phone             String?
+  // Uploaded via POST /api/auth/avatar (same local-disk multer pattern as
+  // Contact.photoUrl -- see contact-photo-upload.ts's comment), served back
+  // statically from /uploads/avatars. Null shows the initials-circle
+  // fallback in the UI instead.
+  avatarUrl         String?
   passwordHash      String
   preferredLanguage LanguagePreference @default(EN)
   status            UserStatus         @default(ACTIVE)
@@ -670,9 +675,35 @@ model User {
   updatedAt         DateTime           @updatedAt
   memberships       BusinessMember[]
   ownedBusinesses   Business[]         @relation("BusinessOwner")
+  sessions          UserSession[]
 
   // No separate @@index([email]) -- @unique above already creates a unique
   // index covering lookups by email (same reasoning as AdminUser/PlatformUser).
+}
+
+// Settings > Security > Device Management -- one row per issued refresh
+// token (see UserAuthService.signRefreshToken()'s jti), created at login/
+// register and updated on every refresh call. This is what makes session
+// revocation actually persist (the in-memory TokenBlacklistService alone is
+// lost on restart, see its own comment) -- revokeSession() sets revokedAt,
+// and refresh() rejects a refresh token whose session is revoked, on top of
+// the existing in-memory check. deviceLabel/userAgent/ipAddress are
+// snapshotted at login time, never updated afterward, even if lastUsedAt
+// moves -- a session is still "the same device" for display purposes even
+// if e.g. its IP changes on a later refresh.
+model UserSession {
+  id          String    @id @default(uuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id])
+  jti         String    @unique
+  deviceLabel String
+  ipAddress   String
+  userAgent   String?
+  createdAt   DateTime  @default(now())
+  lastUsedAt  DateTime  @default(now())
+  revokedAt   DateTime?
+
+  @@index([userId])
 }
 
 enum LanguagePreference {
@@ -1021,9 +1052,10 @@ model IncomeGoal {
 // page), auto-created on first contribution -- see
 // SavingsGoalsService.getOrCreateSavingsAccount(). Each SavingsGoal's own
 // currentAmount is never cached; it's computed on read as the signed sum of
-// its SavingsGoalEntry rows (CONTRIBUTION/TRANSFER_IN positive, TRANSFER_OUT
-// negative) -- same "compute on read" philosophy as Contact.currentBalance,
-// appropriate at this feature's realistic per-goal entry volume.
+// its SavingsGoalEntry rows (CONTRIBUTION/TRANSFER_IN positive,
+// TRANSFER_OUT/WITHDRAWAL negative) -- same "compute on read" philosophy as
+// Contact.currentBalance, appropriate at this feature's realistic per-goal
+// entry volume.
 // =====================================================================
 
 model SavingsGoal {
@@ -1056,6 +1088,11 @@ enum SavingsGoalStatus {
   ACTIVE
   PAUSED
   COMPLETED
+  // Set automatically by SavingsGoalsService.withdraw() once its full saved
+  // amount has been withdrawn and spent (see SavingsEntryType.WITHDRAWAL) --
+  // never set directly through UpdateSavingsGoalStatusDto's manual pause/
+  // resume/complete flow.
+  WITHDRAWN
 }
 
 enum SavingsReminderChannel {
@@ -1073,6 +1110,14 @@ enum SavingsEntryType {
   // at the other side).
   TRANSFER_OUT
   TRANSFER_IN
+  // Real money moved OUT of a Savings Wallet and recorded as a real Expense
+  // -- backed by a real double-entry Transaction (transactionId set,
+  // savingsAccountId set to which wallet it left from), same as
+  // CONTRIBUTION but reversed. Always withdraws a goal's ENTIRE current
+  // saved amount at once (no partial withdrawal yet) -- see
+  // SavingsGoalsService.withdraw(), which also flips the goal's status to
+  // WITHDRAWN.
+  WITHDRAWAL
 }
 
 // moneyAccountId/relatedGoalId/transactionId are deliberately plain string

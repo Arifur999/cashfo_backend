@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, ForbiddenException, Injectable, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService, type JwtSignOptions } from '@nestjs/jwt';
 import { User, WorkspaceType } from '@prisma/client';
@@ -10,6 +10,8 @@ import { ChangePasswordDto } from './dto/change-password.dto.js';
 import { LoginDto } from './dto/login.dto.js';
 import { RegisterDto } from './dto/register.dto.js';
 import { UpdateLanguageDto } from './dto/update-language.dto.js';
+import { UpdateProfileDto } from './dto/update-profile.dto.js';
+import { parseDeviceLabel } from './device-label.js';
 import { TokenBlacklistService } from './token-blacklist.service.js';
 
 interface RefreshTokenPayload {
@@ -28,7 +30,7 @@ export class UserAuthService {
     private readonly accountsService: AccountsService,
   ) {}
 
-  async register(dto: RegisterDto) {
+  async register(dto: RegisterDto, ipAddress?: string, userAgent?: string) {
     const existing = await this.prisma.user.findUnique({ where: { email: dto.email } });
     if (existing) {
       throw new ConflictException('An account with this email already exists');
@@ -71,8 +73,7 @@ export class UserAuthService {
       return { user: createdUser, defaultBusinessId: defaultBusiness.id };
     });
 
-    const accessToken = this.signAccessToken(user);
-    const refreshToken = this.signRefreshToken(user);
+    const { accessToken, refreshToken } = await this.issueTokens(user, ipAddress, userAgent);
 
     return {
       accessToken,
@@ -114,8 +115,7 @@ export class UserAuthService {
       }),
     ]);
 
-    const accessToken = this.signAccessToken(user);
-    const refreshToken = this.signRefreshToken(user);
+    const { accessToken, refreshToken } = await this.issueTokens(user, ipAddress, userAgent);
 
     return {
       accessToken,
@@ -123,6 +123,25 @@ export class UserAuthService {
       user: { id: user.id, name: user.name, email: user.email, preferredLanguage: user.preferredLanguage },
       defaultBusinessId: defaultBusiness?.id ?? null,
     };
+  }
+
+  // Shared by register()/login() -- signs both tokens off the SAME jti and
+  // persists a UserSession row for it (Settings > Security's Device
+  // Management), rather than each caller duplicating this.
+  private async issueTokens(user: User, ipAddress: string | undefined, userAgent: string | undefined) {
+    const jti = randomUUID();
+    const accessToken = this.signAccessToken(user);
+    const refreshToken = this.signRefreshToken(user, jti);
+    await this.prisma.userSession.create({
+      data: {
+        userId: user.id,
+        jti,
+        deviceLabel: parseDeviceLabel(userAgent),
+        ipAddress: ipAddress ?? 'unknown',
+        userAgent,
+      },
+    });
+    return { accessToken, refreshToken };
   }
 
   private async recordLoginAttempt(email: string, ipAddress: string | undefined, userAgent: string | undefined, success: boolean, failureReason: string) {
@@ -138,9 +157,22 @@ export class UserAuthService {
       throw new UnauthorizedException('Refresh token has been revoked');
     }
 
+    // Persisted check, on top of the in-memory blacklist above -- a session
+    // revoked from Settings > Security's Device Management (or from any
+    // OTHER backend instance/after a restart) must stay rejected even
+    // though the in-memory blacklist itself doesn't survive either of those.
+    const session = await this.prisma.userSession.findUnique({ where: { jti: payload.jti } });
+    if (session?.revokedAt) {
+      throw new UnauthorizedException('This session has been signed out');
+    }
+
     const user = await this.prisma.user.findUnique({ where: { id: payload.sub } });
     if (!user || user.status !== 'ACTIVE') {
       throw new UnauthorizedException('Account no longer active');
+    }
+
+    if (session) {
+      await this.prisma.userSession.update({ where: { jti: payload.jti }, data: { lastUsedAt: new Date() } });
     }
 
     return { accessToken: this.signAccessToken(user) };
@@ -152,10 +184,74 @@ export class UserAuthService {
     try {
       const payload = this.verifyRefreshToken(refreshToken);
       this.tokenBlacklist.revoke(payload.jti, payload.exp);
+      await this.prisma.userSession.updateMany({ where: { jti: payload.jti, revokedAt: null }, data: { revokedAt: new Date() } });
     } catch {
       // ignore
     }
     return { success: true };
+  }
+
+  // Settings > Security > Device Management's "Devices" list -- every
+  // still-active session (never revoked), most recently used first.
+  // isCurrent is a best-effort match on THIS request's ip+userAgent, not a
+  // cryptographic session identity -- the access token that authenticated
+  // this call carries no jti (see signAccessToken()), only the refresh
+  // token does, and the frontend never sends that back except to the
+  // dedicated /refresh call. Good enough to highlight "this looks like the
+  // device you're on right now" without overclaiming precision.
+  async listSessions(userId: string, currentIp?: string, currentUserAgent?: string) {
+    const sessions = await this.prisma.userSession.findMany({
+      where: { userId, revokedAt: null },
+      orderBy: { lastUsedAt: 'desc' },
+    });
+    return sessions.map((s) => ({
+      id: s.id,
+      deviceLabel: s.deviceLabel,
+      ipAddress: s.ipAddress,
+      createdAt: s.createdAt,
+      lastUsedAt: s.lastUsedAt,
+      isCurrent: !!currentUserAgent && s.ipAddress === currentIp && s.userAgent === currentUserAgent,
+    }));
+  }
+
+  // Ends one specific session -- blocks its refresh token from minting any
+  // further access tokens (both the immediate in-memory blacklist and the
+  // persisted revokedAt refresh() itself checks). Doesn't retroactively
+  // invalidate an access token already issued to that device before this
+  // call -- same real-world limitation every short-lived-access-token
+  // system has; it simply expires within USER_JWT_ACCESS_EXPIRES_IN (15m
+  // default) on its own.
+  async revokeSession(userId: string, sessionId: string) {
+    const session = await this.prisma.userSession.findUnique({ where: { id: sessionId } });
+    if (!session || session.userId !== userId) {
+      throw new NotFoundException('Session not found');
+    }
+    await this.prisma.userSession.update({ where: { id: sessionId }, data: { revokedAt: new Date() } });
+    this.tokenBlacklist.revoke(session.jti);
+    return { success: true };
+  }
+
+  // Settings > Security's "History" list -- every login attempt (success
+  // AND failure) recorded against this account's email, most recent first.
+  // Keyed by email rather than userId because LoginAttempt already records
+  // attempts against emails that never resolve to a real user (see
+  // login()'s account_not_found case) -- there's no userId to key by for
+  // those, so this whole table has always been email-keyed, including the
+  // rows that DO belong to a real account.
+  async getLoginHistory(email: string) {
+    const attempts = await this.prisma.loginAttempt.findMany({
+      where: { email },
+      orderBy: { createdAt: 'desc' },
+      take: 50,
+    });
+    return attempts.map((a) => ({
+      id: a.id,
+      ipAddress: a.ipAddress,
+      deviceLabel: parseDeviceLabel(a.userAgent),
+      success: a.success,
+      failureReason: a.failureReason,
+      createdAt: a.createdAt,
+    }));
   }
 
   async me(userId: string) {
@@ -179,6 +275,7 @@ export class UserAuthService {
       name: user.name,
       email: user.email,
       phone: user.phone,
+      avatarUrl: user.avatarUrl,
       preferredLanguage: user.preferredLanguage,
       emailVerifiedAt: user.emailVerifiedAt,
       businesses: memberships.map((m) => ({
@@ -202,6 +299,25 @@ export class UserAuthService {
       data: { preferredLanguage: dto.preferredLanguage },
     });
     return { id: user.id, name: user.name, email: user.email, preferredLanguage: user.preferredLanguage };
+  }
+
+  // Settings > Profile page's "Save Changes" -- name/phone only (email is
+  // shown read-only there, changing it is a bigger, separate re-
+  // verification flow this app doesn't have yet).
+  async updateProfile(userId: string, dto: UpdateProfileDto) {
+    const user = await this.prisma.user.update({
+      where: { id: userId },
+      data: {
+        ...(dto.name !== undefined && { name: dto.name }),
+        ...(dto.phone !== undefined && { phone: dto.phone || null }),
+      },
+    });
+    return { id: user.id, name: user.name, email: user.email, phone: user.phone, avatarUrl: user.avatarUrl };
+  }
+
+  async updateAvatar(userId: string, avatarUrl: string) {
+    const user = await this.prisma.user.update({ where: { id: userId }, data: { avatarUrl } });
+    return { id: user.id, avatarUrl: user.avatarUrl };
   }
 
   async changePassword(userId: string, dto: ChangePasswordDto) {
@@ -230,9 +346,12 @@ export class UserAuthService {
     );
   }
 
-  private signRefreshToken(user: User): string {
+  // jti is passed in (generated by issueTokens()) rather than randomUUID()'d
+  // here, so the SAME id backs both this token's own claim and its
+  // UserSession row -- one session per issued refresh token.
+  private signRefreshToken(user: User, jti: string): string {
     return this.jwtService.sign(
-      { sub: user.id, jti: randomUUID() },
+      { sub: user.id, jti },
       {
         secret: this.configService.get<string>('USER_JWT_REFRESH_SECRET'),
         expiresIn: (this.configService.get<string>('USER_JWT_REFRESH_EXPIRES_IN') ?? '7d') as JwtSignOptions['expiresIn'],

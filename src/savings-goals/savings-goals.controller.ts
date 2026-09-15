@@ -5,6 +5,7 @@ import { CreateSavingsGoalDto } from './dto/create-savings-goal.dto.js';
 import { CreateSavingsTransferDto } from './dto/create-savings-transfer.dto.js';
 import { UpdateSavingsGoalDto } from './dto/update-savings-goal.dto.js';
 import { UpdateSavingsGoalStatusDto } from './dto/update-savings-goal-status.dto.js';
+import { WithdrawSavingsGoalDto } from './dto/withdraw-savings-goal.dto.js';
 import { SavingsGoalsService } from './savings-goals.service.js';
 import { RequireBusinessMembership } from '../business-access/decorators/require-business-membership.decorator.js';
 import { RequireRole } from '../business-access/decorators/require-role.decorator.js';
@@ -86,5 +87,11 @@ export class SavingsGoalsController {
   @Post(':id/contributions')
   addContribution(@Param('businessId') businessId: string, @Param('id') id: string, @Body() dto: AddContributionDto, @CurrentUser() user: RequestUser) {
     return this.savingsGoalsService.addContribution(businessId, id, dto, user.id);
+  }
+
+  @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
+  @Post(':id/withdraw')
+  withdraw(@Param('businessId') businessId: string, @Param('id') id: string, @Body() dto: WithdrawSavingsGoalDto, @CurrentUser() user: RequestUser) {
+    return this.savingsGoalsService.withdraw(businessId, id, dto, user.id);
   }
 }

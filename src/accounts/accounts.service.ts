@@ -130,19 +130,27 @@ export class AccountsService {
   // Wallet/Overview pages -- multiple can exist (e.g. "Islami Bank DPS",
   // "City Bank FDR"), same as regular money accounts, managed the same way
   // (WalletFormModal-equivalent create/edit/archive via the generic
-  // Account CRUD below). ACTIVE-only variant is for "which Savings Wallet
-  // does this contribution land in" style pickers; the unfiltered one is
-  // for the management list itself.
+  // Account CRUD below). `isSystemAccount: false` on both excludes the one
+  // hidden pooled Savings account every business gets (the historical
+  // single-wallet design, before this per-wallet redesign) -- that account
+  // is internal plumbing addContribution()/getSavingsWalletsOverview() can
+  // still find and use directly, not something a user manages or picks
+  // here (a user accidentally archiving it via this list previously broke
+  // their Savings Goals feature -- see AccountsService.archive()'s guard).
+  // ACTIVE-only + archived-excluded on BOTH now, unlike Balance's own
+  // Wallet management list -- the user explicitly asked for a deleted
+  // Savings Wallet to disappear from this list entirely rather than stay
+  // visible with an ARCHIVED badge.
   async listActiveSavingsWallets(businessId: string) {
     return this.prisma.account.findMany({
-      where: { businessId, status: 'ACTIVE', accountType: 'ASSET', accountSubtype: 'savings' },
+      where: { businessId, status: 'ACTIVE', accountType: 'ASSET', accountSubtype: 'savings', isSystemAccount: false },
       orderBy: { displayOrder: 'asc' },
     });
   }
 
   async listSavingsWallets(businessId: string) {
     return this.prisma.account.findMany({
-      where: { businessId, accountType: 'ASSET', accountSubtype: 'savings' },
+      where: { businessId, status: 'ACTIVE', accountType: 'ASSET', accountSubtype: 'savings', isSystemAccount: false },
       orderBy: { displayOrder: 'asc' },
     });
   }
@@ -217,6 +225,21 @@ export class AccountsService {
 
   async archive(businessId: string, id: string) {
     const account = await this.requireAccount(businessId, id);
+
+    // The hidden pooled Savings account every business gets is internal
+    // plumbing, not something a user manages -- it's already excluded from
+    // every user-facing list that offers an archive action, but guard here
+    // too so nothing can archive it via any other route. A real business's
+    // Savings Goals feature broke exactly this way once: the pooled account
+    // got archived through the (now-fixed) Savings Wallet management list,
+    // silently making it look "gone" while every goal's money was still
+    // really sitting in it. Scoped narrowly to THIS one account, not every
+    // isSystemAccount row -- that flag is set on every seeded default
+    // account (Cash, Bank, AR/AP, ...), which users have always been able
+    // to freely archive; only the savings pool is special.
+    if (account.isSystemAccount && account.accountType === 'ASSET' && account.accountSubtype === 'savings') {
+      throw new BadRequestException('This is an internal system account and cannot be archived.');
+    }
 
     const activeChildCount = await this.prisma.account.count({
       where: { parentId: id, status: 'ACTIVE' },
