@@ -10,6 +10,7 @@ import { AnalyticsModule } from './analytics/analytics.module.js';
 import { AnnouncementsModule } from './announcements/announcements.module.js';
 import { AppController } from './app.controller.js';
 import { AppService } from './app.service.js';
+import { AssetsModule } from './assets/assets.module.js';
 import { AuditLogsModule } from './audit-logs/audit-logs.module.js';
 import { BudgetsModule } from './budgets/budgets.module.js';
 import { BusinessAccessModule } from './business-access/business-access.module.js';
@@ -84,6 +85,7 @@ import { UserAuthModule } from './user-auth/user-auth.module.js';
     ReceivablesPayablesModule,
     BudgetsModule,
     SavingsGoalsModule,
+    AssetsModule,
     PasswordVaultModule,
   ],
   controllers: [AppController],

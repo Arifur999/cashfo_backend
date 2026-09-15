@@ -789,6 +789,7 @@ model Business {
   budgetCategories BudgetCategory[]
   incomeGoals  IncomeGoal[]
   savingsGoals SavingsGoal[]
+  assets       Asset[]
 
   @@index([ownerId])
 }
@@ -1191,4 +1192,74 @@ model SavingsGoalEntry {
 
   @@index([savingsGoalId])
   @@index([businessId])
+}
+
+// =====================================================================
+// "Assets Management" menu -- a personal asset registry (car, land/plot,
+// jewellery, etc.) the user buys with real money from an existing Account
+// (General money account or Savings Wallet) and can later sell or revalue.
+// Same "lightweight ledger over a real Account" architecture as SavingsGoal
+// (see savings-goals.service.ts's header comment) -- purchase/sell are REAL
+// double-entry Transactions against a hidden pooled "Fixed Assets (Internal)"
+// system Account (see AssetsService.requireOrCreateFixedAssetsAccount());
+// value updates are plain data (AssetValueHistory), NOT transactions, since
+// a market revaluation isn't a real cash movement the user asked to model
+// as one (see AssetsService.updateValue()'s comment).
+// =====================================================================
+
+model Asset {
+  id                    String              @id @default(uuid())
+  businessId            String
+  business              Business            @relation(fields: [businessId], references: [id])
+  name                  String
+  category              AssetCategory       @default(OTHER)
+  purchaseDate          DateTime
+  purchasePrice         Decimal             @db.Decimal(14, 2)
+  // Cached latest value -- kept in sync by updateValue() (mirrors
+  // Account.currentBalance's own "cached, recalculated" convention).
+  currentValue          Decimal             @db.Decimal(14, 2)
+  // Loose string FK (no @relation), same convention as
+  // SavingsGoalEntry.moneyAccountId/savingsAccountId -- Account rows aren't
+  // otherwise aware of Assets.
+  purchaseAccountId     String
+  purchaseTransactionId String              @unique
+  status                AssetStatus         @default(ACTIVE)
+  soldAt                DateTime?
+  soldPrice             Decimal?            @db.Decimal(14, 2)
+  soldAccountId         String?
+  soldTransactionId     String?             @unique
+  notes                 String?
+  createdAt             DateTime            @default(now())
+  updatedAt             DateTime            @updatedAt
+  valueHistory          AssetValueHistory[]
+
+  @@index([businessId])
+}
+
+// One row per value update (including the initial purchase price as the
+// first row) -- lets the Update Value modal show a simple history list.
+model AssetValueHistory {
+  id         String   @id @default(uuid())
+  assetId    String
+  asset      Asset    @relation(fields: [assetId], references: [id])
+  value      Decimal  @db.Decimal(14, 2)
+  recordedAt DateTime @default(now())
+  note       String?
+
+  @@index([assetId])
+}
+
+enum AssetCategory {
+  VEHICLE
+  LAND
+  PROPERTY
+  JEWELLERY
+  ELECTRONICS
+  INVESTMENT
+  OTHER
+}
+
+enum AssetStatus {
+  ACTIVE
+  SOLD
 }
