@@ -15,6 +15,10 @@ export class CreateVaultEntryDto {
 
   @IsOptional()
   @IsString()
+  holderName?: string;
+
+  @IsOptional()
+  @IsString()
   usernameOrEmail?: string;
 
   @IsString()

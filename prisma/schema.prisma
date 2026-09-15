@@ -727,6 +727,10 @@ model VaultEntry {
   title              String
   category           VaultEntryCategory @default(OTHER)
   websiteUrl         String?
+  // The account HOLDER's real name (e.g. a bank account's registered
+  // name) -- distinct from usernameOrEmail below, which is the login
+  // credential itself. Both optional since not every entry has both.
+  holderName         String?
   usernameOrEmail    String?
   passwordCiphertext String
   notes              String?
