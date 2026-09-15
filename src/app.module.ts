@@ -23,6 +23,7 @@ import { HealthModule } from './health/health.module.js';
 import { InvoicesModule } from './invoices/invoices.module.js';
 import { LegalDocumentsModule } from './legal-documents/legal-documents.module.js';
 import { NotificationsModule } from './notifications/notifications.module.js';
+import { PasswordVaultModule } from './password-vault/password-vault.module.js';
 import { PaymentsModule } from './payments/payments.module.js';
 import { PlatformUsersModule } from './platform-users/platform-users.module.js';
 import { PrismaModule } from './prisma/prisma.module.js';
@@ -83,6 +84,7 @@ import { UserAuthModule } from './user-auth/user-auth.module.js';
     ReceivablesPayablesModule,
     BudgetsModule,
     SavingsGoalsModule,
+    PasswordVaultModule,
   ],
   controllers: [AppController],
   providers: [

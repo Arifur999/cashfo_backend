@@ -667,6 +667,12 @@ model User {
   // fallback in the UI instead.
   avatarUrl         String?
   passwordHash      String
+  // Settings > Password Manager's own unlock secret -- deliberately separate
+  // from passwordHash above (a leaked account password must not also unlock
+  // the vault). Null until the user completes first-time vault setup (see
+  // PasswordVaultService.setVaultPassword()); the vault menu shows a "Set up"
+  // prompt instead of an unlock form until then.
+  vaultPasswordHash String?
   preferredLanguage LanguagePreference @default(EN)
   status            UserStatus         @default(ACTIVE)
   emailVerifiedAt   DateTime?
@@ -676,6 +682,7 @@ model User {
   memberships       BusinessMember[]
   ownedBusinesses   Business[]         @relation("BusinessOwner")
   sessions          UserSession[]
+  vaultEntries      VaultEntry[]
 
   // No separate @@index([email]) -- @unique above already creates a unique
   // index covering lookups by email (same reasoning as AdminUser/PlatformUser).
@@ -704,6 +711,38 @@ model UserSession {
   revokedAt   DateTime?
 
   @@index([userId])
+}
+
+// A personal credential vault -- "Password Manager" menu (client's own
+// Facebook/bank/etc. logins, unrelated to this app's own accounting data).
+// passwordCiphertext is reversible (AES-256-GCM via vault-crypto.ts), NOT a
+// bcrypt hash -- the whole point is the user can view it again, unlike an
+// account password. Every route touching this model requires BOTH
+// UserAuthGuard (real login) and VaultAccessGuard (a short-lived vault
+// token from POST /api/vault/unlock) -- see password-vault.module.ts.
+model VaultEntry {
+  id                 String             @id @default(uuid())
+  userId             String
+  user               User               @relation(fields: [userId], references: [id])
+  title              String
+  category           VaultEntryCategory @default(OTHER)
+  websiteUrl         String?
+  usernameOrEmail    String?
+  passwordCiphertext String
+  notes              String?
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  @@index([userId])
+}
+
+enum VaultEntryCategory {
+  SOCIAL
+  BANK
+  EMAIL
+  SHOPPING
+  WORK
+  OTHER
 }
 
 enum LanguagePreference {
