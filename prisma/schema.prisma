@@ -783,6 +783,19 @@ model Business {
   planId       String?
   plan         SubscriptionPlan? @relation(fields: [planId], references: [id])
   isDefault    Boolean           @default(false) // true for the auto-created personal workspace
+  // Multi-workspace add-ons (additional BUSINESS-type workspaces under one
+  // account, e.g. managing a family member's finances separately). phone/
+  // email are just contact info entered on the New Workspace form -- not
+  // used for auth. pinHash (bcrypt, like User.passwordHash) is an OPTIONAL
+  // quick-lock checked before switching INTO this workspace (set at
+  // creation or via Edit Workspace) -- null means no lock configured.
+  // trialEndsAt is cosmetic-only for now (no enforcement): a fixed 14-day
+  // trial stamped when a non-default workspace is created, shown as a
+  // "Trial" badge in the UI.
+  phone        String?
+  email        String?
+  pinHash      String?
+  trialEndsAt  DateTime?
   // Overall monthly spending target shown on the Budget Planning page as
   // "Total budget" -- separate from the sum of BudgetCategory.monthlyLimit
   // ("Allocated"), which a user may intentionally under- or over-allocate

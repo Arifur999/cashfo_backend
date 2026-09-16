@@ -1,4 +1,5 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import * as bcrypt from 'bcrypt';
 import { WorkspaceType } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { CreateBusinessDto } from './dto/create-business.dto.js';
@@ -25,6 +26,11 @@ export class BusinessesService {
       orderBy: { joinedAt: 'asc' },
     });
 
+    // Computed once outside the map loop -- every non-default BUSINESS
+    // workspace in this list shares the same owner's plan, so there's no
+    // need to re-derive it (and re-query the owner's default workspace) per row.
+    const fee = await this.getAdditionalWorkspaceMonthlyFee(userId);
+
     return memberships.map((m) => ({
       id: m.business.id,
       name: m.business.name,
@@ -32,6 +38,11 @@ export class BusinessesService {
       currency: m.business.currency,
       isDefault: m.business.isDefault,
       role: m.role,
+      phone: m.business.phone,
+      email: m.business.email,
+      hasPinLock: m.business.pinHash !== null,
+      trialEndsAt: m.business.trialEndsAt,
+      monthlyFee: m.business.type === 'BUSINESS' && !m.business.isDefault ? fee : null,
     }));
   }
 
@@ -64,6 +75,20 @@ export class BusinessesService {
     return { maxBusinessWorkspaces, currentCount, planId: defaultBusiness?.planId };
   }
 
+  // 50% of the owner's plan price per additional (non-default) workspace --
+  // ledger/display only for now, no real charge/payment gateway integration.
+  // Reuses the SAME "owner's default workspace's plan" lookup getPlanLimitInfo()
+  // already relies on (see that method's own comment on why billing is
+  // per-user, not per-workspace, until real multi-workspace billing exists).
+  private async getAdditionalWorkspaceMonthlyFee(userId: string): Promise<string | null> {
+    const defaultBusiness = await this.prisma.business.findFirst({
+      where: { ownerId: userId, isDefault: true },
+      include: { plan: true },
+    });
+    if (!defaultBusiness?.plan) return null;
+    return (Number(defaultBusiness.plan.price) * 0.5).toFixed(2);
+  }
+
   async getLimits(userId: string) {
     const { maxBusinessWorkspaces, currentCount } = await this.getPlanLimitInfo(userId);
     const atLimit = maxBusinessWorkspaces !== -1 && currentCount >= maxBusinessWorkspaces;
@@ -87,8 +112,10 @@ export class BusinessesService {
       throw new ForbiddenException(message);
     }
 
-    return this.prisma.$transaction(async (tx) => {
-      const business = await tx.business.create({
+    const pinHash = dto.pin ? await bcrypt.hash(dto.pin, 10) : null;
+
+    const business = await this.prisma.$transaction(async (tx) => {
+      const created = await tx.business.create({
         data: {
           ownerId: userId,
           name: dto.name,
@@ -96,20 +123,46 @@ export class BusinessesService {
           currency: dto.currency ?? 'BDT',
           planId,
           isDefault: false,
+          phone: dto.phone ?? null,
+          email: dto.email ?? null,
+          pinHash,
+          trialEndsAt: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000),
         },
       });
 
       await tx.businessMember.create({
-        data: { businessId: business.id, userId, role: 'OWNER' },
+        data: { businessId: created.id, userId, role: 'OWNER' },
       });
 
       // Prompt 4: a workspace should never exist without its starter Chart
       // of Accounts -- seeded in the SAME transaction as the workspace/
       // membership rows above, for the same all-or-nothing reason.
-      await this.accountsService.seedDefaultAccounts(business.id, WorkspaceType.BUSINESS, tx);
+      await this.accountsService.seedDefaultAccounts(created.id, WorkspaceType.BUSINESS, tx);
 
-      return { id: business.id, name: business.name, type: business.type, currency: business.currency, isDefault: business.isDefault, role: 'OWNER' as const };
+      return created;
     });
+
+    // Computed AFTER the transaction commits, not inside it -- this reads via
+    // the plain (non-transactional) PrismaService client, and calling it from
+    // inside an open interactive transaction against `prisma dev`'s limited
+    // connection pool starves that transaction until it hits its 5s timeout
+    // (P2028), exactly like the bug already fixed once in
+    // UserAuthService.register() (see that method's own comment).
+    const monthlyFee = await this.getAdditionalWorkspaceMonthlyFee(userId);
+
+    return {
+      id: business.id,
+      name: business.name,
+      type: business.type,
+      currency: business.currency,
+      isDefault: business.isDefault,
+      role: 'OWNER' as const,
+      phone: business.phone,
+      email: business.email,
+      hasPinLock: business.pinHash !== null,
+      trialEndsAt: business.trialEndsAt,
+      monthlyFee,
+    };
   }
 
   async getOne(businessId: string) {
@@ -123,6 +176,14 @@ export class BusinessesService {
       planId: business.planId,
       createdAt: business.createdAt,
       updatedAt: business.updatedAt,
+      phone: business.phone,
+      email: business.email,
+      hasPinLock: business.pinHash !== null,
+      trialEndsAt: business.trialEndsAt,
+      monthlyFee:
+        business.type === 'BUSINESS' && !business.isDefault
+          ? await this.getAdditionalWorkspaceMonthlyFee(business.ownerId)
+          : null,
     };
   }
 
@@ -130,15 +191,37 @@ export class BusinessesService {
     this.requireOwner(member);
     await this.requireBusiness(businessId);
 
+    let pinHash: string | undefined;
+    if (dto.pin !== undefined) {
+      pinHash = await bcrypt.hash(dto.pin, 10);
+    }
+
     const updated = await this.prisma.business.update({
       where: { id: businessId },
       data: {
         ...(dto.name !== undefined && { name: dto.name }),
         ...(dto.currency !== undefined && { currency: dto.currency }),
+        ...(dto.phone !== undefined && { phone: dto.phone }),
+        ...(dto.email !== undefined && { email: dto.email }),
+        ...(pinHash !== undefined && { pinHash }),
       },
     });
 
-    return { id: updated.id, name: updated.name, type: updated.type, currency: updated.currency, isDefault: updated.isDefault };
+    return {
+      id: updated.id,
+      name: updated.name,
+      type: updated.type,
+      currency: updated.currency,
+      isDefault: updated.isDefault,
+      phone: updated.phone,
+      email: updated.email,
+      hasPinLock: updated.pinHash !== null,
+      trialEndsAt: updated.trialEndsAt,
+      monthlyFee:
+        updated.type === 'BUSINESS' && !updated.isDefault
+          ? await this.getAdditionalWorkspaceMonthlyFee(updated.ownerId)
+          : null,
+    };
   }
 
   async remove(businessId: string, member: RequestBusinessMember) {
@@ -161,6 +244,13 @@ export class BusinessesService {
 
     await this.prisma.business.update({ where: { id: businessId }, data: { deletedAt: new Date() } });
     return { success: true };
+  }
+
+  async verifyPin(businessId: string, pin: string): Promise<{ valid: boolean }> {
+    const business = await this.requireBusiness(businessId);
+    if (!business.pinHash) return { valid: true }; // no lock configured -- nothing to verify
+    const valid = await bcrypt.compare(pin, business.pinHash);
+    return { valid };
   }
 
   private requireOwner(member: RequestBusinessMember) {

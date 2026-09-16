@@ -6,6 +6,7 @@ import { AccountTemplatesModule } from './account-templates/account-templates.mo
 import { AccountsModule } from './accounts/accounts.module.js';
 import { AdminAuthModule } from './admin-auth/admin-auth.module.js';
 import { AdminUsersModule } from './admin-users/admin-users.module.js';
+import { AdminWorkspacesModule } from './admin-workspaces/admin-workspaces.module.js';
 import { AnalyticsModule } from './analytics/analytics.module.js';
 import { AnnouncementsModule } from './announcements/announcements.module.js';
 import { AppController } from './app.controller.js';
@@ -56,6 +57,7 @@ import { UserAuthModule } from './user-auth/user-auth.module.js';
     HealthModule,
     AdminAuthModule,
     AdminUsersModule,
+    AdminWorkspacesModule,
     PlatformUsersModule,
     SubscriptionPlansModule,
     CouponsModule,

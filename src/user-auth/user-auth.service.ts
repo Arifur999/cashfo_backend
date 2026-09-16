@@ -340,6 +340,8 @@ export class UserAuthService {
         currency: m.business.currency,
         role: m.role,
         isDefault: m.business.isDefault,
+        hasPinLock: m.business.pinHash !== null,
+        trialEndsAt: m.business.trialEndsAt,
       })),
     };
   }

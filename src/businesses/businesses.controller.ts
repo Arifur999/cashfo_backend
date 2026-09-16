@@ -2,6 +2,7 @@ import { Body, Controller, Delete, Get, Param, Patch, Post, UseGuards } from '@n
 import { BusinessesService } from './businesses.service.js';
 import { CreateBusinessDto } from './dto/create-business.dto.js';
 import { UpdateBusinessDto } from './dto/update-business.dto.js';
+import { VerifyBusinessPinDto } from './dto/verify-business-pin.dto.js';
 import { CurrentBusinessMember } from '../business-access/decorators/current-business-member.decorator.js';
 import { RequireBusinessMembership } from '../business-access/decorators/require-business-membership.decorator.js';
 import type { RequestBusinessMember } from '../business-access/interfaces/request-business-member.interface.js';
@@ -48,6 +49,15 @@ export class BusinessesController {
   @Patch(':id')
   update(@Param('id') id: string, @CurrentBusinessMember() member: RequestBusinessMember, @Body() dto: UpdateBusinessDto) {
     return this.businessesService.update(id, member, dto);
+  }
+
+  // Reachable by ANY business member (not owner-only): a STAFF/ACCOUNTANT
+  // member switching INTO a PIN-locked workspace they already belong to
+  // must be able to verify the pin too, same as the OWNER who set it.
+  @RequireBusinessMembership()
+  @Post(':id/verify-pin')
+  verifyPin(@Param('id') id: string, @Body() dto: VerifyBusinessPinDto) {
+    return this.businessesService.verifyPin(id, dto.pin);
   }
 
   @RequireBusinessMembership()

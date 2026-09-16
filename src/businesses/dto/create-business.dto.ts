@@ -1,4 +1,4 @@
-import { IsEnum, IsNotEmpty, IsOptional, IsString } from 'class-validator';
+import { IsEnum, IsNotEmpty, IsOptional, IsString, Matches } from 'class-validator';
 import { WorkspaceType } from '@prisma/client';
 
 export class CreateBusinessDto {
@@ -17,4 +17,17 @@ export class CreateBusinessDto {
   @IsString()
   @IsNotEmpty()
   currency?: string;
+
+  @IsOptional()
+  @IsString()
+  phone?: string;
+
+  @IsOptional()
+  @IsString()
+  email?: string;
+
+  @IsOptional()
+  @IsString()
+  @Matches(/^\d{4,6}$/, { message: 'PIN must be 4 to 6 digits' })
+  pin?: string;
 }
