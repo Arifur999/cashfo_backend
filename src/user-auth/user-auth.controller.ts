@@ -14,10 +14,14 @@ import { UserAuthGuard } from './guards/user-auth.guard.js';
 import type { RequestUser } from './interfaces/request-user.interface.js';
 import { userAvatarMulterOptions } from './user-avatar-upload.js';
 import { UserAuthService } from './user-auth.service.js';
+import { ImgbbService } from '../uploads/imgbb.service.js';
 
 @Controller('api/auth')
 export class UserAuthController {
-  constructor(private readonly userAuthService: UserAuthService) {}
+  constructor(
+    private readonly userAuthService: UserAuthService,
+    private readonly imgbbService: ImgbbService,
+  ) {}
 
   // Both frontends only ever call this backend server-side (Server
   // Actions/Route Handlers, never the browser directly -- see CLAUDE.md),
@@ -83,11 +87,11 @@ export class UserAuthController {
   @UseGuards(UserAuthGuard)
   @Post('avatar')
   @UseInterceptors(FileInterceptor('file', userAvatarMulterOptions))
-  uploadAvatar(@CurrentUser() user: RequestUser, @UploadedFile() file: Express.Multer.File, @Req() req: Request) {
+  async uploadAvatar(@CurrentUser() user: RequestUser, @UploadedFile() file: Express.Multer.File) {
     if (!file) {
       throw new BadRequestException('No file was uploaded');
     }
-    const avatarUrl = `${req.protocol}://${req.get('host')}/uploads/avatars/${file.filename}`;
+    const avatarUrl = await this.imgbbService.uploadImage(file.buffer, file.originalname);
     return this.userAuthService.updateAvatar(user.id, avatarUrl);
   }
 

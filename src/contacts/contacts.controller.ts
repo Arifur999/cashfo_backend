@@ -1,7 +1,6 @@
-import { BadRequestException, Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, UploadedFile, UseInterceptors } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, Get, Param, Patch, Post, Query, UploadedFile, UseInterceptors } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { MemberRole } from '@prisma/client';
-import type { Request } from 'express';
 import { contactPhotoMulterOptions } from './contact-photo-upload.js';
 import { ContactsService } from './contacts.service.js';
 import { CreateContactDto } from './dto/create-contact.dto.js';
@@ -11,6 +10,7 @@ import { RequireBusinessMembership } from '../business-access/decorators/require
 import { RequireRole } from '../business-access/decorators/require-role.decorator.js';
 import { ListTransactionsQueryDto } from '../transactions/dto/list-transactions-query.dto.js';
 import { TransactionsService } from '../transactions/transactions.service.js';
+import { ImgbbService } from '../uploads/imgbb.service.js';
 
 // Viewing (list/detail/transactions) is open to all roles including STAFF;
 // create/edit/archive restricted to OWNER/ACCOUNTANT -- same split as
@@ -21,6 +21,7 @@ export class ContactsController {
   constructor(
     private readonly contactsService: ContactsService,
     private readonly transactionsService: TransactionsService,
+    private readonly imgbbService: ImgbbService,
   ) {}
 
   @Get()
@@ -68,10 +69,11 @@ export class ContactsController {
   @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
   @Post('upload-photo')
   @UseInterceptors(FileInterceptor('file', contactPhotoMulterOptions))
-  uploadPhoto(@UploadedFile() file: Express.Multer.File, @Req() req: Request) {
+  async uploadPhoto(@UploadedFile() file: Express.Multer.File) {
     if (!file) {
       throw new BadRequestException('No file was uploaded');
     }
-    return { url: `${req.protocol}://${req.get('host')}/uploads/contacts/${file.filename}` };
+    const url = await this.imgbbService.uploadImage(file.buffer, file.originalname);
+    return { url };
   }
 }
