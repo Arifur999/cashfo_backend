@@ -112,7 +112,11 @@ export class AssetsService {
           purchasePrice: dto.purchasePrice,
           currentValue: dto.purchasePrice,
           notes: dto.notes,
-          valueHistory: { create: { value: dto.purchasePrice, note: 'Initial value' } },
+          // recordedAt explicitly set to the purchase date itself (not left
+          // at its @default(now())) -- otherwise a backdated purchase would
+          // show its first "View Details" history row under today's date
+          // instead of when it was actually bought.
+          valueHistory: { create: { value: dto.purchasePrice, note: 'Initial value', recordedAt: new Date(dto.purchaseDate) } },
         },
         include: { valueHistory: { orderBy: VALUE_HISTORY_ORDER } },
       });
@@ -151,7 +155,7 @@ export class AssetsService {
         purchaseAccountId: paymentAccount.id,
         purchaseTransactionId: transaction.id,
         notes: dto.notes,
-        valueHistory: { create: { value: dto.purchasePrice, note: 'Initial purchase value' } },
+        valueHistory: { create: { value: dto.purchasePrice, note: 'Initial purchase value', recordedAt: new Date(dto.purchaseDate) } },
       },
       include: { valueHistory: { orderBy: VALUE_HISTORY_ORDER } },
     });
@@ -206,7 +210,7 @@ export class AssetsService {
     if (asset.status === 'SOLD') {
       throw new BadRequestException('Cannot update the value of a sold asset.');
     }
-    await this.prisma.assetValueHistory.create({ data: { assetId: id, value: dto.value, note: dto.note } });
+    await this.prisma.assetValueHistory.create({ data: { assetId: id, value: dto.value, note: dto.note, recordedAt: new Date(dto.date) } });
     return this.prisma.asset.update({
       where: { id },
       data: { currentValue: dto.value },
