@@ -667,6 +667,14 @@ model User {
   // fallback in the UI instead.
   avatarUrl         String?
   passwordHash      String
+  // Shareable short code for this user's own referral link ("Referral
+  // Program" menu) -- nullable because pre-existing users only get one
+  // lazily backfilled the first time they open that page (see
+  // ReferralsService.getReferralInfo()); every brand-new registration sets
+  // one immediately (see UserAuthService.register()). Unique so a code
+  // uniquely identifies its owner when a new signup's referralCode DTO
+  // field is looked up.
+  referralCode      String?            @unique
   // Settings > Password Manager's own unlock secret -- deliberately separate
   // from passwordHash above (a leaked account password must not also unlock
   // the vault). Null until the user completes first-time vault setup (see
@@ -683,6 +691,11 @@ model User {
   ownedBusinesses   Business[]         @relation("BusinessOwner")
   sessions          UserSession[]
   vaultEntries      VaultEntry[]
+  // Every Referral row this user created by inviting someone else (as the
+  // referrer), vs. the single Referral row recording that this user was
+  // THEMSELVES referred by someone else's code at registration.
+  referralsMade     Referral[]         @relation("Referrer")
+  referredAs        Referral?          @relation("Referred")
 
   // No separate @@index([email]) -- @unique above already creates a unique
   // index covering lookups by email (same reasoning as AdminUser/PlatformUser).
@@ -1278,4 +1291,42 @@ model AssetCategoryOption {
 enum AssetStatus {
   ACTIVE
   SOLD
+}
+
+// =====================================================================
+// "Referral Program" menu -- every user gets their own shareable
+// referralCode (see User.referralCode); a new signup that includes someone
+// else's code in RegisterDto creates one Referral row here linking the two.
+// =====================================================================
+
+// Tracks one referral relationship: referrer invited referredUser, who
+// registered using referrer's referralCode. rewardAmount is a SNAPSHOT of
+// the admin-configured reward at the moment this referral was created
+// (SettingsService's referralRewardAmount) -- a later admin change to the
+// reward amount never retroactively changes an already-created Referral's
+// own amount, same "snapshot at creation time" reasoning as
+// AssetsService.purchase() storing purchasePrice rather than a live lookup.
+// PENDING -> CONFIRMED once referredUser has been registered 30+ days
+// (self-healing on every read, same pattern as
+// SavingsGoalsService.maybeMarkCompleted()) -> WITHDRAWN once the user
+// cashes out their available balance (see ReferralsService.withdraw()).
+model Referral {
+  id             String         @id @default(uuid())
+  referrerId     String
+  referrer       User           @relation("Referrer", fields: [referrerId], references: [id])
+  referredUserId String         @unique
+  referredUser   User           @relation("Referred", fields: [referredUserId], references: [id])
+  rewardAmount   Decimal        @db.Decimal(14, 2)
+  status         ReferralStatus @default(PENDING)
+  confirmedAt    DateTime?
+  withdrawnAt    DateTime?
+  createdAt      DateTime       @default(now())
+
+  @@index([referrerId])
+}
+
+enum ReferralStatus {
+  PENDING
+  CONFIRMED
+  WITHDRAWN
 }

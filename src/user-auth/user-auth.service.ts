@@ -3,9 +3,10 @@ import { ConfigService } from '@nestjs/config';
 import { JwtService, type JwtSignOptions } from '@nestjs/jwt';
 import { User, WorkspaceType } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
-import { randomUUID } from 'crypto';
+import { randomBytes, randomUUID } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { AccountsService } from '../accounts/accounts.service.js';
+import { SettingsService } from '../settings/settings.service.js';
 import { ChangePasswordDto } from './dto/change-password.dto.js';
 import { LoginDto } from './dto/login.dto.js';
 import { RegisterDto } from './dto/register.dto.js';
@@ -28,6 +29,7 @@ export class UserAuthService {
     private readonly configService: ConfigService,
     private readonly tokenBlacklist: TokenBlacklistService,
     private readonly accountsService: AccountsService,
+    private readonly settingsService: SettingsService,
   ) {}
 
   async register(dto: RegisterDto, ipAddress?: string, userAgent?: string) {
@@ -38,6 +40,13 @@ export class UserAuthService {
 
     const passwordHash = await bcrypt.hash(dto.password, 10);
     const freePlan = await this.prisma.subscriptionPlan.findUnique({ where: { slug: 'free' } });
+    // Read once, outside the transaction below -- SettingsService.get()
+    // uses the plain (non-transactional) PrismaService client, and calling
+    // it from inside an open interactive transaction against `prisma dev`'s
+    // single-connection pool starves that transaction until it hits its
+    // 5s timeout (P2028). The reward amount is just a snapshot value; it
+    // doesn't need transactional consistency with the user-creation below.
+    const referralRewardAmount = (await this.settingsService.get()).referralRewardAmount;
 
     // All-or-nothing: a user must never exist without their default
     // workspace (and vice versa) -- see Prompt 2 spec.
@@ -53,6 +62,34 @@ export class UserAuthService {
           // email once an email provider is wired up (not in scope yet).
         },
       });
+
+      // Generate this user's own shareable referral code (same short-code
+      // algorithm ReferralsService.generateUniqueReferralCode() uses for
+      // backfilling pre-existing users -- duplicated here, not imported, to
+      // avoid a circular UserAuthModule <-> ReferralsModule dependency; see
+      // that method's own comment).
+      let referralCode: string | undefined;
+      for (let attempt = 0; attempt < 5; attempt++) {
+        const candidate = randomBytes(5).toString('hex').toUpperCase().slice(0, 8);
+        const clash = await tx.user.findUnique({ where: { referralCode: candidate } });
+        if (!clash) {
+          referralCode = candidate;
+          break;
+        }
+      }
+      await tx.user.update({ where: { id: createdUser.id }, data: { referralCode } });
+
+      // If this signup came through someone else's referral link, record it --
+      // an unknown/stale code is silently ignored (registration must never fail
+      // just because of a bad referral link).
+      if (dto.referralCode) {
+        const referrer = await tx.user.findUnique({ where: { referralCode: dto.referralCode } });
+        if (referrer) {
+          await tx.referral.create({
+            data: { referrerId: referrer.id, referredUserId: createdUser.id, rewardAmount: referralRewardAmount, status: 'PENDING' },
+          });
+        }
+      }
 
       const defaultBusiness = await tx.business.create({
         data: {

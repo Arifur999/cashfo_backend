@@ -23,4 +23,12 @@ export class RegisterDto {
   @IsOptional()
   @IsEnum(LanguagePreference)
   preferredLanguage?: LanguagePreference;
+
+  // "Referral Program" -- another user's shareable referralCode, carried
+  // through a signup link. An unknown/stale code is silently ignored at
+  // registration time (see UserAuthService.register()) rather than
+  // rejected -- a bad referral link must never block a signup.
+  @IsOptional()
+  @IsString()
+  referralCode?: string;
 }

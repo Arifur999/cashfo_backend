@@ -15,6 +15,9 @@ const DEFAULTS = {
   default_timezone: 'Asia/Dhaka',
   maintenance_mode: false,
   maintenance_message: "We're currently performing scheduled maintenance. Please check back soon.",
+  // "Referral Program" menu's admin-configured reward per confirmed
+  // referral -- 100 BDT is the product owner's explicit demo default.
+  referral_reward_amount: 100,
 } as const;
 
 export interface PlatformSettings {
@@ -24,6 +27,7 @@ export interface PlatformSettings {
   defaultTimezone: string;
   maintenanceMode: boolean;
   maintenanceMessage: string;
+  referralRewardAmount: number;
 }
 
 @Injectable()
@@ -41,19 +45,21 @@ export class SettingsService {
       defaultTimezone: (byKey.get('default_timezone') as string | undefined) ?? DEFAULTS.default_timezone,
       maintenanceMode: (byKey.get('maintenance_mode') as boolean | undefined) ?? DEFAULTS.maintenance_mode,
       maintenanceMessage: (byKey.get('maintenance_message') as string | undefined) ?? DEFAULTS.maintenance_message,
+      referralRewardAmount: (byKey.get('referral_reward_amount') as number | undefined) ?? DEFAULTS.referral_reward_amount,
     };
   }
 
   async update(dto: UpdateSettingsDto, adminId: string, ipAddress?: string): Promise<PlatformSettings> {
     const before = await this.get();
 
-    const updates: [string, string | boolean][] = [];
+    const updates: [string, string | boolean | number][] = [];
     if (dto.platformName !== undefined) updates.push(['platform_name', dto.platformName]);
     if (dto.supportEmail !== undefined) updates.push(['support_email', dto.supportEmail]);
     if (dto.defaultCurrency !== undefined) updates.push(['default_currency', dto.defaultCurrency]);
     if (dto.defaultTimezone !== undefined) updates.push(['default_timezone', dto.defaultTimezone]);
     if (dto.maintenanceMode !== undefined) updates.push(['maintenance_mode', dto.maintenanceMode]);
     if (dto.maintenanceMessage !== undefined) updates.push(['maintenance_message', dto.maintenanceMessage]);
+    if (dto.referralRewardAmount !== undefined) updates.push(['referral_reward_amount', dto.referralRewardAmount]);
 
     for (const [key, value] of updates) {
       await this.prisma.platformSetting.upsert({

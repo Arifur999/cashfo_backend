@@ -1,4 +1,4 @@
-import { IsBoolean, IsEmail, IsNotEmpty, IsOptional, IsString } from 'class-validator';
+import { IsBoolean, IsEmail, IsNotEmpty, IsNumber, IsOptional, IsPositive, IsString } from 'class-validator';
 
 export class UpdateSettingsDto {
   @IsOptional()
@@ -27,4 +27,9 @@ export class UpdateSettingsDto {
   @IsOptional()
   @IsString()
   maintenanceMessage?: string;
+
+  @IsOptional()
+  @IsNumber()
+  @IsPositive()
+  referralRewardAmount?: number;
 }

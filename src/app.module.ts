@@ -30,6 +30,7 @@ import { PlatformUsersModule } from './platform-users/platform-users.module.js';
 import { PrismaModule } from './prisma/prisma.module.js';
 import { QuickEntriesModule } from './quick-entries/quick-entries.module.js';
 import { ReceivablesPayablesModule } from './receivables-payables/receivables-payables.module.js';
+import { ReferralsModule } from './referrals/referrals.module.js';
 import { ReportsModule } from './reports/reports.module.js';
 import { RevenueModule } from './revenue/revenue.module.js';
 import { SavingsGoalsModule } from './savings-goals/savings-goals.module.js';
@@ -83,6 +84,7 @@ import { UserAuthModule } from './user-auth/user-auth.module.js';
     ReportsModule,
     ContactsModule,
     ReceivablesPayablesModule,
+    ReferralsModule,
     BudgetsModule,
     SavingsGoalsModule,
     AssetsModule,

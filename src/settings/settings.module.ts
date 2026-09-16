@@ -7,5 +7,10 @@ import { SettingsService } from './settings.service.js';
   imports: [AdminAuthModule],
   controllers: [SettingsController],
   providers: [SettingsService],
+  // Exported so ReferralsModule (reads referralRewardAmount) and
+  // UserAuthModule (snapshots it onto a new Referral row at registration)
+  // can inject SettingsService too -- previously only usable within this
+  // module itself.
+  exports: [SettingsService],
 })
 export class SettingsModule {}
