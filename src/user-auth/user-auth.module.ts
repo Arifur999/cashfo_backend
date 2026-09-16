@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
 import { AccountsModule } from '../accounts/accounts.module.js';
+import { MailModule } from '../mail/mail.module.js';
 import { SettingsModule } from '../settings/settings.module.js';
 import { UploadsModule } from '../uploads/uploads.module.js';
 import { UserAuthController } from './user-auth.controller.js';
@@ -21,8 +22,9 @@ import { TokenBlacklistService } from './token-blacklist.service.js';
   // SettingsModule: SettingsService.get().referralRewardAmount, snapshotted
   // onto a new Referral row when register() is passed someone else's
   // referralCode. Deliberately NOT ReferralsModule itself (that would be
-  // circular -- see UserAuthService's own comment on this).
-  imports: [JwtModule.register({}), AccountsModule, UploadsModule, SettingsModule],
+  // circular -- see UserAuthService's own comment on this). MailModule:
+  // MailService, for the post-register welcome email.
+  imports: [JwtModule.register({}), AccountsModule, UploadsModule, SettingsModule, MailModule],
   controllers: [UserAuthController],
   providers: [UserAuthService, UserAuthGuard, TokenBlacklistService, LoginRateLimitFilter],
   exports: [JwtModule, UserAuthGuard],

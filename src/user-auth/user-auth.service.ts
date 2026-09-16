@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, Logger, NotFoundException, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService, type JwtSignOptions } from '@nestjs/jwt';
 import { User, WorkspaceType } from '@prisma/client';
@@ -6,6 +6,8 @@ import * as bcrypt from 'bcrypt';
 import { randomBytes, randomUUID } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { AccountsService } from '../accounts/accounts.service.js';
+import { MailService } from '../mail/mail.service.js';
+import { renderWelcomeEmail } from '../mail/templates/welcome-email.js';
 import { SettingsService } from '../settings/settings.service.js';
 import { ChangePasswordDto } from './dto/change-password.dto.js';
 import { LoginDto } from './dto/login.dto.js';
@@ -23,6 +25,8 @@ interface RefreshTokenPayload {
 
 @Injectable()
 export class UserAuthService {
+  private readonly logger = new Logger(UserAuthService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly jwtService: JwtService,
@@ -30,6 +34,7 @@ export class UserAuthService {
     private readonly tokenBlacklist: TokenBlacklistService,
     private readonly accountsService: AccountsService,
     private readonly settingsService: SettingsService,
+    private readonly mailService: MailService,
   ) {}
 
   async register(dto: RegisterDto, ipAddress?: string, userAgent?: string) {
@@ -58,8 +63,9 @@ export class UserAuthService {
           phone: dto.phone,
           passwordHash,
           preferredLanguage: dto.preferredLanguage,
-          // emailVerifiedAt stays null -- TODO: send a real verification
-          // email once an email provider is wired up (not in scope yet).
+          // emailVerifiedAt stays null -- a real verification-email flow
+          // (token + verify endpoint + frontend page) is still a separate
+          // future feature; MailService now exists for it when that's built.
         },
       });
 
@@ -111,6 +117,14 @@ export class UserAuthService {
     });
 
     const { accessToken, refreshToken } = await this.issueTokens(user, ipAddress, userAgent);
+
+    // Best-effort: a flaky/unconfigured email provider must never fail
+    // registration itself (same reasoning as the referral-code lookup
+    // above) -- log and move on rather than throwing.
+    const welcomeEmail = renderWelcomeEmail(user.name);
+    this.mailService.sendEmail({ to: user.email, ...welcomeEmail }).catch((err: unknown) => {
+      this.logger.error(`Failed to send welcome email to ${user.email}: ${err instanceof Error ? err.message : String(err)}`);
+    });
 
     return {
       accessToken,
