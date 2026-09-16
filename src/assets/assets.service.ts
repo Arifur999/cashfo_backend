@@ -26,6 +26,29 @@ export class AssetsService {
   }
 
   async purchase(businessId: string, dto: CreateAssetPurchaseDto, userId: string) {
+    // "Current Asset list"'s simpler Add Assets flow has no Account field
+    // at all -- it's a plain inventory entry (Date/Asset Name/Category/
+    // Value/Notes only), deliberately NOT tied to any real money movement.
+    // Skip the Transaction entirely in that case; purchaseAccountId/
+    // purchaseTransactionId stay null. "Purchase & Sell Asset"'s own
+    // Purchase Asset form still always sends a real purchaseAccountId, so it
+    // always takes the real-transaction branch below.
+    if (!dto.purchaseAccountId) {
+      return this.prisma.asset.create({
+        data: {
+          businessId,
+          name: dto.name,
+          category: dto.category,
+          purchaseDate: new Date(dto.purchaseDate),
+          purchasePrice: dto.purchasePrice,
+          currentValue: dto.purchasePrice,
+          notes: dto.notes,
+          valueHistory: { create: { value: dto.purchasePrice, note: 'Initial value' } },
+        },
+        include: { valueHistory: { orderBy: VALUE_HISTORY_ORDER } },
+      });
+    }
+
     const paymentAccount = await this.requirePaymentAccount(businessId, dto.purchaseAccountId);
     if (new Prisma.Decimal(paymentAccount.currentBalance).lessThan(dto.purchasePrice)) {
       throw new BadRequestException(

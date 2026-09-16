@@ -1220,9 +1220,13 @@ model Asset {
   currentValue          Decimal             @db.Decimal(14, 2)
   // Loose string FK (no @relation), same convention as
   // SavingsGoalEntry.moneyAccountId/savingsAccountId -- Account rows aren't
-  // otherwise aware of Assets.
-  purchaseAccountId     String
-  purchaseTransactionId String              @unique
+  // otherwise aware of Assets. Both null for an asset added via "Current
+  // Asset list"'s simple Add Assets flow (Date/Asset Name/Category/Value/
+  // Notes only, no Account field, no real money movement) -- see
+  // AssetsService.purchase()'s comment for the branch that skips creating a
+  // Transaction entirely when purchaseAccountId is omitted.
+  purchaseAccountId     String?
+  purchaseTransactionId String?             @unique
   status                AssetStatus         @default(ACTIVE)
   soldAt                DateTime?
   soldPrice             Decimal?            @db.Decimal(14, 2)

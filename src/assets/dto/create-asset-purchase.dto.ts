@@ -17,10 +17,14 @@ export class CreateAssetPurchaseDto {
   purchasePrice: number;
 
   // Either a regular money account (cash/bank/mfs) or a Savings Wallet --
-  // see AssetsService.requirePaymentAccount().
+  // see AssetsService.requirePaymentAccount(). Omitted entirely by "Current
+  // Asset list"'s simpler Add Assets flow, which just records an asset
+  // without tracking which account paid for it -- see
+  // AssetsService.purchase()'s comment.
+  @IsOptional()
   @IsString()
   @IsNotEmpty()
-  purchaseAccountId: string;
+  purchaseAccountId?: string;
 
   @IsOptional()
   @IsString()
