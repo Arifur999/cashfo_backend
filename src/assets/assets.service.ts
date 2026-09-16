@@ -1,10 +1,12 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { Account, Asset, Prisma } from '@prisma/client';
 import { MONEY_ACCOUNT_SUBTYPES } from '../accounts/accounts.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { TransactionsService } from '../transactions/transactions.service.js';
+import { CreateAssetCategoryDto } from './dto/create-asset-category.dto.js';
 import { CreateAssetPurchaseDto } from './dto/create-asset-purchase.dto.js';
 import { SellAssetDto } from './dto/sell-asset.dto.js';
+import { UpdateAssetCategoryDto } from './dto/update-asset-category.dto.js';
 import { UpdateAssetValueDto } from './dto/update-asset-value.dto.js';
 
 const FIXED_ASSETS_ACCOUNT_SUBTYPE = 'fixed-assets';
@@ -23,6 +25,73 @@ export class AssetsService {
       include: { valueHistory: { orderBy: VALUE_HISTORY_ORDER } },
       orderBy: { purchaseDate: 'desc' },
     });
+  }
+
+  private readonly DEFAULT_ASSET_CATEGORIES: { name: string; icon: string; color: string }[] = [
+    { name: 'Vehicle', icon: 'car', color: 'blue' },
+    { name: 'Land', icon: 'mountain', color: 'green' },
+    { name: 'Property', icon: 'building-2', color: 'orange' },
+    { name: 'Jewellery', icon: 'gem', color: 'pink' },
+    { name: 'Electronics', icon: 'laptop', color: 'purple' },
+    { name: 'Investment', icon: 'trending-up', color: 'teal' },
+    { name: 'Other', icon: 'package', color: 'indigo' },
+  ];
+
+  // Lazily seeds the 7 original defaults the first time a business ever
+  // looks at its category list -- same "lazy get-or-create" pattern as
+  // AssetsService.requireOrCreateFixedAssetsAccount() -- so no migration
+  // script is needed for already-existing businesses, and a fresh business
+  // gets sensible defaults without a registration-time seed step.
+  async listCategories(businessId: string) {
+    const existing = await this.prisma.assetCategoryOption.findMany({ where: { businessId }, orderBy: { displayOrder: 'asc' } });
+    if (existing.length > 0) return existing;
+    await this.prisma.assetCategoryOption.createMany({
+      data: this.DEFAULT_ASSET_CATEGORIES.map((c, i) => ({ businessId, name: c.name, icon: c.icon, color: c.color, displayOrder: i })),
+    });
+    return this.prisma.assetCategoryOption.findMany({ where: { businessId }, orderBy: { displayOrder: 'asc' } });
+  }
+
+  async createCategory(businessId: string, dto: CreateAssetCategoryDto) {
+    const existing = await this.prisma.assetCategoryOption.findUnique({ where: { businessId_name: { businessId, name: dto.name } } });
+    if (existing) {
+      throw new ConflictException(`An asset category named "${dto.name}" already exists`);
+    }
+    const count = await this.prisma.assetCategoryOption.count({ where: { businessId } });
+    return this.prisma.assetCategoryOption.create({
+      data: { businessId, name: dto.name, icon: dto.icon, color: dto.color, displayOrder: count },
+    });
+  }
+
+  async updateCategory(businessId: string, id: string, dto: UpdateAssetCategoryDto) {
+    await this.requireCategory(businessId, id);
+    if (dto.name !== undefined) {
+      const clash = await this.prisma.assetCategoryOption.findUnique({ where: { businessId_name: { businessId, name: dto.name } } });
+      if (clash && clash.id !== id) {
+        throw new ConflictException(`An asset category named "${dto.name}" already exists`);
+      }
+    }
+    return this.prisma.assetCategoryOption.update({
+      where: { id },
+      data: {
+        ...(dto.name !== undefined && { name: dto.name }),
+        ...(dto.icon !== undefined && { icon: dto.icon }),
+        ...(dto.color !== undefined && { color: dto.color }),
+      },
+    });
+  }
+
+  async deleteCategory(businessId: string, id: string) {
+    await this.requireCategory(businessId, id);
+    await this.prisma.assetCategoryOption.delete({ where: { id } });
+    return { id };
+  }
+
+  private async requireCategory(businessId: string, id: string) {
+    const category = await this.prisma.assetCategoryOption.findUnique({ where: { id } });
+    if (!category || category.businessId !== businessId) {
+      throw new NotFoundException('Asset category not found');
+    }
+    return category;
   }
 
   async purchase(businessId: string, dto: CreateAssetPurchaseDto, userId: string) {

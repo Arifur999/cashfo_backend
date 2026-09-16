@@ -1,13 +1,13 @@
-import { IsDateString, IsEnum, IsNotEmpty, IsNumber, IsOptional, IsPositive, IsString } from 'class-validator';
-import { AssetCategory } from '@prisma/client';
+import { IsDateString, IsNotEmpty, IsNumber, IsOptional, IsPositive, IsString } from 'class-validator';
 
 export class CreateAssetPurchaseDto {
   @IsString()
   @IsNotEmpty()
   name: string;
 
-  @IsEnum(AssetCategory)
-  category: AssetCategory;
+  @IsString()
+  @IsNotEmpty()
+  category: string;
 
   @IsDateString()
   purchaseDate: string;

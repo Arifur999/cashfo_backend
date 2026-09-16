@@ -790,6 +790,7 @@ model Business {
   incomeGoals  IncomeGoal[]
   savingsGoals SavingsGoal[]
   assets       Asset[]
+  assetCategoryOptions AssetCategoryOption[]
 
   @@index([ownerId])
 }
@@ -1212,7 +1213,7 @@ model Asset {
   businessId            String
   business              Business            @relation(fields: [businessId], references: [id])
   name                  String
-  category              AssetCategory       @default(OTHER)
+  category              String              @default("Other")
   purchaseDate          DateTime
   purchasePrice         Decimal             @db.Decimal(14, 2)
   // Cached latest value -- kept in sync by updateValue() (mirrors
@@ -1253,14 +1254,25 @@ model AssetValueHistory {
   @@index([assetId])
 }
 
-enum AssetCategory {
-  VEHICLE
-  LAND
-  PROPERTY
-  JEWELLERY
-  ELECTRONICS
-  INVESTMENT
-  OTHER
+// A per-business, user-manageable list of Asset categories -- replaces the
+// old fixed AssetCategory enum. Asset.category is now a plain string (the
+// category's name), same loose-reference convention as
+// TransactionEntry.categoryId/BudgetCategory (see that model's own
+// comment) -- deleting a category here does NOT touch existing Asset rows
+// that reference its name, exactly like deleting a BudgetCategory doesn't
+// touch old TransactionEntry rows.
+model AssetCategoryOption {
+  id           String   @id @default(uuid())
+  businessId   String
+  business     Business @relation(fields: [businessId], references: [id])
+  name         String
+  icon         String?
+  color        String
+  displayOrder Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([businessId, name])
 }
 
 enum AssetStatus {
