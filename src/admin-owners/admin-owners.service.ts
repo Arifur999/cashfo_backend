@@ -1,8 +1,10 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { Prisma, UserStatus } from '@prisma/client';
 import { AccountsService } from '../accounts/accounts.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { ChangeOwnerPlanDto } from './dto/change-owner-plan.dto.js';
 import { ListOwnersQueryDto } from './dto/list-owners-query.dto.js';
+import { SuspendOwnerDto } from './dto/suspend-owner.dto.js';
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
@@ -28,6 +30,8 @@ export class AdminOwnersService {
     // only workspace(s) were all soft-deleted.
     const where: Prisma.UserWhereInput = {
       ownedBusinesses: { some: { deletedAt: null } },
+      ...(query.status ? { status: query.status } : {}),
+      ...(query.planId ? { ownedBusinesses: { some: { deletedAt: null, isDefault: true, planId: query.planId } } } : {}),
       ...(search
         ? {
             OR: [
@@ -70,10 +74,149 @@ export class AdminOwnersService {
       phone: owner.phone,
       businessId: business?.id ?? null,
       businessName: business?.name ?? null,
+      planId: business?.planId ?? null,
       planName: business?.plan?.name ?? null,
+      workspaceCount: owner.ownedBusinesses.length,
+      lastLoginAt: owner.lastLoginAt,
       daysUsing,
       status: owner.status,
     };
+  }
+
+  // Owner detail view (User Management's /admin/users/:id) -- same real
+  // User+Business data as list()/summarizeOwner(), plus lastLoginAt/
+  // createdAt and the real activity trail. User has no suspendedAt/
+  // suspendedReason columns (unlike the old PlatformUser model) -- the
+  // "why suspended" banner is derived from the most recent USER_SUSPENDED
+  // AuditLog entry instead, so no schema change was needed for it.
+  async getById(userId: string) {
+    const owner = await this.prisma.user.findUnique({
+      where: { id: userId },
+      include: { ownedBusinesses: { where: { deletedAt: null }, include: { plan: true } } },
+    });
+    if (!owner) throw new NotFoundException('Owner not found');
+
+    const business = owner.ownedBusinesses.find((b) => b.isDefault) ?? owner.ownedBusinesses[0] ?? null;
+
+    const activityLog = await this.prisma.auditLog.findMany({
+      where: { entityId: { in: [userId, business?.id].filter((id): id is string => Boolean(id)) } },
+      orderBy: { createdAt: 'desc' },
+      include: { adminUser: { select: { id: true, name: true } } },
+    });
+
+    const lastSuspension = activityLog.find((log) => log.action === 'USER_SUSPENDED');
+
+    return {
+      userId: owner.id,
+      name: owner.name,
+      email: owner.email,
+      phone: owner.phone,
+      status: owner.status,
+      createdAt: owner.createdAt,
+      lastLoginAt: owner.lastLoginAt,
+      businessId: business?.id ?? null,
+      businessName: business?.name ?? null,
+      planId: business?.planId ?? null,
+      planName: business?.plan?.name ?? null,
+      workspaceCount: owner.ownedBusinesses.length,
+      suspendedReason:
+        owner.status === UserStatus.SUSPENDED && lastSuspension
+          ? ((lastSuspension.newValue as { reason?: string } | null)?.reason ?? null)
+          : null,
+      suspendedAt: owner.status === UserStatus.SUSPENDED ? (lastSuspension?.createdAt ?? null) : null,
+      activityLog: activityLog.map((log) => ({
+        id: log.id,
+        action: log.action,
+        entityType: log.entityType,
+        adminName: log.adminUser.name,
+        createdAt: log.createdAt,
+      })),
+    };
+  }
+
+  async suspend(userId: string, dto: SuspendOwnerDto, adminId: string, ipAddress?: string) {
+    const owner = await this.requireOwner(userId);
+
+    const { id, status } = await this.prisma.$transaction(async (tx) => {
+      const updated = await tx.user.update({ where: { id: userId }, data: { status: UserStatus.SUSPENDED } });
+      await tx.auditLog.create({
+        data: {
+          adminUserId: adminId,
+          action: 'USER_SUSPENDED',
+          entityType: 'User',
+          entityId: userId,
+          oldValue: { status: owner.status },
+          newValue: { status: UserStatus.SUSPENDED, reason: dto.reason },
+          ipAddress,
+        },
+      });
+      return updated;
+    });
+    return { id, status };
+  }
+
+  async activate(userId: string, adminId: string, ipAddress?: string) {
+    const owner = await this.requireOwner(userId);
+
+    const { id, status } = await this.prisma.$transaction(async (tx) => {
+      const updated = await tx.user.update({ where: { id: userId }, data: { status: UserStatus.ACTIVE } });
+      await tx.auditLog.create({
+        data: {
+          adminUserId: adminId,
+          action: 'USER_ACTIVATED',
+          entityType: 'User',
+          entityId: userId,
+          oldValue: { status: owner.status },
+          newValue: { status: UserStatus.ACTIVE },
+          ipAddress,
+        },
+      });
+      return updated;
+    });
+    return { id, status };
+  }
+
+  // Changes the owner's DEFAULT Business onto a different real SubscriptionPlan
+  // -- plan is business-scoped in the real schema (Business.planId), not
+  // user-scoped, unlike the old PlatformUser.planId this replaces.
+  async changePlan(userId: string, dto: ChangeOwnerPlanDto, adminId: string, ipAddress?: string) {
+    const owner = await this.prisma.user.findUnique({
+      where: { id: userId },
+      include: { ownedBusinesses: { where: { deletedAt: null } } },
+    });
+    if (!owner) throw new NotFoundException('Owner not found');
+
+    const business = owner.ownedBusinesses.find((b) => b.isDefault) ?? owner.ownedBusinesses[0];
+    if (!business) throw new NotFoundException('This owner has no workspace to change the plan for');
+
+    const newPlan = await this.prisma.subscriptionPlan.findUnique({ where: { id: dto.newPlanId } });
+    if (!newPlan) throw new BadRequestException('Target plan does not exist');
+
+    return this.prisma.$transaction(async (tx) => {
+      const updated = await tx.business.update({
+        where: { id: business.id },
+        data: { planId: dto.newPlanId },
+        include: { plan: true },
+      });
+      await tx.auditLog.create({
+        data: {
+          adminUserId: adminId,
+          action: 'BUSINESS_PLAN_CHANGED',
+          entityType: 'Business',
+          entityId: business.id,
+          oldValue: { planId: business.planId },
+          newValue: { planId: dto.newPlanId, planName: newPlan.name, reason: dto.reason },
+          ipAddress,
+        },
+      });
+      return updated;
+    });
+  }
+
+  private async requireOwner(userId: string) {
+    const owner = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!owner) throw new NotFoundException('Owner not found');
+    return owner;
   }
 
   // Wipes one owner's business/financial data back to a fresh, just-registered

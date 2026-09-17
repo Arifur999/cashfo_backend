@@ -31,8 +31,8 @@ export class NotificationCampaignsController {
   @UseGuards(RolesGuard)
   @Roles(AdminRole.SUPER_ADMIN, AdminRole.SUPPORT_ADMIN)
   @Post(':id/send')
-  send(@Param('id') id: string, @CurrentAdmin() admin: RequestAdminUser, @Req() req: Request) {
-    return this.notificationCampaignsService.send(id, admin.id, req.ip);
+  send(@Param('id') id: string) {
+    return this.notificationCampaignsService.send(id);
   }
 
   @UseGuards(RolesGuard)

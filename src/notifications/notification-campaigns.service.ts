@@ -1,5 +1,5 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
-import { Prisma, PlatformUserStatus } from '@prisma/client';
+import { BadRequestException, Injectable, NotFoundException, NotImplementedException } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { CreateCampaignDto } from './dto/create-campaign.dto.js';
 
@@ -32,66 +32,19 @@ export class NotificationCampaignsService {
     });
   }
 
-  // SIMULATED send: no real email/SMS/push provider (e.g. SendGrid, Twilio,
-  // or a local SMS gateway) is wired up. This computes a real target
-  // audience from targetFilter against seeded PlatformUsers, then generates
-  // a realistic 95-99% success rate and writes matching NotificationLog rows
-  // -- exactly the shape a real provider's delivery webhook would eventually
-  // report back, so swapping in a real provider later only needs to replace
-  // this method's body.
-  async send(id: string, adminId: string, ipAddress?: string) {
+  // There is no real email/SMS/push provider (e.g. SendGrid, Twilio, a local
+  // SMS gateway) wired up anywhere in this app. This used to fabricate a
+  // 95-99% random success rate and write matching NotificationLog rows as if
+  // a real send had happened -- clicking "Send Now" would silently lie to
+  // the admin. Until a real provider is integrated, this honestly refuses.
+  async send(id: string): Promise<never> {
     const campaign = await this.requireCampaign(id);
     if (!SENDABLE_STATUSES.includes(campaign.status)) {
       throw new BadRequestException('Only DRAFT or SCHEDULED campaigns can be sent');
     }
-
-    await this.prisma.bulkNotificationCampaign.update({ where: { id }, data: { status: 'SENDING' } });
-
-    const filter = campaign.targetFilter as { planId?: string; status?: PlatformUserStatus };
-    const where: Prisma.PlatformUserWhereInput = {};
-    if (filter.planId) where.planId = filter.planId;
-    if (filter.status) where.status = filter.status;
-
-    const targetUsers = await this.prisma.platformUser.findMany({ where, select: { id: true } });
-
-    const successRate = 0.95 + Math.random() * 0.04;
-    let sentCount = 0;
-    let failedCount = 0;
-    const logs: Prisma.NotificationLogCreateManyInput[] = targetUsers.map((user) => {
-      const isSuccess = Math.random() < successRate;
-      if (isSuccess) sentCount++;
-      else failedCount++;
-      return {
-        platformUserId: user.id,
-        templateKey: campaign.templateKey,
-        channel: campaign.channel,
-        status: isSuccess ? 'SENT' : 'FAILED',
-        sentAt: isSuccess ? new Date() : null,
-        errorMessage: isSuccess ? null : 'Simulated delivery failure',
-      };
-    });
-
-    if (logs.length > 0) {
-      await this.prisma.notificationLog.createMany({ data: logs });
-    }
-
-    const result = await this.prisma.bulkNotificationCampaign.update({
-      where: { id },
-      data: { status: 'SENT', sentCount, failedCount },
-    });
-
-    await this.prisma.auditLog.create({
-      data: {
-        adminUserId: adminId,
-        action: 'CAMPAIGN_SENT',
-        entityType: 'BulkNotificationCampaign',
-        entityId: id,
-        newValue: { sentCount, failedCount, targetCount: targetUsers.length },
-        ipAddress,
-      },
-    });
-
-    return result;
+    throw new NotImplementedException(
+      'Real notification delivery is not wired up yet -- no email/SMS/push provider is integrated in this app.',
+    );
   }
 
   async cancel(id: string, adminId: string, ipAddress?: string) {

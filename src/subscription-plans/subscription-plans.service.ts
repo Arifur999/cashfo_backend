@@ -1,5 +1,5 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
-import { PlatformUserStatus, Prisma } from '@prisma/client';
+import { Prisma, UserStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { CreatePlanDto } from './dto/create-plan.dto.js';
 import { UpdatePlanDto } from './dto/update-plan.dto.js';
@@ -19,7 +19,11 @@ export class SubscriptionPlansService {
     if (!plan) {
       throw new NotFoundException('Plan not found');
     }
-    const userCount = await this.prisma.platformUser.count({ where: { planId: id } });
+    // Real subscriber count -- plan is business-scoped (Business.planId), not
+    // user-scoped, so this counts each real owner's DEFAULT workspace on this
+    // plan (mirrors AdminOwnersService/AdminWorkspacesService's own real
+    // Business queries, not the old PlatformUser sandbox).
+    const userCount = await this.prisma.business.count({ where: { planId: id, isDefault: true, deletedAt: null } });
     return { ...plan, userCount };
   }
 
@@ -101,12 +105,12 @@ export class SubscriptionPlansService {
   }
 
   // Hard delete -- unlike archive, this is destructive, so it's blocked
-  // outright if any PlatformUser is still on the plan (archive is the
-  // correct action for "stop new signups but let existing users stay").
+  // outright if any real Business is still on the plan (archive is the
+  // correct action for "stop new signups but let existing owners stay").
   async remove(id: string, adminId: string, ipAddress?: string) {
     await this.requirePlan(id);
 
-    const usersOnPlan = await this.prisma.platformUser.count({ where: { planId: id } });
+    const usersOnPlan = await this.prisma.business.count({ where: { planId: id, isDefault: true, deletedAt: null } });
     if (usersOnPlan > 0) {
       throw new BadRequestException(
         `Cannot delete this plan -- ${usersOnPlan} user(s) are currently on it. Archive it instead.`,
@@ -129,14 +133,23 @@ export class SubscriptionPlansService {
     return { success: true };
   }
 
+  // Real per-plan subscriber counts -- one real registered owner's default
+  // Business per count, replacing the old PlatformUser-sandbox counts (see
+  // AdminOwnersService/AdminWorkspacesService for the same real-Business
+  // query pattern this mirrors). revenueEstimate stays an estimate (price *
+  // activeUsers) since there is still no real payment-gateway integration
+  // that collects actual charged revenue -- only the user-count input is
+  // now real.
   async analytics() {
     const plans = await this.prisma.subscriptionPlan.findMany({ orderBy: { displayOrder: 'asc' } });
 
     const perPlan = await Promise.all(
       plans.map(async (plan) => {
         const [totalUsers, activeUsers] = await Promise.all([
-          this.prisma.platformUser.count({ where: { planId: plan.id } }),
-          this.prisma.platformUser.count({ where: { planId: plan.id, status: PlatformUserStatus.ACTIVE } }),
+          this.prisma.business.count({ where: { planId: plan.id, isDefault: true, deletedAt: null } }),
+          this.prisma.business.count({
+            where: { planId: plan.id, isDefault: true, deletedAt: null, owner: { status: UserStatus.ACTIVE } },
+          }),
         ]);
         const revenueEstimate = Number(plan.price) * activeUsers;
         return {
@@ -150,7 +163,9 @@ export class SubscriptionPlansService {
       }),
     );
 
-    const usersWithNoPlan = await this.prisma.platformUser.count({ where: { planId: null } });
+    const usersWithNoPlan = await this.prisma.business.count({
+      where: { planId: null, isDefault: true, deletedAt: null },
+    });
     const freePlanIds = plans.filter((p) => p.billingCycle === 'FREE').map((p) => p.id);
     const freeUsers = perPlan.filter((p) => freePlanIds.includes(p.planId)).reduce((sum, p) => sum + p.totalUsers, 0) + usersWithNoPlan;
     const paidUsers = perPlan.filter((p) => !freePlanIds.includes(p.planId)).reduce((sum, p) => sum + p.totalUsers, 0);

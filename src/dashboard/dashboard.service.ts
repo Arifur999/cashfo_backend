@@ -14,8 +14,13 @@ export class DashboardService {
     const isSuperAdmin = role === AdminRole.SUPER_ADMIN;
 
     const [totalUsers, newUsersLast30d, openTickets, mrr, pendingFlags, lastBackup, recentAuditLogs] = await Promise.all([
-      this.prisma.platformUser.count(),
-      this.prisma.platformUser.count({ where: { createdAt: { gte: thirtyDaysAgo } } }),
+      // Real registered owners (User), not the old PlatformUser sandbox --
+      // "some non-deleted owned business" matches every real signup, same
+      // filter AdminOwnersService.list() uses.
+      this.prisma.user.count({ where: { ownedBusinesses: { some: { deletedAt: null } } } }),
+      this.prisma.user.count({
+        where: { ownedBusinesses: { some: { deletedAt: null } }, createdAt: { gte: thirtyDaysAgo } },
+      }),
       this.prisma.supportTicket.count({ where: { status: { in: ['OPEN', 'IN_PROGRESS'] } } }),
       canSeeRevenue ? this.computeMrr() : Promise.resolve(null),
       isSuperAdmin ? this.prisma.suspiciousActivityFlag.count({ where: { status: 'OPEN' } }) : Promise.resolve(null),

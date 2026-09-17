@@ -4,6 +4,17 @@ import { PrismaService } from '../prisma/prisma.service.js';
 import { DateRangeQueryDto } from './dto/date-range-query.dto.js';
 import { TrackEventDto } from './dto/track-event.dto.js';
 
+// Best-effort MOBILE/DESKTOP/TABLET classifier for the Device Breakdown
+// chart -- reuses the same real UserSession.userAgent signal already parsed
+// (in more detail) by user-auth/device-label.ts for Settings > Security's
+// own Device Management list, rather than a separate fake DeviceType column.
+function classifyDeviceType(userAgent: string | null): 'MOBILE' | 'DESKTOP' | 'TABLET' {
+  if (!userAgent) return 'DESKTOP';
+  if (/iPad|Tablet/i.test(userAgent)) return 'TABLET';
+  if (/Mobile|Android|iPhone/i.test(userAgent)) return 'MOBILE';
+  return 'DESKTOP';
+}
+
 const DAY_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_RANGE_DAYS = 30;
 const COHORT_MONTHS = 6;
@@ -28,39 +39,59 @@ export class AnalyticsService {
     });
   }
 
+  // Real per-feature usage counts, replacing the old fully-synthetic
+  // UsageEvent groupBy (that table is only ever seed-fabricated -- nothing
+  // in this app's real request path ever writes to it). Each eventType maps
+  // onto a real table that a genuine end-user action already creates rows
+  // in, with no new instrumentation needed. account_created excludes
+  // isSystemAccount rows (the auto-seeded chart of accounts) so this counts
+  // only accounts a real user manually added. "report_viewed" has no
+  // persisted equivalent anywhere (viewing a report writes nothing) and is
+  // intentionally omitted rather than shown as a permanent fake zero.
   async featureUsage(query: DateRangeQueryDto) {
     const { from, toExclusive } = this.resolveRange(query);
+    const createdAt = { gte: from, lt: toExclusive };
 
-    const rows = await this.prisma.usageEvent.groupBy({
-      by: ['eventType'],
-      where: { createdAt: { gte: from, lt: toExclusive } },
-      _count: true,
-    });
+    const [incomeAdded, expenseAdded, workspaceCreated, accountCreated, budgetCreated, login] = await Promise.all([
+      this.prisma.transaction.count({ where: { transactionType: 'INCOME', createdAt } }),
+      this.prisma.transaction.count({ where: { transactionType: 'EXPENSE', createdAt } }),
+      this.prisma.business.count({ where: { createdAt } }),
+      this.prisma.account.count({ where: { createdAt, isSystemAccount: false } }),
+      this.prisma.budgetCategory.count({ where: { createdAt } }),
+      this.prisma.userSession.count({ where: { createdAt } }),
+    ]);
 
-    return rows.map((r) => ({ eventType: r.eventType, count: r._count })).sort((a, b) => b.count - a.count);
+    return [
+      { eventType: 'income_added', count: incomeAdded },
+      { eventType: 'expense_added', count: expenseAdded },
+      { eventType: 'workspace_created', count: workspaceCreated },
+      { eventType: 'account_created', count: accountCreated },
+      { eventType: 'budget_created', count: budgetCreated },
+      { eventType: 'login', count: login },
+    ].sort((a, b) => b.count - a.count);
   }
 
-  // DAU comes straight from DailyActiveSnapshot -- it's the precomputed,
-  // stable rollup a real daily cron job would maintain, so reading it is both
-  // simpler and cheaper than re-deriving distinct-user counts from raw events
-  // on every request. WAU has no equivalent snapshot table (the schema for
-  // this prompt only defines a daily one), so it's derived on the fly from
-  // UsageEvent: for each day, count distinct platformUserId over the trailing
-  // 7-day window. The full event set for the range (plus a 7-day lookback) is
-  // small enough (a few thousand rows) to pull once and compute in memory
-  // rather than issuing one query per day.
+  // DAU still reads DailyActiveSnapshot -- there is no real daily-rollup cron
+  // anywhere in this app (this used to be the "precomputed rollup a real
+  // cron job would maintain", but no such job exists), so with that table's
+  // seed data cleared this honestly reads 0 until real daily-aggregation
+  // infrastructure is built; that's new-feature work, not a data-source
+  // swap. WAU is rewired onto real UserSession rows (one per real login) --
+  // for each day, distinct userId over the trailing 7-day window. The full
+  // session set for the range (plus a 7-day lookback) is small enough to
+  // pull once and compute in memory rather than issuing one query per day.
   async engagement(query: DateRangeQueryDto) {
     const { from, toExclusive, days } = this.resolveRange(query);
     const windowStart = new Date(from.getTime() - 6 * DAY_MS);
 
-    const [snapshots, events] = await Promise.all([
+    const [snapshots, sessions] = await Promise.all([
       this.prisma.dailyActiveSnapshot.findMany({
         where: { date: { gte: from, lt: toExclusive } },
         select: { date: true, dailyActive: true },
       }),
-      this.prisma.usageEvent.findMany({
+      this.prisma.userSession.findMany({
         where: { createdAt: { gte: windowStart, lt: toExclusive } },
-        select: { platformUserId: true, createdAt: true },
+        select: { userId: true, createdAt: true },
       }),
     ]);
 
@@ -70,27 +101,30 @@ export class AnalyticsService {
       const dayEndMs = new Date(`${day}T00:00:00.000Z`).getTime() + DAY_MS;
       const windowStartMs = dayEndMs - 7 * DAY_MS;
       const activeUsers = new Set<string>();
-      for (const event of events) {
-        const t = event.createdAt.getTime();
-        if (t >= windowStartMs && t < dayEndMs) activeUsers.add(event.platformUserId);
+      for (const session of sessions) {
+        const t = session.createdAt.getTime();
+        if (t >= windowStartMs && t < dayEndMs) activeUsers.add(session.userId);
       }
       return { date: day, dau: dauByDate.get(day) ?? 0, wau: activeUsers.size };
     });
   }
 
+  // Real signup cohorts (User.createdAt) and real monthly activity (distinct
+  // UserSession.userId per month), replacing the old fake PlatformUser +
+  // UsageEvent pairing.
   async cohorts() {
-    const [users, events] = await Promise.all([
-      this.prisma.platformUser.findMany({ select: { id: true, createdAt: true } }),
-      this.prisma.usageEvent.findMany({ select: { platformUserId: true, createdAt: true } }),
+    const [users, sessions] = await Promise.all([
+      this.prisma.user.findMany({ select: { id: true, createdAt: true } }),
+      this.prisma.userSession.findMany({ select: { userId: true, createdAt: true } }),
     ]);
 
     const userActiveMonths = new Map<string, Set<string>>();
-    for (const event of events) {
-      const key = monthKey(event.createdAt);
-      let months = userActiveMonths.get(event.platformUserId);
+    for (const session of sessions) {
+      const key = monthKey(session.createdAt);
+      let months = userActiveMonths.get(session.userId);
       if (!months) {
         months = new Set();
-        userActiveMonths.set(event.platformUserId, months);
+        userActiveMonths.set(session.userId, months);
       }
       months.add(key);
     }
@@ -125,6 +159,12 @@ export class AnalyticsService {
       });
   }
 
+  // No real equivalent exists anywhere in this app -- no model captures a
+  // real User's or real UserSession's country/city (UserSession.ipAddress is
+  // stored but never geocoded, and no IP-geolocation library/service is
+  // wired in). Left reading UsageEvent on purpose: with that table's seed
+  // data cleared this honestly returns empty until real IP geolocation is
+  // built, rather than fabricating a stand-in metric.
   async geography() {
     const events = await this.prisma.usageEvent.findMany({
       select: { platformUserId: true, country: true, city: true },
@@ -159,15 +199,24 @@ export class AnalyticsService {
     return { countries, cities };
   }
 
+  // Real device signal -- classifies every real UserSession.userAgent
+  // (already captured at real login time) instead of grouping fake
+  // UsageEvent.deviceType rows.
   async devices() {
-    const rows = await this.prisma.usageEvent.groupBy({ by: ['deviceType'], _count: true });
-    const total = rows.reduce((sum, r) => sum + r._count, 0);
+    const sessions = await this.prisma.userSession.findMany({ select: { userAgent: true } });
 
-    return rows
-      .map((r) => ({
-        deviceType: r.deviceType,
-        count: r._count,
-        percentage: total > 0 ? Math.round((r._count / total) * 1000) / 10 : 0,
+    const counts = new Map<'MOBILE' | 'DESKTOP' | 'TABLET', number>();
+    for (const session of sessions) {
+      const deviceType = classifyDeviceType(session.userAgent);
+      counts.set(deviceType, (counts.get(deviceType) ?? 0) + 1);
+    }
+
+    const total = sessions.length;
+    return [...counts.entries()]
+      .map(([deviceType, count]) => ({
+        deviceType,
+        count,
+        percentage: total > 0 ? Math.round((count / total) * 1000) / 10 : 0,
       }))
       .sort((a, b) => b.count - a.count);
   }
