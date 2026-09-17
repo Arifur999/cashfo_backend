@@ -89,10 +89,16 @@ export class BusinessesService {
     return (Number(defaultBusiness.plan.price) * 0.5).toFixed(2);
   }
 
+  // Additional workspaces are no longer gated by SubscriptionPlan.featureLimits.
+  // maxBusinessWorkspaces -- product decision: creating one is always allowed
+  // regardless of plan; the only thing that varies by plan is the monthly
+  // add-on fee (getAdditionalWorkspaceMonthlyFee(), already 0.00 for a free
+  // plan since it's 50% of a 0 price). maxBusinessWorkspaces/atLimit are kept
+  // in the response shape for informational display only -- atLimit is now
+  // always false.
   async getLimits(userId: string) {
     const { maxBusinessWorkspaces, currentCount } = await this.getPlanLimitInfo(userId);
-    const atLimit = maxBusinessWorkspaces !== -1 && currentCount >= maxBusinessWorkspaces;
-    return { maxBusinessWorkspaces, currentCount, atLimit };
+    return { maxBusinessWorkspaces, currentCount, atLimit: false };
   }
 
   async create(userId: string, dto: CreateBusinessDto) {
@@ -102,15 +108,7 @@ export class BusinessesService {
       );
     }
 
-    const { maxBusinessWorkspaces, currentCount, planId } = await this.getPlanLimitInfo(userId);
-
-    if (maxBusinessWorkspaces !== -1 && currentCount >= maxBusinessWorkspaces) {
-      const message =
-        maxBusinessWorkspaces === 0
-          ? 'Your current plan does not include business workspaces. Upgrade to add one.'
-          : `Your plan allows up to ${maxBusinessWorkspaces} business workspace(s). Upgrade to add more.`;
-      throw new ForbiddenException(message);
-    }
+    const { planId } = await this.getPlanLimitInfo(userId);
 
     const pinHash = dto.pin ? await bcrypt.hash(dto.pin, 10) : null;
 
