@@ -5,6 +5,7 @@ import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { AccountTemplatesModule } from './account-templates/account-templates.module.js';
 import { AccountsModule } from './accounts/accounts.module.js';
 import { AdminAuthModule } from './admin-auth/admin-auth.module.js';
+import { AdminOwnersModule } from './admin-owners/admin-owners.module.js';
 import { AdminUsersModule } from './admin-users/admin-users.module.js';
 import { AdminWorkspacesModule } from './admin-workspaces/admin-workspaces.module.js';
 import { AnalyticsModule } from './analytics/analytics.module.js';
@@ -58,6 +59,7 @@ import { UserAuthModule } from './user-auth/user-auth.module.js';
     AdminAuthModule,
     AdminUsersModule,
     AdminWorkspacesModule,
+    AdminOwnersModule,
     PlatformUsersModule,
     SubscriptionPlansModule,
     CouponsModule,
