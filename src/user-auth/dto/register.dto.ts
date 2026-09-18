@@ -1,8 +1,10 @@
 import { IsEmail, IsEnum, IsNotEmpty, IsOptional, IsString, Matches, MinLength } from 'class-validator';
 import { LanguagePreference } from '@prisma/client';
 
-// 01XXXXXXXXX or +8801XXXXXXXXX, operator digit 3-9 per BD numbering plan.
-const BD_PHONE_REGEX = /^(?:\+8801[3-9]\d{8}|01[3-9]\d{8})$/;
+// Permissive international phone check -- optional leading "+", digits,
+// spaces, and hyphens, 6-20 characters total. Not restricted to Bangladeshi
+// numbers so a signup from any country can use their own local format.
+const PHONE_REGEX = /^\+?[0-9\s-]{6,20}$/;
 
 export class RegisterDto {
   @IsString()
@@ -17,7 +19,7 @@ export class RegisterDto {
   password: string;
 
   @IsOptional()
-  @Matches(BD_PHONE_REGEX, { message: 'Phone must be a valid Bangladeshi number (e.g. 01XXXXXXXXX)' })
+  @Matches(PHONE_REGEX, { message: 'Enter a valid phone number' })
   phone?: string;
 
   @IsOptional()
