@@ -39,8 +39,24 @@ export class AccountsService {
   async seedDefaultAccounts(businessId: string, workspaceType: WorkspaceType, tx?: Prisma.TransactionClient) {
     const client = tx ?? this.prisma;
 
+    // Money accounts (Cash/Bank/bKash) are deliberately EXCLUDED from
+    // seeding -- a new workspace's Wallet page should start completely
+    // empty, with the user adding their own real accounts, rather than
+    // showing preset accounts nobody actually owns. Income/Expense category
+    // accounts and system accounts (Accounts Receivable/Payable, Owner's
+    // Capital/Drawing) still seed normally -- those aren't user-owned money
+    // sources, and Receivable/Payable in particular are load-bearing (see
+    // ReceivablesPayablesService.requireSystemAccount()).
     const templates = await client.defaultAccountTemplate.findMany({
-      where: { appliesTo: { has: workspaceType }, isActive: true },
+      where: {
+        appliesTo: { has: workspaceType },
+        isActive: true,
+        // Every non-money template (Income/Expense categories, Loan Payable,
+        // Owner's Capital/Drawing) has accountSubtype: null -- `notIn`
+        // alone would silently exclude those too (SQL's NULL-vs-IN
+        // three-valued-logic gotcha), so null is allowed through explicitly.
+        OR: [{ accountSubtype: null }, { accountSubtype: { notIn: MONEY_ACCOUNT_SUBTYPES } }],
+      },
       orderBy: { displayOrder: 'asc' },
     });
 
