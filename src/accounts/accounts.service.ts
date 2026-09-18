@@ -275,6 +275,41 @@ export class AccountsService {
     return this.prisma.account.update({ where: { id }, data: { status: 'ARCHIVED' } });
   }
 
+  // Smart "Remove" action behind the Wallet/Savings Wallet/Chart of Accounts
+  // pages' single delete button: an account nobody has ever posted a real
+  // transaction against is safe to actually erase (a brand-new/unused
+  // preset account shouldn't linger forever just because archiving was the
+  // only option); one with real transaction history is archived instead,
+  // exactly like archive() above, so the ledger a real transaction refers
+  // to never loses its account row.
+  async removeOrArchive(businessId: string, id: string): Promise<{ deleted: boolean }> {
+    const account = await this.requireAccount(businessId, id);
+
+    if (account.isSystemAccount && account.accountType === 'ASSET' && account.accountSubtype === 'savings') {
+      throw new BadRequestException('This is an internal system account and cannot be removed.');
+    }
+
+    // Any child at all (archived or active) would be orphaned by a hard
+    // delete (Account.parentId is a real FK) -- stricter than archive()'s
+    // active-only check above, which only cares about hiding a still-live
+    // hierarchy, not about a delete's referential integrity.
+    const childCount = await this.prisma.account.count({ where: { parentId: id } });
+    if (childCount > 0) {
+      throw new BadRequestException("Remove this account's child accounts first.");
+    }
+
+    const entryCount = await this.prisma.transactionEntry.count({ where: { accountId: id } });
+    if (entryCount === 0) {
+      await this.prisma.account.delete({ where: { id } });
+      return { deleted: true };
+    }
+
+    if (account.status !== 'ARCHIVED') {
+      await this.prisma.account.update({ where: { id }, data: { status: 'ARCHIVED' } });
+    }
+    return { deleted: false };
+  }
+
   private async requireCompatibleParent(businessId: string, parentId: string, accountType: AccountType) {
     const parent = await this.prisma.account.findUnique({ where: { id: parentId } });
     if (!parent || parent.businessId !== businessId) {

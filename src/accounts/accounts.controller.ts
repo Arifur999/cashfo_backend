@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Patch, Post, Query } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
 import { MemberRole } from '@prisma/client';
 import { AccountBalanceService } from './account-balance.service.js';
 import { AccountsService } from './accounts.service.js';
@@ -110,5 +110,14 @@ export class AccountsController {
   @Patch(':id/archive')
   archive(@Param('businessId') businessId: string, @Param('id') id: string) {
     return this.accountsService.archive(businessId, id);
+  }
+
+  // Permanently deletes an account with no real transaction history, or
+  // falls back to archiving it if it has any -- see
+  // AccountsService.removeOrArchive()'s comment.
+  @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
+  @Delete(':id')
+  remove(@Param('businessId') businessId: string, @Param('id') id: string) {
+    return this.accountsService.removeOrArchive(businessId, id);
   }
 }
