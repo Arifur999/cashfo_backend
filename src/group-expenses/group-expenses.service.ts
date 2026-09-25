@@ -102,7 +102,12 @@ export class GroupExpensesService {
     return this.prisma.groupContribution.findMany({
       where,
       include: { groupMember: true },
-      orderBy: { date: 'desc' },
+      // Same-date entries (common -- several contributions logged the same
+      // day) break ties by most-recently-created first, so a correction
+      // entry (e.g. a "Return Money" added right after the original
+      // deposit) shows up above it instead of wherever date-only ordering
+      // happens to place equal dates.
+      orderBy: [{ date: 'desc' }, { createdAt: 'desc' }],
     });
   }
 
@@ -221,7 +226,8 @@ export class GroupExpensesService {
     return this.prisma.groupExpense.findMany({
       where,
       include: { paidByMember: true },
-      orderBy: { date: 'desc' },
+      // Same tie-break reasoning as listContributions() above.
+      orderBy: [{ date: 'desc' }, { createdAt: 'desc' }],
     });
   }
 
