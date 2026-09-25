@@ -41,7 +41,7 @@ export class GroupExpensesService {
 
   createMember(businessId: string, dto: CreateGroupMemberDto) {
     return this.prisma.groupMember.create({
-      data: { businessId, name: dto.name, phone: dto.phone },
+      data: { businessId, name: dto.name, phone: dto.phone, photoUrl: dto.photoUrl },
     });
   }
 
@@ -52,6 +52,7 @@ export class GroupExpensesService {
       data: {
         ...(dto.name !== undefined && { name: dto.name }),
         ...(dto.phone !== undefined && { phone: dto.phone }),
+        ...(dto.photoUrl !== undefined && { photoUrl: dto.photoUrl }),
         ...(dto.status !== undefined && { status: dto.status }),
       },
     });

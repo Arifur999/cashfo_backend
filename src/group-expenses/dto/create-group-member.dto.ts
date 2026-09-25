@@ -8,4 +8,8 @@ export class CreateGroupMemberDto {
   @IsOptional()
   @IsString()
   phone?: string;
+
+  @IsOptional()
+  @IsString()
+  photoUrl?: string;
 }

@@ -12,6 +12,10 @@ export class UpdateGroupMemberDto {
   phone?: string;
 
   @IsOptional()
+  @IsString()
+  photoUrl?: string;
+
+  @IsOptional()
   @IsEnum(GroupMemberStatus)
   status?: GroupMemberStatus;
 }

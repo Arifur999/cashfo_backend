@@ -1,4 +1,5 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, Get, Param, Patch, Post, Query, UploadedFile, UseInterceptors } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { GroupExpenseCategory, GroupMemberStatus, MemberRole } from '@prisma/client';
 import { CloseSettlementDto } from './dto/close-settlement.dto.js';
 import { CreateGroupContributionDto } from './dto/create-group-contribution.dto.js';
@@ -7,11 +8,13 @@ import { CreateGroupMemberDto } from './dto/create-group-member.dto.js';
 import { UpdateGroupContributionDto } from './dto/update-group-contribution.dto.js';
 import { UpdateGroupExpenseDto } from './dto/update-group-expense.dto.js';
 import { UpdateGroupMemberDto } from './dto/update-group-member.dto.js';
+import { groupMemberPhotoMulterOptions } from './group-member-photo-upload.js';
 import { GroupExpensesService } from './group-expenses.service.js';
 import { RequireBusinessMembership } from '../business-access/decorators/require-business-membership.decorator.js';
 import { RequireRole } from '../business-access/decorators/require-role.decorator.js';
 import { CurrentUser } from '../user-auth/decorators/current-user.decorator.js';
 import type { RequestUser } from '../user-auth/interfaces/request-user.interface.js';
+import { ImgbbService } from '../uploads/imgbb.service.js';
 
 // Viewing open to all roles including STAFF; every mutation restricted to
 // OWNER/ACCOUNTANT -- same split as every other workspace-scoped
@@ -27,7 +30,10 @@ import type { RequestUser } from '../user-auth/interfaces/request-user.interface
 @RequireBusinessMembership()
 @Controller('api/businesses/:businessId/group')
 export class GroupExpensesController {
-  constructor(private readonly groupExpensesService: GroupExpensesService) {}
+  constructor(
+    private readonly groupExpensesService: GroupExpensesService,
+    private readonly imgbbService: ImgbbService,
+  ) {}
 
   // ---- Members ----
 
@@ -52,6 +58,20 @@ export class GroupExpensesController {
   @Delete('members/:id')
   deleteMember(@Param('businessId') businessId: string, @Param('id') id: string) {
     return this.groupExpensesService.deleteMember(businessId, id);
+  }
+
+  // Same "upload before the record exists" shape as ContactsController's own
+  // upload-photo route -- returns a URL for the Add/Edit Member form to
+  // include as photoUrl on the actual create/update call.
+  @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
+  @Post('members/upload-photo')
+  @UseInterceptors(FileInterceptor('file', groupMemberPhotoMulterOptions))
+  async uploadMemberPhoto(@UploadedFile() file: Express.Multer.File) {
+    if (!file) {
+      throw new BadRequestException('No file was uploaded');
+    }
+    const url = await this.imgbbService.uploadImage(file.buffer, file.originalname);
+    return { url };
   }
 
   // ---- Contributions ----
