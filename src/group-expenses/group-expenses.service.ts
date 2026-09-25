@@ -1,11 +1,13 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
-import { GroupExpenseCategory, GroupMemberStatus, Prisma } from '@prisma/client';
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { GroupMemberStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { CloseSettlementDto } from './dto/close-settlement.dto.js';
 import { CreateGroupContributionDto } from './dto/create-group-contribution.dto.js';
+import { CreateGroupExpenseCategoryDto } from './dto/create-group-expense-category.dto.js';
 import { CreateGroupExpenseDto } from './dto/create-group-expense.dto.js';
 import { CreateGroupMemberDto } from './dto/create-group-member.dto.js';
 import { UpdateGroupContributionDto } from './dto/update-group-contribution.dto.js';
+import { UpdateGroupExpenseCategoryDto } from './dto/update-group-expense-category.dto.js';
 import { UpdateGroupExpenseDto } from './dto/update-group-expense.dto.js';
 import { UpdateGroupMemberDto } from './dto/update-group-member.dto.js';
 
@@ -133,9 +135,74 @@ export class GroupExpensesService {
     return { success: true };
   }
 
+  // ---- Expense categories ----
+
+  private readonly DEFAULT_EXPENSE_CATEGORIES: { name: string; icon: string; color: string }[] = [
+    { name: 'Grocery / Bazar', icon: 'shopping-cart', color: 'green' },
+    { name: 'Rent', icon: 'house', color: 'blue' },
+    { name: 'Utility', icon: 'plug', color: 'orange' },
+    { name: 'Other', icon: 'package', color: 'indigo' },
+  ];
+
+  // Lazily seeds the 4 defaults the first time a business's category list is
+  // ever requested -- same pattern as AssetsService.listCategories().
+  async listExpenseCategories(businessId: string) {
+    const existing = await this.prisma.groupExpenseCategoryOption.findMany({ where: { businessId }, orderBy: { displayOrder: 'asc' } });
+    if (existing.length > 0) return existing;
+    await this.prisma.groupExpenseCategoryOption.createMany({
+      data: this.DEFAULT_EXPENSE_CATEGORIES.map((c, i) => ({ businessId, name: c.name, icon: c.icon, color: c.color, displayOrder: i })),
+    });
+    return this.prisma.groupExpenseCategoryOption.findMany({ where: { businessId }, orderBy: { displayOrder: 'asc' } });
+  }
+
+  async createExpenseCategory(businessId: string, dto: CreateGroupExpenseCategoryDto) {
+    const existing = await this.prisma.groupExpenseCategoryOption.findUnique({ where: { businessId_name: { businessId, name: dto.name } } });
+    if (existing) {
+      throw new ConflictException(`An expense category named "${dto.name}" already exists`);
+    }
+    const count = await this.prisma.groupExpenseCategoryOption.count({ where: { businessId } });
+    return this.prisma.groupExpenseCategoryOption.create({
+      data: { businessId, name: dto.name, icon: dto.icon, color: dto.color, displayOrder: count },
+    });
+  }
+
+  async updateExpenseCategory(businessId: string, id: string, dto: UpdateGroupExpenseCategoryDto) {
+    await this.requireExpenseCategory(businessId, id);
+    if (dto.name !== undefined) {
+      const clash = await this.prisma.groupExpenseCategoryOption.findUnique({ where: { businessId_name: { businessId, name: dto.name } } });
+      if (clash && clash.id !== id) {
+        throw new ConflictException(`An expense category named "${dto.name}" already exists`);
+      }
+    }
+    return this.prisma.groupExpenseCategoryOption.update({
+      where: { id },
+      data: {
+        ...(dto.name !== undefined && { name: dto.name }),
+        ...(dto.icon !== undefined && { icon: dto.icon }),
+        ...(dto.color !== undefined && { color: dto.color }),
+      },
+    });
+  }
+
+  // Existing expenses keep showing this name as plain text -- see
+  // GroupExpense.category's own schema comment on why it's decoupled.
+  async deleteExpenseCategory(businessId: string, id: string) {
+    await this.requireExpenseCategory(businessId, id);
+    await this.prisma.groupExpenseCategoryOption.delete({ where: { id } });
+    return { id };
+  }
+
+  private async requireExpenseCategory(businessId: string, id: string) {
+    const category = await this.prisma.groupExpenseCategoryOption.findUnique({ where: { id } });
+    if (!category || category.businessId !== businessId) {
+      throw new NotFoundException('Expense category not found');
+    }
+    return category;
+  }
+
   // ---- Expenses ----
 
-  listExpenses(businessId: string, filters: { from?: string; to?: string; category?: GroupExpenseCategory }) {
+  listExpenses(businessId: string, filters: { from?: string; to?: string; category?: string }) {
     const where: Prisma.GroupExpenseWhereInput = { businessId };
     if (filters.category) where.category = filters.category;
     if (filters.from || filters.to) {
@@ -160,7 +227,7 @@ export class GroupExpensesService {
         businessId,
         amount: dto.amount,
         date: new Date(dto.date),
-        category: dto.category ?? 'OTHER',
+        category: dto.category ?? 'Other',
         description: dto.description,
         paidByMemberId: dto.paidByMemberId,
       },

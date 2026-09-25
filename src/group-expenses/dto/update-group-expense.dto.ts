@@ -1,5 +1,4 @@
-import { GroupExpenseCategory } from '@prisma/client';
-import { IsDateString, IsEnum, IsNumberString, IsOptional, IsString } from 'class-validator';
+import { IsDateString, IsNumberString, IsOptional, IsString } from 'class-validator';
 
 export class UpdateGroupExpenseDto {
   @IsOptional()
@@ -11,8 +10,8 @@ export class UpdateGroupExpenseDto {
   date?: string;
 
   @IsOptional()
-  @IsEnum(GroupExpenseCategory)
-  category?: GroupExpenseCategory;
+  @IsString()
+  category?: string;
 
   @IsOptional()
   @IsString()

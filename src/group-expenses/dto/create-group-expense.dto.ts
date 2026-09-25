@@ -1,5 +1,4 @@
-import { GroupExpenseCategory } from '@prisma/client';
-import { IsDateString, IsEnum, IsNumberString, IsOptional, IsString } from 'class-validator';
+import { IsDateString, IsNumberString, IsOptional, IsString } from 'class-validator';
 
 export class CreateGroupExpenseDto {
   @IsNumberString()
@@ -8,9 +7,12 @@ export class CreateGroupExpenseDto {
   @IsDateString()
   date: string;
 
+  // Free text, not validated against a fixed list -- matches
+  // GroupExpense.category's own "loose string, not an enum/FK" schema
+  // comment. Defaults to "Other" in the service if omitted.
   @IsOptional()
-  @IsEnum(GroupExpenseCategory)
-  category?: GroupExpenseCategory;
+  @IsString()
+  category?: string;
 
   @IsOptional()
   @IsString()

@@ -1,11 +1,13 @@
 import { BadRequestException, Body, Controller, Delete, Get, Param, Patch, Post, Query, UploadedFile, UseInterceptors } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
-import { GroupExpenseCategory, GroupMemberStatus, MemberRole } from '@prisma/client';
+import { GroupMemberStatus, MemberRole } from '@prisma/client';
 import { CloseSettlementDto } from './dto/close-settlement.dto.js';
 import { CreateGroupContributionDto } from './dto/create-group-contribution.dto.js';
+import { CreateGroupExpenseCategoryDto } from './dto/create-group-expense-category.dto.js';
 import { CreateGroupExpenseDto } from './dto/create-group-expense.dto.js';
 import { CreateGroupMemberDto } from './dto/create-group-member.dto.js';
 import { UpdateGroupContributionDto } from './dto/update-group-contribution.dto.js';
+import { UpdateGroupExpenseCategoryDto } from './dto/update-group-expense-category.dto.js';
 import { UpdateGroupExpenseDto } from './dto/update-group-expense.dto.js';
 import { UpdateGroupMemberDto } from './dto/update-group-member.dto.js';
 import { groupMemberPhotoMulterOptions } from './group-member-photo-upload.js';
@@ -104,6 +106,34 @@ export class GroupExpensesController {
     return this.groupExpensesService.deleteContribution(businessId, id);
   }
 
+  // ---- Expense categories ----
+  // Registered before 'expenses/:id' below is irrelevant here -- 'categories'
+  // and 'categories/:id' are a different path depth than 'expenses/:id', so
+  // there's no static-vs-dynamic collision to order around either way.
+
+  @Get('expenses/categories')
+  listExpenseCategories(@Param('businessId') businessId: string) {
+    return this.groupExpensesService.listExpenseCategories(businessId);
+  }
+
+  @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
+  @Post('expenses/categories')
+  createExpenseCategory(@Param('businessId') businessId: string, @Body() dto: CreateGroupExpenseCategoryDto) {
+    return this.groupExpensesService.createExpenseCategory(businessId, dto);
+  }
+
+  @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
+  @Patch('expenses/categories/:id')
+  updateExpenseCategory(@Param('businessId') businessId: string, @Param('id') id: string, @Body() dto: UpdateGroupExpenseCategoryDto) {
+    return this.groupExpensesService.updateExpenseCategory(businessId, id, dto);
+  }
+
+  @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
+  @Delete('expenses/categories/:id')
+  deleteExpenseCategory(@Param('businessId') businessId: string, @Param('id') id: string) {
+    return this.groupExpensesService.deleteExpenseCategory(businessId, id);
+  }
+
   // ---- Expenses ----
 
   @Get('expenses')
@@ -111,7 +141,7 @@ export class GroupExpensesController {
     @Param('businessId') businessId: string,
     @Query('from') from?: string,
     @Query('to') to?: string,
-    @Query('category') category?: GroupExpenseCategory,
+    @Query('category') category?: string,
   ) {
     return this.groupExpensesService.listExpenses(businessId, { from, to, category });
   }

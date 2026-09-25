@@ -826,6 +826,7 @@ model Business {
   groupContributions  GroupContribution[]
   groupExpenses       GroupExpense[]
   groupSettlements    GroupSettlement[]
+  groupExpenseCategoryOptions GroupExpenseCategoryOption[]
 
   @@index([ownerId])
 }
@@ -1406,25 +1407,43 @@ model GroupContribution {
 }
 
 model GroupExpense {
-  id             String               @id @default(uuid())
+  id             String       @id @default(uuid())
   businessId     String
-  business       Business             @relation(fields: [businessId], references: [id])
-  amount         Decimal              @db.Decimal(14, 2)
-  date           DateTime             @db.Date
-  category       GroupExpenseCategory @default(OTHER)
+  business       Business     @relation(fields: [businessId], references: [id])
+  amount         Decimal      @db.Decimal(14, 2)
+  date           DateTime     @db.Date
+  // Loose string, NOT a categoryId FK to GroupExpenseCategoryOption -- same
+  // "picker list is decoupled from what's stored" convention as
+  // Asset.category/AssetCategoryOption (see that model's own comment):
+  // deleting a category option must never break/cascade-delete existing
+  // expenses, it should just stop being offered for NEW ones.
+  category       String       @default("Other")
   description    String?
   paidByMemberId String?
-  paidByMember   GroupMember?         @relation(fields: [paidByMemberId], references: [id])
-  createdAt      DateTime             @default(now())
+  paidByMember   GroupMember? @relation(fields: [paidByMemberId], references: [id])
+  createdAt      DateTime     @default(now())
 
   @@index([businessId, date])
 }
 
-enum GroupExpenseCategory {
-  GROCERY
-  RENT
-  UTILITY
-  OTHER
+// The editable picker list behind GroupExpense.category (see that field's
+// comment on why it's a loose string, not a real FK to this table) -- same
+// shape and same lazy-default-seeding pattern as AssetCategoryOption
+// (AssetsService.listCategories()): the first four (Grocery/Rent/Utility/
+// Other) are seeded once per business the first time its category list is
+// ever requested, editable/deletable after that like any other row.
+model GroupExpenseCategoryOption {
+  id           String   @id @default(uuid())
+  businessId   String
+  business     Business @relation(fields: [businessId], references: [id])
+  name         String
+  icon         String?
+  color        String
+  displayOrder Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([businessId, name])
 }
 
 // A "closed" snapshot of one period's settlement (see
