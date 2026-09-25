@@ -6,10 +6,12 @@ import { CreateGroupContributionDto } from './dto/create-group-contribution.dto.
 import { CreateGroupExpenseCategoryDto } from './dto/create-group-expense-category.dto.js';
 import { CreateGroupExpenseDto } from './dto/create-group-expense.dto.js';
 import { CreateGroupMemberDto } from './dto/create-group-member.dto.js';
+import { CreateGroupMonthBudgetDto } from './dto/create-group-month-budget.dto.js';
 import { UpdateGroupContributionDto } from './dto/update-group-contribution.dto.js';
 import { UpdateGroupExpenseCategoryDto } from './dto/update-group-expense-category.dto.js';
 import { UpdateGroupExpenseDto } from './dto/update-group-expense.dto.js';
 import { UpdateGroupMemberDto } from './dto/update-group-member.dto.js';
+import { UpdateGroupMonthBudgetDto } from './dto/update-group-month-budget.dto.js';
 import { groupMemberPhotoMulterOptions } from './group-member-photo-upload.js';
 import { GroupExpensesService } from './group-expenses.service.js';
 import { RequireBusinessMembership } from '../business-access/decorators/require-business-membership.decorator.js';
@@ -164,11 +166,33 @@ export class GroupExpensesController {
     return this.groupExpensesService.deleteExpense(businessId, id);
   }
 
-  // ---- Month list ----
+  // ---- Month budgets ----
+  // Manually maintained (Month + Year + Budget entered by the user, not
+  // computed from real expenses) -- see GroupMonthlyBudget's schema
+  // comment for why this is a separate, plain record rather than the
+  // earlier auto-generated month summary it replaces.
 
-  @Get('months')
-  listMonths(@Param('businessId') businessId: string) {
-    return this.groupExpensesService.listMonths(businessId);
+  @Get('month-budgets')
+  listMonthBudgets(@Param('businessId') businessId: string) {
+    return this.groupExpensesService.listMonthBudgets(businessId);
+  }
+
+  @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
+  @Post('month-budgets')
+  createMonthBudget(@Param('businessId') businessId: string, @Body() dto: CreateGroupMonthBudgetDto) {
+    return this.groupExpensesService.createMonthBudget(businessId, dto);
+  }
+
+  @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
+  @Patch('month-budgets/:id')
+  updateMonthBudget(@Param('businessId') businessId: string, @Param('id') id: string, @Body() dto: UpdateGroupMonthBudgetDto) {
+    return this.groupExpensesService.updateMonthBudget(businessId, id, dto);
+  }
+
+  @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
+  @Delete('month-budgets/:id')
+  deleteMonthBudget(@Param('businessId') businessId: string, @Param('id') id: string) {
+    return this.groupExpensesService.deleteMonthBudget(businessId, id);
   }
 
   // ---- Settlement ----

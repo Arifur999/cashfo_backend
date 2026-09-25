@@ -6,10 +6,12 @@ import { CreateGroupContributionDto } from './dto/create-group-contribution.dto.
 import { CreateGroupExpenseCategoryDto } from './dto/create-group-expense-category.dto.js';
 import { CreateGroupExpenseDto } from './dto/create-group-expense.dto.js';
 import { CreateGroupMemberDto } from './dto/create-group-member.dto.js';
+import { CreateGroupMonthBudgetDto } from './dto/create-group-month-budget.dto.js';
 import { UpdateGroupContributionDto } from './dto/update-group-contribution.dto.js';
 import { UpdateGroupExpenseCategoryDto } from './dto/update-group-expense-category.dto.js';
 import { UpdateGroupExpenseDto } from './dto/update-group-expense.dto.js';
 import { UpdateGroupMemberDto } from './dto/update-group-member.dto.js';
+import { UpdateGroupMonthBudgetDto } from './dto/update-group-month-budget.dto.js';
 
 export interface SettlementMemberRow {
   groupMemberId: string;
@@ -33,16 +35,6 @@ export interface SettlementResult {
   memberCount: number;
   perMemberShare: string;
   members: SettlementMemberRow[];
-}
-
-export interface MonthSummary {
-  key: string; // "YYYY-MM"
-  periodStart: Date;
-  periodEnd: Date;
-  totalExpense: string;
-  totalContributed: string;
-  status: 'OPEN' | 'CLOSED';
-  closedAt: Date | null;
 }
 
 @Injectable()
@@ -282,64 +274,63 @@ export class GroupExpensesService {
     return { success: true };
   }
 
-  // ---- Month list ----
+  // ---- Month budgets ----
+  // Manually entered (Month + Year + amount, typed in via the "Add Month"
+  // form) -- see GroupMonthlyBudget's schema comment for why this is a
+  // plain standalone record, not computed from real expense/contribution
+  // data the way an earlier version of this tab was.
 
-  // "Month List" nav item -- every calendar month that has ANY expense or
-  // contribution activity (or a closed GroupSettlement, in case all its
-  // entries were later deleted), newest first, with a quick total + Open/
-  // Closed status so the user can jump straight into a past month's
-  // Settlement instead of hand-picking a date range there. "Closed" is
-  // matched by a settlement's periodStart falling in that calendar month --
-  // good enough for the normal case (closing a whole month at a time); a
-  // custom partial-range close just doesn't mark any single month closed.
-  async listMonths(businessId: string): Promise<MonthSummary[]> {
-    const [expenses, contributions, settlements] = await Promise.all([
-      this.prisma.groupExpense.findMany({ where: { businessId }, select: { date: true, amount: true } }),
-      this.prisma.groupContribution.findMany({ where: { businessId }, select: { date: true, amount: true } }),
-      this.prisma.groupSettlement.findMany({ where: { businessId }, select: { periodStart: true, closedAt: true } }),
-    ]);
+  listMonthBudgets(businessId: string) {
+    return this.prisma.groupMonthlyBudget.findMany({
+      where: { businessId },
+      orderBy: [{ year: 'desc' }, { month: 'desc' }],
+    });
+  }
 
-    const monthKey = (d: Date) => `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+  async createMonthBudget(businessId: string, dto: CreateGroupMonthBudgetDto) {
+    const existing = await this.prisma.groupMonthlyBudget.findUnique({
+      where: { businessId_month_year: { businessId, month: dto.month, year: dto.year } },
+    });
+    if (existing) {
+      throw new ConflictException(`A budget for ${dto.month}/${dto.year} already exists`);
+    }
+    return this.prisma.groupMonthlyBudget.create({
+      data: { businessId, month: dto.month, year: dto.year, budgetAmount: dto.budgetAmount },
+    });
+  }
 
-    const buckets = new Map<string, { totalExpense: Prisma.Decimal; totalContributed: Prisma.Decimal }>();
-    const bucketFor = (key: string) => {
-      let bucket = buckets.get(key);
-      if (!bucket) {
-        bucket = { totalExpense: new Prisma.Decimal(0), totalContributed: new Prisma.Decimal(0) };
-        buckets.set(key, bucket);
+  async updateMonthBudget(businessId: string, id: string, dto: UpdateGroupMonthBudgetDto) {
+    const budget = await this.requireMonthBudget(businessId, id);
+    if (dto.month !== undefined || dto.year !== undefined) {
+      const month = dto.month ?? budget.month;
+      const year = dto.year ?? budget.year;
+      const clash = await this.prisma.groupMonthlyBudget.findUnique({ where: { businessId_month_year: { businessId, month, year } } });
+      if (clash && clash.id !== id) {
+        throw new ConflictException(`A budget for ${month}/${year} already exists`);
       }
-      return bucket;
-    };
-
-    for (const e of expenses) {
-      const bucket = bucketFor(monthKey(e.date));
-      bucket.totalExpense = bucket.totalExpense.plus(e.amount);
     }
-    for (const c of contributions) {
-      const bucket = bucketFor(monthKey(c.date));
-      bucket.totalContributed = bucket.totalContributed.plus(c.amount);
+    return this.prisma.groupMonthlyBudget.update({
+      where: { id },
+      data: {
+        ...(dto.month !== undefined && { month: dto.month }),
+        ...(dto.year !== undefined && { year: dto.year }),
+        ...(dto.budgetAmount !== undefined && { budgetAmount: dto.budgetAmount }),
+      },
+    });
+  }
+
+  async deleteMonthBudget(businessId: string, id: string) {
+    await this.requireMonthBudget(businessId, id);
+    await this.prisma.groupMonthlyBudget.delete({ where: { id } });
+    return { id };
+  }
+
+  private async requireMonthBudget(businessId: string, id: string) {
+    const budget = await this.prisma.groupMonthlyBudget.findUnique({ where: { id } });
+    if (!budget || budget.businessId !== businessId) {
+      throw new NotFoundException('Month budget not found');
     }
-
-    const closedAtByKey = new Map(settlements.map((s) => [monthKey(s.periodStart), s.closedAt]));
-    for (const key of closedAtByKey.keys()) bucketFor(key); // covers the "all entries since deleted" edge case
-
-    return Array.from(buckets.entries())
-      .map(([key, bucket]) => {
-        const [year, month] = key.split('-').map(Number);
-        const periodStart = new Date(Date.UTC(year, month - 1, 1));
-        const periodEnd = new Date(Date.UTC(year, month, 0));
-        const closedAt = closedAtByKey.get(key) ?? null;
-        return {
-          key,
-          periodStart,
-          periodEnd,
-          totalExpense: bucket.totalExpense.toFixed(2),
-          totalContributed: bucket.totalContributed.toFixed(2),
-          status: closedAt ? ('CLOSED' as const) : ('OPEN' as const),
-          closedAt,
-        };
-      })
-      .sort((a, b) => b.periodStart.getTime() - a.periodStart.getTime());
+    return budget;
   }
 
   // ---- Settlement ----

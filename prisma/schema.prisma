@@ -827,6 +827,7 @@ model Business {
   groupExpenses       GroupExpense[]
   groupSettlements    GroupSettlement[]
   groupExpenseCategoryOptions GroupExpenseCategoryOption[]
+  groupMonthlyBudgets GroupMonthlyBudget[]
 
   @@index([ownerId])
 }
@@ -1444,6 +1445,24 @@ model GroupExpenseCategoryOption {
   updatedAt    DateTime @updatedAt
 
   @@unique([businessId, name])
+}
+
+// A manually-entered monthly budget target (Month + Year + amount, typed in
+// by the user via the Month List tab's "Add Month" form) -- deliberately
+// NOT computed from real GroupExpense/GroupContribution rows the way an
+// earlier version of this tab was; it's a plain standalone record with no
+// comparison-to-actuals logic (yet). One row per (businessId, month, year).
+model GroupMonthlyBudget {
+  id           String   @id @default(uuid())
+  businessId   String
+  business     Business @relation(fields: [businessId], references: [id])
+  month        Int // 1-12
+  year         Int
+  budgetAmount Decimal  @db.Decimal(14, 2)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([businessId, month, year])
 }
 
 // A "closed" snapshot of one period's settlement (see
