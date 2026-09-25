@@ -22,6 +22,7 @@ import { ContactsModule } from './contacts/contacts.module.js';
 import { CouponsModule } from './coupons/coupons.module.js';
 import { DashboardModule } from './dashboard/dashboard.module.js';
 import { FeatureRequestsModule } from './feature-requests/feature-requests.module.js';
+import { GroupExpensesModule } from './group-expenses/group-expenses.module.js';
 import { HealthModule } from './health/health.module.js';
 import { InvoicesModule } from './invoices/invoices.module.js';
 import { LegalDocumentsModule } from './legal-documents/legal-documents.module.js';
@@ -93,6 +94,7 @@ import { UserAuthModule } from './user-auth/user-auth.module.js';
     SavingsGoalsModule,
     AssetsModule,
     PasswordVaultModule,
+    GroupExpensesModule,
   ],
   controllers: [AppController],
   providers: [

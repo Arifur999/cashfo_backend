@@ -102,13 +102,17 @@ export class BusinessesService {
   }
 
   async create(userId: string, dto: CreateBusinessDto) {
-    if (dto.type !== WorkspaceType.BUSINESS) {
+    if (dto.type !== WorkspaceType.BUSINESS && dto.type !== WorkspaceType.GROUP) {
       throw new BadRequestException(
-        'Only BUSINESS-type workspaces can be created here -- every account already has one PERSONAL workspace created automatically at signup.',
+        'Only BUSINESS or GROUP-type workspaces can be created here -- every account already has one PERSONAL workspace created automatically at signup.',
       );
     }
 
-    const { planId } = await this.getPlanLimitInfo(userId);
+    // GROUP ("মেস/যৌথ হিসাব") workspaces are free and have no billing/trial
+    // concept -- they don't touch SubscriptionPlan or the additional-
+    // workspace fee at all, unlike a second BUSINESS workspace.
+    const isGroup = dto.type === WorkspaceType.GROUP;
+    const planId = isGroup ? null : (await this.getPlanLimitInfo(userId)).planId;
 
     const pinHash = dto.pin ? await bcrypt.hash(dto.pin, 10) : null;
 
@@ -117,14 +121,14 @@ export class BusinessesService {
         data: {
           ownerId: userId,
           name: dto.name,
-          type: WorkspaceType.BUSINESS,
+          type: dto.type,
           currency: dto.currency ?? 'BDT',
           planId,
           isDefault: false,
           phone: dto.phone ?? null,
           email: dto.email ?? null,
           pinHash,
-          trialEndsAt: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000),
+          trialEndsAt: isGroup ? null : new Date(Date.now() + 14 * 24 * 60 * 60 * 1000),
         },
       });
 
@@ -134,8 +138,13 @@ export class BusinessesService {
 
       // Prompt 4: a workspace should never exist without its starter Chart
       // of Accounts -- seeded in the SAME transaction as the workspace/
-      // membership rows above, for the same all-or-nothing reason.
-      await this.accountsService.seedDefaultAccounts(created.id, WorkspaceType.BUSINESS, tx);
+      // membership rows above, for the same all-or-nothing reason. GROUP
+      // workspaces skip this entirely -- Group Expense is deliberately not
+      // built on the Account/Transaction engine (see the GroupMember schema
+      // comment), so there's no chart of accounts to seed.
+      if (!isGroup) {
+        await this.accountsService.seedDefaultAccounts(created.id, WorkspaceType.BUSINESS, tx);
+      }
 
       return created;
     });
@@ -146,7 +155,7 @@ export class BusinessesService {
     // connection pool starves that transaction until it hits its 5s timeout
     // (P2028), exactly like the bug already fixed once in
     // UserAuthService.register() (see that method's own comment).
-    const monthlyFee = await this.getAdditionalWorkspaceMonthlyFee(userId);
+    const monthlyFee = isGroup ? null : await this.getAdditionalWorkspaceMonthlyFee(userId);
 
     return {
       id: business.id,

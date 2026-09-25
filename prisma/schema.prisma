@@ -267,6 +267,11 @@ enum AccountType {
 enum WorkspaceType {
   PERSONAL
   BUSINESS
+  // Mess/joint-family "Group Expense" workspace -- see the GroupMember/
+  // GroupContribution/GroupExpense/GroupSettlement models near the end of
+  // this file for why it's a separate, much simpler ledger rather than
+  // reusing Account/Transaction.
+  GROUP
 }
 
 model DefaultCategory {
@@ -817,6 +822,10 @@ model Business {
   savingsGoals SavingsGoal[]
   assets       Asset[]
   assetCategoryOptions AssetCategoryOption[]
+  groupMembers        GroupMember[]
+  groupContributions  GroupContribution[]
+  groupExpenses       GroupExpense[]
+  groupSettlements    GroupSettlement[]
 
   @@index([ownerId])
 }
@@ -1342,4 +1351,116 @@ enum ReferralStatus {
   PENDING
   CONFIRMED
   WITHDRAWN
+}
+
+// =====================================================================
+// "Group Expense" (মেস/যৌথ হিসাব) -- a GROUP-type workspace for a mess or
+// joint family splitting shared costs. Deliberately NOT built on the
+// Account/Transaction double-entry engine: this is a much simpler "pool in
+// (contributions), pool out (expenses), split the remainder equally"
+// ledger, not real bookkeeping -- forcing it through Account/Transaction,
+// or through Contact's debt-sign-convention (built for customer/supplier
+// trade), would distort both. Single-owner-entry model: GroupMember is a
+// plain name/phone record, not a User -- participants never log into the
+// app themselves, only the workspace owner (the sole BusinessMember on a
+// GROUP business) records contributions/expenses on their behalf.
+// =====================================================================
+
+model GroupMember {
+  id            String                  @id @default(uuid())
+  businessId    String
+  business      Business                @relation(fields: [businessId], references: [id])
+  name          String
+  phone         String?
+  status        GroupMemberStatus       @default(ACTIVE)
+  createdAt     DateTime                @default(now())
+  updatedAt     DateTime                @updatedAt
+  contributions GroupContribution[]
+  // Purely informational reverse relation for GroupExpense.paidByMemberId
+  // (who physically went to the market) -- never affects settlement math.
+  expensesPaid  GroupExpense[]
+  settlements   GroupSettlementMember[]
+
+  @@index([businessId, status])
+}
+
+enum GroupMemberStatus {
+  ACTIVE
+  ARCHIVED
+}
+
+model GroupContribution {
+  id            String      @id @default(uuid())
+  businessId    String
+  business      Business    @relation(fields: [businessId], references: [id])
+  groupMemberId String
+  groupMember   GroupMember @relation(fields: [groupMemberId], references: [id])
+  amount        Decimal     @db.Decimal(14, 2)
+  date          DateTime    @db.Date
+  note          String?
+  createdAt     DateTime    @default(now())
+
+  @@index([businessId, date])
+  @@index([groupMemberId])
+}
+
+model GroupExpense {
+  id             String               @id @default(uuid())
+  businessId     String
+  business       Business             @relation(fields: [businessId], references: [id])
+  amount         Decimal              @db.Decimal(14, 2)
+  date           DateTime             @db.Date
+  category       GroupExpenseCategory @default(OTHER)
+  description    String?
+  paidByMemberId String?
+  paidByMember   GroupMember?         @relation(fields: [paidByMemberId], references: [id])
+  createdAt      DateTime             @default(now())
+
+  @@index([businessId, date])
+}
+
+enum GroupExpenseCategory {
+  GROCERY
+  RENT
+  UTILITY
+  OTHER
+}
+
+// A "closed" snapshot of one period's settlement (see
+// GroupExpensesService.closeSettlement()) -- once closed, later back-dated
+// contributions/expenses falling inside that period never change these
+// stored numbers, only a new, still-open period's live computation.
+model GroupSettlement {
+  id             String                  @id @default(uuid())
+  businessId     String
+  business       Business                @relation(fields: [businessId], references: [id])
+  periodStart    DateTime                @db.Date
+  periodEnd      DateTime                @db.Date
+  totalExpense   Decimal                 @db.Decimal(14, 2)
+  memberCount    Int
+  // The even base share (totalExpense / memberCount, rounded) -- the actual
+  // per-member share used for that member's balance is on
+  // GroupSettlementMember.share, since one member absorbs the rounding
+  // remainder so shares always sum exactly to totalExpense.
+  perMemberShare Decimal                 @db.Decimal(14, 2)
+  closedBy       String
+  closedAt       DateTime                @default(now())
+  members        GroupSettlementMember[]
+
+  @@index([businessId, periodStart])
+}
+
+model GroupSettlementMember {
+  id            String          @id @default(uuid())
+  settlementId  String
+  settlement    GroupSettlement @relation(fields: [settlementId], references: [id])
+  groupMemberId String
+  groupMember   GroupMember     @relation(fields: [groupMemberId], references: [id])
+  contributed   Decimal         @db.Decimal(14, 2)
+  share         Decimal         @db.Decimal(14, 2)
+  // contributed - share: positive = this member should get money back,
+  // negative = this member still owes the pool.
+  balance       Decimal         @db.Decimal(14, 2)
+
+  @@index([settlementId])
 }
