@@ -164,6 +164,13 @@ export class GroupExpensesController {
     return this.groupExpensesService.deleteExpense(businessId, id);
   }
 
+  // ---- Month list ----
+
+  @Get('months')
+  listMonths(@Param('businessId') businessId: string) {
+    return this.groupExpensesService.listMonths(businessId);
+  }
+
   // ---- Settlement ----
 
   @Get('settlement')

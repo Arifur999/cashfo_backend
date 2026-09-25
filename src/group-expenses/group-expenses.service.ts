@@ -35,6 +35,16 @@ export interface SettlementResult {
   members: SettlementMemberRow[];
 }
 
+export interface MonthSummary {
+  key: string; // "YYYY-MM"
+  periodStart: Date;
+  periodEnd: Date;
+  totalExpense: string;
+  totalContributed: string;
+  status: 'OPEN' | 'CLOSED';
+  closedAt: Date | null;
+}
+
 @Injectable()
 export class GroupExpensesService {
   constructor(private readonly prisma: PrismaService) {}
@@ -270,6 +280,66 @@ export class GroupExpensesService {
     await this.requireExpense(businessId, id);
     await this.prisma.groupExpense.delete({ where: { id } });
     return { success: true };
+  }
+
+  // ---- Month list ----
+
+  // "Month List" nav item -- every calendar month that has ANY expense or
+  // contribution activity (or a closed GroupSettlement, in case all its
+  // entries were later deleted), newest first, with a quick total + Open/
+  // Closed status so the user can jump straight into a past month's
+  // Settlement instead of hand-picking a date range there. "Closed" is
+  // matched by a settlement's periodStart falling in that calendar month --
+  // good enough for the normal case (closing a whole month at a time); a
+  // custom partial-range close just doesn't mark any single month closed.
+  async listMonths(businessId: string): Promise<MonthSummary[]> {
+    const [expenses, contributions, settlements] = await Promise.all([
+      this.prisma.groupExpense.findMany({ where: { businessId }, select: { date: true, amount: true } }),
+      this.prisma.groupContribution.findMany({ where: { businessId }, select: { date: true, amount: true } }),
+      this.prisma.groupSettlement.findMany({ where: { businessId }, select: { periodStart: true, closedAt: true } }),
+    ]);
+
+    const monthKey = (d: Date) => `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+
+    const buckets = new Map<string, { totalExpense: Prisma.Decimal; totalContributed: Prisma.Decimal }>();
+    const bucketFor = (key: string) => {
+      let bucket = buckets.get(key);
+      if (!bucket) {
+        bucket = { totalExpense: new Prisma.Decimal(0), totalContributed: new Prisma.Decimal(0) };
+        buckets.set(key, bucket);
+      }
+      return bucket;
+    };
+
+    for (const e of expenses) {
+      const bucket = bucketFor(monthKey(e.date));
+      bucket.totalExpense = bucket.totalExpense.plus(e.amount);
+    }
+    for (const c of contributions) {
+      const bucket = bucketFor(monthKey(c.date));
+      bucket.totalContributed = bucket.totalContributed.plus(c.amount);
+    }
+
+    const closedAtByKey = new Map(settlements.map((s) => [monthKey(s.periodStart), s.closedAt]));
+    for (const key of closedAtByKey.keys()) bucketFor(key); // covers the "all entries since deleted" edge case
+
+    return Array.from(buckets.entries())
+      .map(([key, bucket]) => {
+        const [year, month] = key.split('-').map(Number);
+        const periodStart = new Date(Date.UTC(year, month - 1, 1));
+        const periodEnd = new Date(Date.UTC(year, month, 0));
+        const closedAt = closedAtByKey.get(key) ?? null;
+        return {
+          key,
+          periodStart,
+          periodEnd,
+          totalExpense: bucket.totalExpense.toFixed(2),
+          totalContributed: bucket.totalContributed.toFixed(2),
+          status: closedAt ? ('CLOSED' as const) : ('OPEN' as const),
+          closedAt,
+        };
+      })
+      .sort((a, b) => b.periodStart.getTime() - a.periodStart.getTime());
   }
 
   // ---- Settlement ----
