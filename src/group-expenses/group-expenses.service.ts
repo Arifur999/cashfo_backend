@@ -5,6 +5,8 @@ import { CloseSettlementDto } from './dto/close-settlement.dto.js';
 import { CreateGroupContributionDto } from './dto/create-group-contribution.dto.js';
 import { CreateGroupExpenseDto } from './dto/create-group-expense.dto.js';
 import { CreateGroupMemberDto } from './dto/create-group-member.dto.js';
+import { UpdateGroupContributionDto } from './dto/update-group-contribution.dto.js';
+import { UpdateGroupExpenseDto } from './dto/update-group-expense.dto.js';
 import { UpdateGroupMemberDto } from './dto/update-group-member.dto.js';
 
 export interface SettlementMemberRow {
@@ -107,6 +109,23 @@ export class GroupExpensesService {
     });
   }
 
+  async updateContribution(businessId: string, id: string, dto: UpdateGroupContributionDto) {
+    await this.requireContribution(businessId, id);
+    if (dto.groupMemberId) {
+      await this.requireMember(businessId, dto.groupMemberId);
+    }
+    return this.prisma.groupContribution.update({
+      where: { id },
+      data: {
+        ...(dto.groupMemberId !== undefined && { groupMemberId: dto.groupMemberId }),
+        ...(dto.amount !== undefined && { amount: dto.amount }),
+        ...(dto.date !== undefined && { date: new Date(dto.date) }),
+        ...(dto.note !== undefined && { note: dto.note }),
+      },
+      include: { groupMember: true },
+    });
+  }
+
   async deleteContribution(businessId: string, id: string) {
     await this.requireContribution(businessId, id);
     await this.prisma.groupContribution.delete({ where: { id } });
@@ -144,6 +163,25 @@ export class GroupExpensesService {
         description: dto.description,
         paidByMemberId: dto.paidByMemberId,
       },
+    });
+  }
+
+  async updateExpense(businessId: string, id: string, dto: UpdateGroupExpenseDto) {
+    await this.requireExpense(businessId, id);
+    if (dto.paidByMemberId) {
+      await this.requireMember(businessId, dto.paidByMemberId);
+    }
+    return this.prisma.groupExpense.update({
+      where: { id },
+      data: {
+        ...(dto.amount !== undefined && { amount: dto.amount }),
+        ...(dto.date !== undefined && { date: new Date(dto.date) }),
+        ...(dto.category !== undefined && { category: dto.category }),
+        ...(dto.description !== undefined && { description: dto.description }),
+        // "" clears it back to untracked -- see the DTO field's own comment.
+        ...(dto.paidByMemberId !== undefined && { paidByMemberId: dto.paidByMemberId || null }),
+      },
+      include: { paidByMember: true },
     });
   }
 

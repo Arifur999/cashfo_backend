@@ -4,6 +4,8 @@ import { CloseSettlementDto } from './dto/close-settlement.dto.js';
 import { CreateGroupContributionDto } from './dto/create-group-contribution.dto.js';
 import { CreateGroupExpenseDto } from './dto/create-group-expense.dto.js';
 import { CreateGroupMemberDto } from './dto/create-group-member.dto.js';
+import { UpdateGroupContributionDto } from './dto/update-group-contribution.dto.js';
+import { UpdateGroupExpenseDto } from './dto/update-group-expense.dto.js';
 import { UpdateGroupMemberDto } from './dto/update-group-member.dto.js';
 import { GroupExpensesService } from './group-expenses.service.js';
 import { RequireBusinessMembership } from '../business-access/decorators/require-business-membership.decorator.js';
@@ -71,6 +73,12 @@ export class GroupExpensesController {
   }
 
   @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
+  @Patch('contributions/:id')
+  updateContribution(@Param('businessId') businessId: string, @Param('id') id: string, @Body() dto: UpdateGroupContributionDto) {
+    return this.groupExpensesService.updateContribution(businessId, id, dto);
+  }
+
+  @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
   @Delete('contributions/:id')
   deleteContribution(@Param('businessId') businessId: string, @Param('id') id: string) {
     return this.groupExpensesService.deleteContribution(businessId, id);
@@ -92,6 +100,12 @@ export class GroupExpensesController {
   @Post('expenses')
   createExpense(@Param('businessId') businessId: string, @Body() dto: CreateGroupExpenseDto) {
     return this.groupExpensesService.createExpense(businessId, dto);
+  }
+
+  @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
+  @Patch('expenses/:id')
+  updateExpense(@Param('businessId') businessId: string, @Param('id') id: string, @Body() dto: UpdateGroupExpenseDto) {
+    return this.groupExpensesService.updateExpense(businessId, id, dto);
   }
 
   @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
