@@ -14,6 +14,13 @@ import { UpdateGroupMemberDto } from './dto/update-group-member.dto.js';
 export interface SettlementMemberRow {
   groupMemberId: string;
   name: string;
+  // Gross deposits only (excludes returns) -- what the member actually
+  // handed over. `contributed` stays the NET figure (deposits - returned)
+  // since that's what closeSettlement() persists onto GroupSettlementMember
+  // and what `balance` is computed from; grossDeposited/returned are
+  // purely for the live breakdown display, not persisted.
+  grossDeposited: string;
+  returned: string;
   contributed: string;
   share: string;
   balance: string;
@@ -316,14 +323,27 @@ export class GroupExpensesService {
         where: { businessId, date: { gte: periodStart, lte: periodEnd } },
         _sum: { amount: true },
       }),
-      this.prisma.groupContribution.groupBy({
-        by: ['groupMemberId'],
+      // Individual rows, not groupBy's _sum -- a plain sum would net
+      // deposits and returns (negative amounts, see AddContributionModal's
+      // Deposit/Return toggle) into one figure, losing the gross/returned
+      // breakdown the settlement view shows separately.
+      this.prisma.groupContribution.findMany({
         where: { businessId, date: { gte: periodStart, lte: periodEnd } },
-        _sum: { amount: true },
+        select: { groupMemberId: true, amount: true },
       }),
     ]);
 
-    const contributedByMember = new Map(contributions.map((c) => [c.groupMemberId, new Prisma.Decimal(c._sum.amount ?? 0)]));
+    const totalsByMember = new Map<string, { deposited: Prisma.Decimal; returned: Prisma.Decimal }>();
+    for (const c of contributions) {
+      const amount = new Prisma.Decimal(c.amount);
+      const totals = totalsByMember.get(c.groupMemberId) ?? { deposited: new Prisma.Decimal(0), returned: new Prisma.Decimal(0) };
+      if (amount.isNegative()) {
+        totals.returned = totals.returned.plus(amount.abs());
+      } else {
+        totals.deposited = totals.deposited.plus(amount);
+      }
+      totalsByMember.set(c.groupMemberId, totals);
+    }
     const totalExpense = new Prisma.Decimal(expenseAgg._sum.amount ?? 0);
     const memberCount = members.length;
 
@@ -342,12 +362,15 @@ export class GroupExpensesService {
     const lastShare = baseCents.plus(remainderCents).dividedBy(100);
 
     const rows: SettlementMemberRow[] = members.map((member, index) => {
-      const contributed = contributedByMember.get(member.id) ?? new Prisma.Decimal(0);
+      const totals = totalsByMember.get(member.id) ?? { deposited: new Prisma.Decimal(0), returned: new Prisma.Decimal(0) };
+      const contributed = totals.deposited.minus(totals.returned);
       const share = index === memberCount - 1 ? lastShare : baseShare;
       const balance = contributed.minus(share);
       return {
         groupMemberId: member.id,
         name: member.name,
+        grossDeposited: totals.deposited.toFixed(2),
+        returned: totals.returned.toFixed(2),
         contributed: contributed.toFixed(2),
         share: share.toFixed(2),
         balance: balance.toFixed(2),
