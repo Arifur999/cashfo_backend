@@ -696,6 +696,7 @@ model User {
   ownedBusinesses   Business[]         @relation("BusinessOwner")
   sessions          UserSession[]
   vaultEntries      VaultEntry[]
+  habits            Habit[]
   // Every Referral row this user created by inviting someone else (as the
   // referrer), vs. the single Referral row recording that this user was
   // THEMSELVES referred by someone else's code at registration.
@@ -778,16 +779,72 @@ enum UserStatus {
   DELETED
 }
 
+// Habit Tracker -- a personal, User-scoped feature (no Business/workspace
+// concept at all, unlike every other feature module in this schema).
+// Reached via the end-user app's TopBar "Switch" button, which swaps the
+// whole Sidebar into a separate app-mode -- see user-frontend's
+// Sidebar.tsx/TopBar.tsx.
+model Habit {
+  id            String         @id @default(uuid())
+  userId        String
+  user          User           @relation(fields: [userId], references: [id])
+  name          String
+  icon          String         @default("target")
+  color         String         @default("blue")
+  frequencyType HabitFrequency @default(DAILY)
+  // Only meaningful when frequencyType is WEEKLY_DAYS -- 0=Sunday..6=Saturday.
+  weeklyDays    Int[]          @default([])
+  // Only meaningful when frequencyType is WEEKLY_COUNT -- "N times a week",
+  // any day of the week counts toward it.
+  weeklyCount   Int?
+  // Optional quantity target for a single day's check-in (e.g. "8 glasses"),
+  // paired with unit for display. Null means a plain done/not-done habit.
+  targetValue   Int?
+  unit          String?
+  isArchived    Boolean        @default(false)
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  logs          HabitLog[]
+
+  @@index([userId])
+}
+
+enum HabitFrequency {
+  DAILY
+  WEEKLY_DAYS
+  WEEKLY_COUNT
+}
+
+// One check-in per habit per calendar day -- @@unique enforces that, so
+// checking in twice on the same day is an upsert (see
+// HabitsService.checkIn()), never a duplicate row. onDelete: Cascade since a
+// log is meaningless once its habit is gone (habits with history are
+// archived instead of hard-deleted anyway -- see HabitsService.remove()  --
+// so this cascade only ever fires for a habit with zero logs).
+model HabitLog {
+  id        String   @id @default(uuid())
+  habitId   String
+  habit     Habit    @relation(fields: [habitId], references: [id], onDelete: Cascade)
+  date      DateTime @db.Date
+  completed Boolean  @default(true)
+  value     Int?
+  note      String?
+  createdAt DateTime @default(now())
+
+  @@unique([habitId, date])
+  @@index([habitId, date])
+}
+
 model Business {
-  id           String            @id @default(uuid())
-  ownerId      String
-  owner        User              @relation("BusinessOwner", fields: [ownerId], references: [id])
-  name         String
-  type         WorkspaceType // reuses the enum already defined for DefaultAccountTemplate.appliesTo above
-  currency     String            @default("BDT")
-  planId       String?
-  plan         SubscriptionPlan? @relation(fields: [planId], references: [id])
-  isDefault    Boolean           @default(false) // true for the auto-created personal workspace
+  id                          String                       @id @default(uuid())
+  ownerId                     String
+  owner                       User                         @relation("BusinessOwner", fields: [ownerId], references: [id])
+  name                        String
+  type                        WorkspaceType // reuses the enum already defined for DefaultAccountTemplate.appliesTo above
+  currency                    String                       @default("BDT")
+  planId                      String?
+  plan                        SubscriptionPlan?            @relation(fields: [planId], references: [id])
+  isDefault                   Boolean                      @default(false) // true for the auto-created personal workspace
   // Multi-workspace add-ons (additional BUSINESS-type workspaces under one
   // account, e.g. managing a family member's finances separately). phone/
   // email are just contact info entered on the New Workspace form -- not
@@ -797,37 +854,37 @@ model Business {
   // trialEndsAt is cosmetic-only for now (no enforcement): a fixed 14-day
   // trial stamped when a non-default workspace is created, shown as a
   // "Trial" badge in the UI.
-  phone        String?
-  email        String?
-  pinHash      String?
-  trialEndsAt  DateTime?
+  phone                       String?
+  email                       String?
+  pinHash                     String?
+  trialEndsAt                 DateTime?
   // Overall monthly spending target shown on the Budget Planning page as
   // "Total budget" -- separate from the sum of BudgetCategory.monthlyLimit
   // ("Allocated"), which a user may intentionally under- or over-allocate
   // against. Not month-specific: one standing target, edited via "Manage
   // Budget"; only the computed "spent" figure varies by the viewed month.
-  monthlyBudgetTarget Decimal?   @db.Decimal(14, 2)
+  monthlyBudgetTarget         Decimal?                     @db.Decimal(14, 2)
   // Soft-delete only -- a workspace may hold financial data in later prompts,
   // so it's never hard-deleted. null = active. Every list/lookup query must
   // filter deletedAt: null.
-  deletedAt    DateTime?
-  createdAt    DateTime          @default(now())
-  updatedAt    DateTime          @updatedAt
-  members      BusinessMember[]
-  accounts     Account[]
-  transactions Transaction[]
-  contacts     Contact[]
-  budgetCategories BudgetCategory[]
-  incomeGoals  IncomeGoal[]
-  savingsGoals SavingsGoal[]
-  assets       Asset[]
-  assetCategoryOptions AssetCategoryOption[]
-  groupMembers        GroupMember[]
-  groupContributions  GroupContribution[]
-  groupExpenses       GroupExpense[]
-  groupSettlements    GroupSettlement[]
+  deletedAt                   DateTime?
+  createdAt                   DateTime                     @default(now())
+  updatedAt                   DateTime                     @updatedAt
+  members                     BusinessMember[]
+  accounts                    Account[]
+  transactions                Transaction[]
+  contacts                    Contact[]
+  budgetCategories            BudgetCategory[]
+  incomeGoals                 IncomeGoal[]
+  savingsGoals                SavingsGoal[]
+  assets                      Asset[]
+  assetCategoryOptions        AssetCategoryOption[]
+  groupMembers                GroupMember[]
+  groupContributions          GroupContribution[]
+  groupExpenses               GroupExpense[]
+  groupSettlements            GroupSettlement[]
   groupExpenseCategoryOptions GroupExpenseCategoryOption[]
-  groupMonthlyBudgets GroupMonthlyBudget[]
+  groupMonthlyBudgets         GroupMonthlyBudget[]
 
   @@index([ownerId])
 }
@@ -1074,24 +1131,24 @@ enum EntryType {
 // =====================================================================
 
 model BudgetCategory {
-  id         String             @id @default(uuid())
-  businessId String
-  business   Business           @relation(fields: [businessId], references: [id])
-  type       BudgetCategoryType @default(EXPENSE)
-  name       String
+  id           String             @id @default(uuid())
+  businessId   String
+  business     Business           @relation(fields: [businessId], references: [id])
+  type         BudgetCategoryType @default(EXPENSE)
+  name         String
   // Nullable -- a category saved without ever picking one from the grid
   // (e.g. after searching for something with no match) has no icon at all,
   // rendered as a plain colored circle rather than a default glyph.
-  icon       String?
-  color      String
+  icon         String?
+  color        String
   // Required for EXPENSE (each category has its own spending limit,
   // enforced in BudgetsService.createCategory, not here) -- null for
   // INCOME, which has no per-category goal at all -- see IncomeGoal below
   // for the real (month-specific, table-based) income goal concept.
-  monthlyLimit Decimal?         @db.Decimal(14, 2)
-  displayOrder Int              @default(0)
-  createdAt    DateTime         @default(now())
-  updatedAt    DateTime         @updatedAt
+  monthlyLimit Decimal?           @db.Decimal(14, 2)
+  displayOrder Int                @default(0)
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
 
   @@unique([businessId, type, name])
   @@index([businessId])
@@ -1141,27 +1198,27 @@ model IncomeGoal {
 // =====================================================================
 
 model SavingsGoal {
-  id             String                  @id @default(uuid())
-  businessId     String
-  business       Business                @relation(fields: [businessId], references: [id])
-  name           String
-  targetAmount   Decimal                 @db.Decimal(14, 2)
-  targetDate     DateTime
+  id              String                  @id @default(uuid())
+  businessId      String
+  business        Business                @relation(fields: [businessId], references: [id])
+  name            String
+  targetAmount    Decimal                 @db.Decimal(14, 2)
+  targetDate      DateTime
   // Manually entered (not derived from targetDate - createdAt) -- drives the
   // "suggested monthly contribution" (targetAmount / durationMonths) shown
   // alongside the goal, same as the reference layout's "Monthly Savings"
   // card.
-  durationMonths Int
-  reminderDate   DateTime?
+  durationMonths  Int
+  reminderDate    DateTime?
   // Only a stored preference for now -- no email/SMS is actually sent yet
   // (this app has no email provider or Bangladeshi SMS gateway configured).
   // Wiring up real delivery is a separate, later integration.
   reminderChannel SavingsReminderChannel?
-  description    String?
-  status         SavingsGoalStatus       @default(ACTIVE)
-  createdAt      DateTime                @default(now())
-  updatedAt      DateTime                @updatedAt
-  entries        SavingsGoalEntry[]
+  description     String?
+  status          SavingsGoalStatus       @default(ACTIVE)
+  createdAt       DateTime                @default(now())
+  updatedAt       DateTime                @updatedAt
+  entries         SavingsGoalEntry[]
 
   @@index([businessId])
 }
@@ -1207,14 +1264,14 @@ enum SavingsEntryType {
 // reference" convention as TransactionEntry.categoryId. Callers that need
 // the referenced row look it up explicitly.
 model SavingsGoalEntry {
-  id             String           @id @default(uuid())
-  savingsGoalId  String
-  savingsGoal    SavingsGoal      @relation(fields: [savingsGoalId], references: [id])
-  businessId     String
-  type           SavingsEntryType
-  amount         Decimal          @db.Decimal(14, 2)
-  date           DateTime
-  moneyAccountId String?
+  id               String           @id @default(uuid())
+  savingsGoalId    String
+  savingsGoal      SavingsGoal      @relation(fields: [savingsGoalId], references: [id])
+  businessId       String
+  type             SavingsEntryType
+  amount           Decimal          @db.Decimal(14, 2)
+  date             DateTime
+  moneyAccountId   String?
   // Only set for CONTRIBUTION -- which Savings Wallet (Account,
   // accountSubtype "savings") the money actually landed in. Multiple
   // Savings Wallets can exist per business (e.g. "Islami Bank DPS", "City
@@ -1223,10 +1280,10 @@ model SavingsGoalEntry {
   // a contribution apart from any other, not just moneyAccountId (the
   // source).
   savingsAccountId String?
-  relatedGoalId  String?
-  transactionId  String?
-  notes          String?
-  createdAt      DateTime         @default(now())
+  relatedGoalId    String?
+  transactionId    String?
+  notes            String?
+  createdAt        DateTime         @default(now())
 
   @@index([savingsGoalId])
   @@index([businessId])
@@ -1448,10 +1505,12 @@ model GroupExpenseCategoryOption {
 }
 
 // A manually-entered monthly budget target (Month + Year + amount, typed in
-// by the user via the Month List tab's "Add Month" form) -- deliberately
-// NOT computed from real GroupExpense/GroupContribution rows the way an
-// earlier version of this tab was; it's a plain standalone record with no
-// comparison-to-actuals logic (yet). One row per (businessId, month, year).
+// by the user via the Dashboard's "Add Month" form on the Monthly Breakdown
+// card) -- deliberately NOT computed from real GroupExpense/
+// GroupContribution rows the way an earlier version of this was; it's a
+// plain standalone record with no comparison-to-actuals logic beyond what
+// the Dashboard already computes client-side. One row per (businessId,
+// month, year).
 model GroupMonthlyBudget {
   id           String   @id @default(uuid())
   businessId   String
