@@ -789,6 +789,14 @@ model Habit {
   userId        String
   user          User           @relation(fields: [userId], references: [id])
   name          String
+  // Loose string, NOT a categoryId FK -- same "picker list is decoupled from
+  // what's stored" convention as GroupExpense.category (see that model's own
+  // comment): the frontend only ever offers a small fixed picker list
+  // (Namaz/Ramadan/Book/Course/Others) via the Habits sidebar submenu and
+  // HabitFormModal, not a user-editable category CRUD like Group Expense's
+  // own categories, but storing it as a plain string here keeps the door
+  // open to that later without a migration.
+  category      String         @default("Others")
   icon          String         @default("target")
   color         String         @default("blue")
   frequencyType HabitFrequency @default(DAILY)

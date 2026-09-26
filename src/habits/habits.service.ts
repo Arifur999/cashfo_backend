@@ -15,9 +15,9 @@ export class HabitsService {
 
   // ---- Habits ----
 
-  listHabits(userId: string, includeArchived = false) {
+  listHabits(userId: string, includeArchived = false, category?: string) {
     return this.prisma.habit.findMany({
-      where: { userId, ...(includeArchived ? {} : { isArchived: false }) },
+      where: { userId, ...(includeArchived ? {} : { isArchived: false }), ...(category && { category }) },
       orderBy: { createdAt: 'asc' },
     });
   }
@@ -27,6 +27,7 @@ export class HabitsService {
       data: {
         userId,
         name: dto.name,
+        category: dto.category ?? 'Others',
         icon: dto.icon ?? 'target',
         color: dto.color ?? 'blue',
         frequencyType: dto.frequencyType ?? 'DAILY',
@@ -44,6 +45,7 @@ export class HabitsService {
       where: { id },
       data: {
         ...(dto.name !== undefined && { name: dto.name }),
+        ...(dto.category !== undefined && { category: dto.category }),
         ...(dto.icon !== undefined && { icon: dto.icon }),
         ...(dto.color !== undefined && { color: dto.color }),
         ...(dto.frequencyType !== undefined && { frequencyType: dto.frequencyType }),

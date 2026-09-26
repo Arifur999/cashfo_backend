@@ -7,6 +7,13 @@ export class CreateHabitDto {
   @IsNotEmpty()
   name: string;
 
+  // Loose string, not a fixed enum -- see the Habit.category schema comment.
+  // The frontend only ever sends one of Namaz/Ramadan/Book/Course/Others
+  // today, but this deliberately doesn't hard-validate against that list.
+  @IsOptional()
+  @IsString()
+  category?: string;
+
   @IsOptional()
   @IsIn(BUDGET_CATEGORY_ICONS)
   icon?: string;

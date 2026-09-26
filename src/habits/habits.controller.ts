@@ -35,8 +35,8 @@ export class HabitsController {
   }
 
   @Get()
-  list(@CurrentUser() user: RequestUser, @Query('includeArchived') includeArchived?: string) {
-    return this.habitsService.listHabits(user.id, includeArchived === 'true');
+  list(@CurrentUser() user: RequestUser, @Query('includeArchived') includeArchived?: string, @Query('category') category?: string) {
+    return this.habitsService.listHabits(user.id, includeArchived === 'true', category);
   }
 
   @Post()

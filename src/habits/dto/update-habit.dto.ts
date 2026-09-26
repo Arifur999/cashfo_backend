@@ -9,6 +9,10 @@ export class UpdateHabitDto {
   name?: string;
 
   @IsOptional()
+  @IsString()
+  category?: string;
+
+  @IsOptional()
   @IsIn(BUDGET_CATEGORY_ICONS)
   icon?: string;
 
