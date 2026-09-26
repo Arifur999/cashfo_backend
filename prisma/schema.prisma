@@ -662,16 +662,16 @@ enum CampaignStatus {
 // =====================================================================
 
 model User {
-  id                String             @id @default(uuid())
-  name              String
-  email             String             @unique
-  phone             String?
+  id                 String              @id @default(uuid())
+  name               String
+  email              String              @unique
+  phone              String?
   // Uploaded via POST /api/auth/avatar (same local-disk multer pattern as
   // Contact.photoUrl -- see contact-photo-upload.ts's comment), served back
   // statically from /uploads/avatars. Null shows the initials-circle
   // fallback in the UI instead.
-  avatarUrl         String?
-  passwordHash      String
+  avatarUrl          String?
+  passwordHash       String
   // Shareable short code for this user's own referral link ("Referral
   // Program" menu) -- nullable because pre-existing users only get one
   // lazily backfilled the first time they open that page (see
@@ -679,29 +679,30 @@ model User {
   // one immediately (see UserAuthService.register()). Unique so a code
   // uniquely identifies its owner when a new signup's referralCode DTO
   // field is looked up.
-  referralCode      String?            @unique
+  referralCode       String?             @unique
   // Settings > Password Manager's own unlock secret -- deliberately separate
   // from passwordHash above (a leaked account password must not also unlock
   // the vault). Null until the user completes first-time vault setup (see
   // PasswordVaultService.setVaultPassword()); the vault menu shows a "Set up"
   // prompt instead of an unlock form until then.
-  vaultPasswordHash String?
-  preferredLanguage LanguagePreference @default(EN)
-  status            UserStatus         @default(ACTIVE)
-  emailVerifiedAt   DateTime?
-  lastLoginAt       DateTime?
-  createdAt         DateTime           @default(now())
-  updatedAt         DateTime           @updatedAt
-  memberships       BusinessMember[]
-  ownedBusinesses   Business[]         @relation("BusinessOwner")
-  sessions          UserSession[]
-  vaultEntries      VaultEntry[]
-  habits            Habit[]
+  vaultPasswordHash  String?
+  preferredLanguage  LanguagePreference  @default(EN)
+  status             UserStatus          @default(ACTIVE)
+  emailVerifiedAt    DateTime?
+  lastLoginAt        DateTime?
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  memberships        BusinessMember[]
+  ownedBusinesses    Business[]          @relation("BusinessOwner")
+  sessions           UserSession[]
+  vaultEntries       VaultEntry[]
+  habits             Habit[]
+  habitMonthTrackers HabitMonthTracker[]
   // Every Referral row this user created by inviting someone else (as the
   // referrer), vs. the single Referral row recording that this user was
   // THEMSELVES referred by someone else's code at registration.
-  referralsMade     Referral[]         @relation("Referrer")
-  referredAs        Referral?          @relation("Referred")
+  referralsMade      Referral[]          @relation("Referrer")
+  referredAs         Referral?           @relation("Referred")
 
   // No separate @@index([email]) -- @unique above already creates a unique
   // index covering lookups by email (same reasoning as AdminUser/PlatformUser).
@@ -841,6 +842,42 @@ model HabitLog {
 
   @@unique([habitId, date])
   @@index([habitId, date])
+}
+
+// A whole calendar month laid out as a checkbox grid (one row per day, one
+// column per item) for a habit CATEGORY -- currently only Namaz's five daily
+// prayers (see HabitTrackersService's TRACKER_ITEMS_BY_CATEGORY). Separate
+// from Habit/HabitLog on purpose: those model one user-defined habit with a
+// done/not-done check-in per day, whereas this is a fixed-shape month sheet
+// the user creates by picking a month + year ("Create Month").
+model HabitMonthTracker {
+  id        String            @id @default(uuid())
+  userId    String
+  user      User              @relation(fields: [userId], references: [id])
+  category  String
+  month     Int // 1-12
+  year      Int
+  // Snapshot of the column set at creation time, so a sheet keeps its own
+  // columns even if the per-category preset list changes later.
+  items     String[]
+  createdAt DateTime          @default(now())
+  checks    HabitMonthCheck[]
+
+  @@unique([userId, category, month, year])
+  @@index([userId, category])
+}
+
+// One row per TICKED cell only -- an unticked cell simply has no row, so
+// unchecking deletes it. Cross/missed counts are derived, never stored.
+model HabitMonthCheck {
+  id        String            @id @default(uuid())
+  trackerId String
+  tracker   HabitMonthTracker @relation(fields: [trackerId], references: [id], onDelete: Cascade)
+  day       Int // 1-31
+  item      String
+
+  @@unique([trackerId, day, item])
+  @@index([trackerId])
 }
 
 model Business {
