@@ -80,11 +80,19 @@ function elapsedDays(month: number, year: number): number {
 }
 
 // The day-of-month that is "today" if this sheet is the current month, else
-// null -- the sheet highlights that row, so the client never has to guess
+// null -- the sheet highlights that day column, so the client never has to guess
 // the date (or its timezone) itself.
 function todayDayFor(month: number, year: number): number | null {
   const today = todayInDhaka();
   return today.year === year && today.month === month ? today.day : null;
+}
+
+// The last day of a calendar-month sheet that can be ticked: today, or every
+// day of a month that is already over; none of a month that hasn't started.
+// (Unticking is never restricted, so a tick that already exists on a future
+// day -- made before this rule -- can still be removed.)
+function lastTickableDay(month: number, year: number): number {
+  return todayDayFor(month, year) ?? elapsedDays(month, year);
 }
 
 function alreadyExistsMessage(category: string, month: number, year: number): string {
@@ -166,6 +174,11 @@ export class HabitTrackersService {
     }
 
     if (dto.checked) {
+      // A day that hasn't come yet can't be ticked. Ramadan sheets have no
+      // calendar dates, so they're exempt.
+      if (configFor(tracker.category)?.kind === 'gregorian' && dto.day > lastTickableDay(tracker.month, tracker.year)) {
+        throw new BadRequestException("You can't tick a day that hasn't come yet");
+      }
       // createMany + skipDuplicates is a single INSERT .. ON CONFLICT DO
       // NOTHING, so two simultaneous identical ticks can't race into a
       // unique-constraint error the way find-then-create/upsert can.
