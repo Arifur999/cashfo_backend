@@ -844,21 +844,30 @@ model HabitLog {
   @@index([habitId, date])
 }
 
-// A whole calendar month laid out as a checkbox grid (one row per day, one
-// column per item) for a habit CATEGORY -- currently only Namaz's five daily
-// prayers (see HabitTrackersService's TRACKER_ITEMS_BY_CATEGORY). Separate
-// from Habit/HabitLog on purpose: those model one user-defined habit with a
-// done/not-done check-in per day, whereas this is a fixed-shape month sheet
-// the user creates by picking a month + year ("Create Month").
+// A whole month laid out as a checkbox grid (one row/column per day, one per
+// item) for a habit CATEGORY -- Namaz (a Gregorian month, the five daily
+// prayers) and Ramadan (see HabitTrackersService's TRACKER_CONFIG).
+// Separate from Habit/HabitLog on purpose: those model one user-defined
+// habit with a done/not-done check-in per day, whereas this is a month sheet
+// the user creates by picking a month + year ("Create Month") or, for
+// Ramadan, just a year ("Create Ramadan").
 model HabitMonthTracker {
   id        String            @id @default(uuid())
   userId    String
   user      User              @relation(fields: [userId], references: [id])
   category  String
-  month     Int // 1-12
+  // Namaz: the Gregorian month, 1-12. Ramadan: always 9 (the Hijri month
+  // number, HabitTrackersService's RAMADAN_MONTH) -- `year` is then the
+  // Gregorian year the user typed, so one Ramadan per typed year. (A
+  // Gregorian year can rarely contain two Ramadans, e.g. 2030 -- known limit.)
+  month     Int
   year      Int
-  // Snapshot of the column set at creation time, so a sheet keeps its own
-  // columns even if the per-category preset list changes later.
+  // Number of days on the sheet when it is NOT a Gregorian month: Ramadan
+  // stores 29 or 30 (chosen at creation). Null for Namaz, whose day count
+  // is the real length of that Gregorian month.
+  totalDays Int?
+  // Column set. Namaz snapshots its fixed five prayers at creation; Ramadan
+  // starts with ["Roza"] and the user adds/removes the rest by hand.
   items     String[]
   createdAt DateTime          @default(now())
   checks    HabitMonthCheck[]
