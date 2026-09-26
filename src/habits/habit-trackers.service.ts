@@ -130,9 +130,17 @@ export class HabitTrackersService {
     return { day: dto.day, item: dto.item, checked: dto.checked };
   }
 
+  // A month can only be deleted while it has no ticked cells (its Tick total
+  // is 0) -- once anything is ticked it's real history, so the user has to
+  // untick everything first. Enforced here, not just by the UI, and as ONE
+  // conditional delete (checks: none) so a tick landing between a "has any
+  // ticks?" read and the delete can't slip through.
   async remove(userId: string, id: string): Promise<{ id: string }> {
     await this.requireTracker(userId, id);
-    await this.prisma.habitMonthTracker.delete({ where: { id } });
+    const { count } = await this.prisma.habitMonthTracker.deleteMany({ where: { id, userId, checks: { none: {} } } });
+    if (count === 0) {
+      throw new BadRequestException("This month has ticked prayers -- untick them all before deleting it");
+    }
     return { id };
   }
 
