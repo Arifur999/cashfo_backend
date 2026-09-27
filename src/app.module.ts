@@ -23,6 +23,7 @@ import { CouponsModule } from './coupons/coupons.module.js';
 import { DashboardModule } from './dashboard/dashboard.module.js';
 import { FeatureRequestsModule } from './feature-requests/feature-requests.module.js';
 import { GroupExpensesModule } from './group-expenses/group-expenses.module.js';
+import { BooksModule } from './books/books.module.js';
 import { HabitsModule } from './habits/habits.module.js';
 import { HealthModule } from './health/health.module.js';
 import { InvoicesModule } from './invoices/invoices.module.js';
@@ -97,6 +98,7 @@ import { UserAuthModule } from './user-auth/user-auth.module.js';
     PasswordVaultModule,
     GroupExpensesModule,
     HabitsModule,
+    BooksModule,
   ],
   controllers: [AppController],
   providers: [

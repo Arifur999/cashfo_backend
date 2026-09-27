@@ -698,6 +698,8 @@ model User {
   vaultEntries       VaultEntry[]
   habits             Habit[]
   habitMonthTrackers HabitMonthTracker[]
+  books              Book[]
+  bookGoals          BookGoal[]
   // Every Referral row this user created by inviting someone else (as the
   // referrer), vs. the single Referral row recording that this user was
   // THEMSELVES referred by someone else's code at registration.
@@ -887,6 +889,48 @@ model HabitMonthCheck {
 
   @@unique([trackerId, day, item])
   @@index([trackerId])
+}
+
+// Habit Tracker -> Book: a personal reading list. One row per book the user
+// wants to read / is reading / has finished, tracked by pages. Kept apart from
+// Habit on purpose (a book has a page count and a progress, not a daily
+// check-in). `status` is settled server-side from pagesRead -- see
+// BooksService.settle().
+enum BookStatus {
+  WANT_TO_READ
+  READING
+  FINISHED
+}
+
+model Book {
+  id         String     @id @default(uuid())
+  userId     String
+  user       User       @relation(fields: [userId], references: [id])
+  title      String
+  author     String     @default("")
+  totalPages Int
+  pagesRead  Int        @default(0)
+  status     BookStatus @default(WANT_TO_READ)
+  // Key into the cover-colour palette (BOOK_COLORS) -- a plain string so
+  // adding a colour is a code change, not a migration.
+  color      String     @default("walnut")
+  startedAt  DateTime?
+  finishedAt DateTime?
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
+
+  @@index([userId, status])
+}
+
+// "Finish N books this year" -- one target per user per (Asia/Dhaka) year.
+model BookGoal {
+  id     String @id @default(uuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id])
+  year   Int
+  target Int
+
+  @@unique([userId, year])
 }
 
 model Business {
