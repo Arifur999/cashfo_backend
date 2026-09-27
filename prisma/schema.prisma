@@ -700,6 +700,8 @@ model User {
   habitMonthTrackers HabitMonthTracker[]
   books              Book[]
   bookGoals          BookGoal[]
+  skills             Skill[]
+  skillGoals         SkillGoal[]
   // Every Referral row this user created by inviting someone else (as the
   // referrer), vs. the single Referral row recording that this user was
   // THEMSELVES referred by someone else's code at registration.
@@ -924,6 +926,73 @@ model Book {
 
 // "Finish N books this year" -- one target per user per (Asia/Dhaka) year.
 model BookGoal {
+  id     String @id @default(uuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id])
+  year   Int
+  target Int
+
+  @@unique([userId, year])
+}
+
+// Habit Tracker -> Skills (the "Course" habit category): something the user is
+// learning -- a course counted in lessons, or any skill counted in hours of
+// practice. `unit` is fixed at creation; `target` and `progress` are in that
+// unit (HOURS are stored as MINUTES, the UI shows hours). `status` is settled
+// server-side from progress -- see SkillsService.settle().
+enum SkillUnit {
+  LESSONS
+  HOURS
+}
+
+enum SkillStatus {
+  WANT_TO_LEARN
+  LEARNING
+  COMPLETED
+}
+
+model Skill {
+  id          String      @id @default(uuid())
+  userId      String
+  user        User        @relation(fields: [userId], references: [id])
+  name        String
+  // Where it is learned from ("Udemy", "YouTube", "Self") -- optional.
+  source      String      @default("")
+  unit        SkillUnit
+  target      Int
+  progress    Int         @default(0)
+  status      SkillStatus @default(WANT_TO_LEARN)
+  // Keys into the colour / icon allow-lists (SKILL_COLORS / SKILL_ICONS) --
+  // plain strings so adding one is a code change, not a migration.
+  color       String      @default("violet")
+  icon        String      @default("sparkles")
+  startedAt   DateTime?
+  completedAt DateTime?
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+  logs        SkillLog[]
+
+  @@index([userId, status])
+}
+
+// How much was learned on a calendar day (Asia/Dhaka), per skill -- drives the
+// weekly chart and the streak. `progress` stays the truth for the percentage;
+// this only records the activity (see SkillsService.adjustLog). userId is
+// copied here so the overview can read a user's recent activity in one query.
+model SkillLog {
+  id      String   @id @default(uuid())
+  skillId String
+  skill   Skill    @relation(fields: [skillId], references: [id], onDelete: Cascade)
+  userId  String
+  date    DateTime @db.Date
+  amount  Int // lessons, or minutes, in the skill's unit
+
+  @@unique([skillId, date])
+  @@index([userId, date])
+}
+
+// "Complete N skills this year" -- one target per user per (Asia/Dhaka) year.
+model SkillGoal {
   id     String @id @default(uuid())
   userId String
   user   User   @relation(fields: [userId], references: [id])

@@ -40,6 +40,7 @@ import { ReportsModule } from './reports/reports.module.js';
 import { RevenueModule } from './revenue/revenue.module.js';
 import { SavingsGoalsModule } from './savings-goals/savings-goals.module.js';
 import { SecurityModule } from './security/security.module.js';
+import { SkillsModule } from './skills/skills.module.js';
 import { SettingsModule } from './settings/settings.module.js';
 import { SubscriptionPlansModule } from './subscription-plans/subscription-plans.module.js';
 import { GlobalExceptionFilter } from './system/filters/global-exception.filter.js';
@@ -99,6 +100,7 @@ import { UserAuthModule } from './user-auth/user-auth.module.js';
     GroupExpensesModule,
     HabitsModule,
     BooksModule,
+    SkillsModule,
   ],
   controllers: [AppController],
   providers: [

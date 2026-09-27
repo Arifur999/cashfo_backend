@@ -1,5 +1,7 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { BookStatus, type Book } from '@prisma/client';
+import { cleanText, INVISIBLE_ONLY } from '../common/text.js';
+import { dhakaYear } from '../common/dhaka.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { CreateBookDto } from './dto/create-book.dto.js';
 import { SetBookGoalDto } from './dto/set-book-goal.dto.js';
@@ -12,39 +14,6 @@ const MAX_BOOKS = 500;
 
 const MAX_TITLE_LENGTH = 120;
 const MAX_AUTHOR_LENGTH = 80;
-
-// Same fixed UTC+6 as HabitTrackersService: "this year" for a reading goal and
-// for "books finished this year" is the Asia/Dhaka calendar year, not UTC's
-// (a book finished at 1am on 1 January would otherwise count for last year).
-const DHAKA_OFFSET_MS = 6 * 60 * 60 * 1000;
-
-function dhakaYear(date: Date): number {
-  return new Date(date.getTime() + DHAKA_OFFSET_MS).getUTCFullYear();
-}
-
-// Control characters (a NUL byte can't be stored in a Postgres text column --
-// it surfaces as a 500) and lone UTF-16 surrogates.
-// eslint-disable-next-line no-control-regex -- rejecting control characters is the point
-const UNSAFE_TEXT = /[\u0000-\u001f\u007f]|[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
-
-// Only whitespace and zero-width characters: visually empty. (ZWJ/ZWNJ inside
-// real Bangla text are kept -- they are meaningful there -- so this is only a
-// check, not something that is stripped.)
-const INVISIBLE_ONLY = /^[\s​-‍⁠﻿]*$/;
-
-// The DTO already checked the length of the raw text, but NFC can LENGTHEN
-// Bangla (the RRA/RHA/YYA letters decompose into two code points), so the
-// limit is enforced again on the cleaned value.
-function cleanText(value: string, field: string, maxLength: number): string {
-  const text = value.normalize('NFC').trim().replace(/\s+/g, ' ');
-  if (UNSAFE_TEXT.test(text)) {
-    throw new BadRequestException(`The ${field} can't contain control or invalid characters`);
-  }
-  if (text.length > maxLength) {
-    throw new BadRequestException(`The ${field} can't be longer than ${maxLength} characters`);
-  }
-  return text;
-}
 
 function cleanTitle(value: string): string {
   const title = cleanText(value, 'title', MAX_TITLE_LENGTH);
