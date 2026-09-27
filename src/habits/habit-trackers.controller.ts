@@ -3,6 +3,7 @@ import { CurrentUser } from '../user-auth/decorators/current-user.decorator.js';
 import { UserAuthGuard } from '../user-auth/guards/user-auth.guard.js';
 import type { RequestUser } from '../user-auth/interfaces/request-user.interface.js';
 import { AddTrackerItemDto } from './dto/add-tracker-item.dto.js';
+import { CreateCustomTrackerDto } from './dto/create-custom-tracker.dto.js';
 import { CreateHabitTrackerDto } from './dto/create-habit-tracker.dto.js';
 import { CreateRamadanTrackerDto } from './dto/create-ramadan-tracker.dto.js';
 import { SetHabitTrackerCheckDto } from './dto/set-habit-tracker-check.dto.js';
@@ -31,6 +32,12 @@ export class HabitTrackersController {
   @Post('ramadan')
   createRamadan(@CurrentUser() user: RequestUser, @Body() dto: CreateRamadanTrackerDto) {
     return this.habitTrackersService.createRamadan(user.id, dto);
+  }
+
+  // Static segment, declared before the :id routes below.
+  @Post('custom')
+  createCustom(@CurrentUser() user: RequestUser, @Body() dto: CreateCustomTrackerDto) {
+    return this.habitTrackersService.createCustom(user.id, dto);
   }
 
   @Get(':id')

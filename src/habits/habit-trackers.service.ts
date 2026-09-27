@@ -2,6 +2,7 @@ import { BadRequestException, ConflictException, Injectable, NotFoundException }
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { AddTrackerItemDto } from './dto/add-tracker-item.dto.js';
+import { CreateCustomTrackerDto } from './dto/create-custom-tracker.dto.js';
 import { CreateHabitTrackerDto } from './dto/create-habit-tracker.dto.js';
 import { CreateRamadanTrackerDto } from './dto/create-ramadan-tracker.dto.js';
 import { SetHabitTrackerCheckDto } from './dto/set-habit-tracker-check.dto.js';
@@ -11,11 +12,14 @@ import { SetHabitTrackerCheckDto } from './dto/set-habit-tracker-check.dto.js';
 const RAMADAN_MONTH = 9;
 const MAX_ITEMS = 20;
 const MAX_ITEM_NAME_LENGTH = 40;
+const MAX_TRACKER_NAME_LENGTH = 60;
 
 interface TrackerConfig {
   // 'gregorian': a real calendar month (Create Month). 'ramadan': a sheet of
-  // 29/30 days keyed by year alone (Create Ramadan).
-  kind: 'gregorian' | 'ramadan';
+  // 29/30 days keyed by year alone (Create Ramadan). 'custom': a free-form,
+  // named challenge of any day-count, any number of which can run at once
+  // (Create Challenge, "Others").
+  kind: 'gregorian' | 'ramadan' | 'custom';
   // Columns a new sheet starts with.
   items: string[];
   // Whether the user may add/remove columns. Namaz's five prayers are fixed.
@@ -26,6 +30,7 @@ interface TrackerConfig {
 const TRACKER_CONFIG: Record<string, TrackerConfig> = {
   Namaz: { kind: 'gregorian', items: ['Fajr', 'Dhuhr', 'Asr', 'Maghrib', 'Isha'], editableItems: false },
   Ramadan: { kind: 'ramadan', items: ['Roza'], editableItems: true },
+  Others: { kind: 'custom', items: [], editableItems: true },
 };
 
 // hasOwn, not a plain lookup: "constructor"/"toString"/... would otherwise
@@ -45,12 +50,14 @@ function daysInMonth(month: number, year: number): number {
   return new Date(Date.UTC(year, month, 0)).getUTCDate();
 }
 
-// A sheet's real number of days: Ramadan stores it (29 or 30), a Gregorian
-// month is computed. Every day-bound check goes through this -- a Ramadan
-// row's month=9 would otherwise read as September (30 days) and let a
-// 29-day sheet accept day 30.
-function sheetDays(tracker: { month: number; year: number; totalDays: number | null }): number {
-  return tracker.totalDays ?? daysInMonth(tracker.month, tracker.year);
+// A sheet's real number of days: Ramadan/Others store it directly, a
+// Gregorian month is computed. Every day-bound check goes through this -- a
+// Ramadan row's month=9 would otherwise read as September (30 days) and let
+// a 29-day sheet accept day 30. month/year are only ever null for a
+// 'custom' (Others) tracker, which always has a non-null totalDays, so the
+// daysInMonth() fallback below is only reached with real numbers.
+function sheetDays(tracker: { month: number | null; year: number | null; totalDays: number | null }): number {
+  return tracker.totalDays ?? daysInMonth(tracker.month as number, tracker.year as number);
 }
 
 // "Today" for a month sheet is the Asia/Dhaka calendar date (a fixed UTC+6 --
@@ -102,8 +109,9 @@ function alreadyExistsMessage(category: string, month: number, year: number): st
 export interface HabitTrackerView {
   id: string;
   category: string;
-  month: number;
-  year: number;
+  month: number | null;
+  year: number | null;
+  name: string | null;
   items: string[];
   totalDays: number;
   elapsedDays: number;
@@ -122,7 +130,14 @@ export class HabitTrackersService {
     const trackers = await this.prisma.habitMonthTracker.findMany({
       where: { userId, ...(category && { category }) },
       include: { checks: { select: { day: true, item: true } } },
-      orderBy: [{ year: 'desc' }, { month: 'desc' }],
+      // year/month are both null for every Others tracker. `nulls: 'last'`
+      // keeps a category-less call (every Namaz/Ramadan/Others row mixed
+      // together) sorted by real date first instead of Postgres's default
+      // NULLS FIRST on a DESC sort, which would otherwise put every Others
+      // row ahead of a Namaz sheet created seconds ago. createdAt is the
+      // tiebreaker that actually orders Others trackers among themselves
+      // (newest challenge first).
+      orderBy: [{ year: { sort: 'desc', nulls: 'last' } }, { month: { sort: 'desc', nulls: 'last' } }, { createdAt: 'desc' }],
     });
     return trackers.map((t) => this.toView(t));
   }
@@ -162,6 +177,27 @@ export class HabitTrackersService {
     });
   }
 
+  // "Create Challenge" ("Others") -- a free-form name and a day-count goal,
+  // no calendar date at all. Unlike Namaz/Ramadan, any number of these can
+  // exist at once (even sharing a name) -- month/year are always null, so
+  // insertTracker()'s existence pre-check (keyed on that compound unique
+  // index) doesn't apply here and would wrongly treat every challenge after
+  // the first as a duplicate; this bypasses it and inserts directly.
+  async createCustom(userId: string, dto: CreateCustomTrackerDto): Promise<HabitTrackerView> {
+    const name = dto.name.normalize('NFC').trim().replace(/\s+/g, ' ');
+    if (name.length === 0 || name.length > MAX_TRACKER_NAME_LENGTH) {
+      throw new BadRequestException(`A challenge name must be 1-${MAX_TRACKER_NAME_LENGTH} characters`);
+    }
+    if (UNSAFE_TEXT.test(name)) {
+      throw new BadRequestException("A challenge name can't contain control or invalid characters");
+    }
+    const created = await this.prisma.habitMonthTracker.create({
+      data: { userId, category: 'Others', month: null, year: null, name, totalDays: dto.totalDays, items: [] },
+      include: { checks: { select: { day: true, item: true } } },
+    });
+    return this.toView(created);
+  }
+
   // Idempotent by design (explicit `checked`, not a toggle) so a double-fired
   // or retried request can never flip a cell the wrong way.
   async setCheck(userId: string, id: string, dto: SetHabitTrackerCheckDto): Promise<{ day: number; item: string; checked: boolean }> {
@@ -174,9 +210,9 @@ export class HabitTrackersService {
     }
 
     if (dto.checked) {
-      // A day that hasn't come yet can't be ticked. Ramadan sheets have no
-      // calendar dates, so they're exempt.
-      if (configFor(tracker.category)?.kind === 'gregorian' && dto.day > lastTickableDay(tracker.month, tracker.year)) {
+      // A day that hasn't come yet can't be ticked. Ramadan/Others sheets have
+      // no calendar dates, so they're exempt.
+      if (configFor(tracker.category)?.kind === 'gregorian' && dto.day > lastTickableDay(tracker.month as number, tracker.year as number)) {
         throw new BadRequestException("You can't tick a day that hasn't come yet");
       }
       // createMany + skipDuplicates is a single INSERT .. ON CONFLICT DO
@@ -302,24 +338,27 @@ export class HabitTrackersService {
   private toView(tracker: {
     id: string;
     category: string;
-    month: number;
-    year: number;
+    month: number | null;
+    year: number | null;
+    name: string | null;
     totalDays: number | null;
     items: string[];
     checks: { day: number; item: string }[];
   }): HabitTrackerView {
-    // Ramadan sheets are just Day 1..N -- the start date isn't known, so
-    // there's no "today" or elapsed-days notion for them.
-    const isRamadan = configFor(tracker.category)?.kind === 'ramadan';
+    // Ramadan/Others sheets are just Day 1..N -- no start date is known, so
+    // there's no "today" or elapsed-days notion for them, only Namaz's real
+    // calendar months.
+    const dateBased = configFor(tracker.category)?.kind === 'gregorian';
     return {
       id: tracker.id,
       category: tracker.category,
       month: tracker.month,
       year: tracker.year,
+      name: tracker.name,
       items: tracker.items,
       totalDays: sheetDays(tracker),
-      elapsedDays: isRamadan ? 0 : elapsedDays(tracker.month, tracker.year),
-      todayDay: isRamadan ? null : todayDayFor(tracker.month, tracker.year),
+      elapsedDays: dateBased ? elapsedDays(tracker.month as number, tracker.year as number) : 0,
+      todayDay: dateBased ? todayDayFor(tracker.month as number, tracker.year as number) : null,
       // Drop any tick whose habit was removed (a tick landing mid-removal
       // could otherwise leave an orphan row).
       checks: tracker.checks.filter((c) => tracker.items.includes(c.item)),

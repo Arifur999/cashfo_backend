@@ -864,18 +864,27 @@ model HabitMonthTracker {
   // number, HabitTrackersService's RAMADAN_MONTH) -- `year` is then the
   // Gregorian year the user typed, so one Ramadan per typed year. (A
   // Gregorian year can rarely contain two Ramadans, e.g. 2030 -- known limit.)
-  month     Int
-  year      Int
+  // Others ("Create Challenge") has no calendar date at all -- both are null.
+  month     Int?
+  year      Int?
+  // Others only: the free-form challenge name the user typed (e.g. "Reading",
+  // "No Sugar"). Null for Namaz/Ramadan, which have no name of their own.
+  name      String?
   // Number of days on the sheet when it is NOT a Gregorian month: Ramadan
-  // stores 29 or 30 (chosen at creation). Null for Namaz, whose day count
-  // is the real length of that Gregorian month.
+  // stores 29 or 30, Others stores whatever day-count goal the user typed
+  // (chosen at creation). Null for Namaz, whose day count is the real length
+  // of that Gregorian month.
   totalDays Int?
   // Column set. Namaz snapshots its fixed five prayers at creation; Ramadan
-  // starts with ["Roza"] and the user adds/removes the rest by hand.
+  // and Others start empty/["Roza"] and the user adds/removes the rest by hand.
   items     String[]
   createdAt DateTime          @default(now())
   checks    HabitMonthCheck[]
 
+  // month/year are NULL for every Others tracker, and Postgres never treats
+  // two NULLs as equal, so this constraint is a no-op for Others (any number
+  // of concurrent named challenges can coexist) while still enforcing "one
+  // Namaz sheet per month" / "one Ramadan per year" as before.
   @@unique([userId, category, month, year])
   @@index([userId, category])
 }
