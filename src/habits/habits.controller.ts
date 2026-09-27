@@ -20,18 +20,18 @@ export class HabitsController {
   // every other controller in this codebase (Express would otherwise treat
   // "today"/"stats"/"month" as an :id value).
   @Get('today')
-  getToday(@CurrentUser() user: RequestUser) {
-    return this.habitsService.getToday(user.id);
+  getToday(@CurrentUser() user: RequestUser, @Query('category') category?: string) {
+    return this.habitsService.getToday(user.id, category);
   }
 
   @Get('stats')
-  getStats(@CurrentUser() user: RequestUser) {
-    return this.habitsService.getStats(user.id);
+  getStats(@CurrentUser() user: RequestUser, @Query('category') category?: string) {
+    return this.habitsService.getStats(user.id, category);
   }
 
   @Get('month')
-  getMonthLogs(@CurrentUser() user: RequestUser, @Query('month') month: string) {
-    return this.habitsService.getMonthLogs(user.id, month);
+  getMonthLogs(@CurrentUser() user: RequestUser, @Query('month') month: string, @Query('category') category?: string) {
+    return this.habitsService.getMonthLogs(user.id, month, category);
   }
 
   @Get()

@@ -97,8 +97,8 @@ export class HabitsService {
   // any day; WEEKLY_DAYS only on a matching weekday). Each habit carries
   // today's own log (if any) and its current streak so the Dashboard can
   // render a checklist without a second round trip per habit.
-  async getToday(userId: string) {
-    const habits = await this.listHabits(userId, false);
+  async getToday(userId: string, category?: string) {
+    const habits = await this.listHabits(userId, false, category);
     const todayKey = toDateKey(new Date());
     const today = new Date(todayKey);
     const logs = await this.prisma.habitLog.findMany({
@@ -156,8 +156,8 @@ export class HabitsService {
 
   // ---- Calendar / History ----
 
-  async getMonthLogs(userId: string, month: string): Promise<{ habits: Habit[]; logs: { habitId: string; date: Date; completed: boolean; value: number | null }[] }> {
-    const habits = await this.listHabits(userId, true);
+  async getMonthLogs(userId: string, month: string, category?: string): Promise<{ habits: Habit[]; logs: { habitId: string; date: Date; completed: boolean; value: number | null }[] }> {
+    const habits = await this.listHabits(userId, true, category);
     const from = new Date(`${month}-01`);
     const to = new Date(from);
     to.setUTCMonth(to.getUTCMonth() + 1);
@@ -170,8 +170,8 @@ export class HabitsService {
 
   // ---- Stats ----
 
-  async getStats(userId: string) {
-    const habits = await this.listHabits(userId, false);
+  async getStats(userId: string, category?: string) {
+    const habits = await this.listHabits(userId, false, category);
     const streaks = await this.computeStreaks(habits.map((h) => h.id));
 
     const last30From = new Date(toDateKey(new Date()));
