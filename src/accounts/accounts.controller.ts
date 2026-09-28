@@ -112,6 +112,12 @@ export class AccountsController {
     return this.accountsService.archive(businessId, id);
   }
 
+  @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
+  @Patch(':id/unarchive')
+  unarchive(@Param('businessId') businessId: string, @Param('id') id: string) {
+    return this.accountsService.unarchive(businessId, id);
+  }
+
   // Permanently deletes an account with no real transaction history, or
   // falls back to archiving it if it has any -- see
   // AccountsService.removeOrArchive()'s comment.

@@ -275,6 +275,18 @@ export class AccountsService {
     return this.prisma.account.update({ where: { id }, data: { status: 'ARCHIVED' } });
   }
 
+  // The reverse of archive() above -- no guards needed (an account can only
+  // reach ARCHIVED through archive(), which already blocks the system-
+  // savings-pool/active-children cases, so nothing here can put a bad
+  // account back into use).
+  async unarchive(businessId: string, id: string) {
+    const account = await this.requireAccount(businessId, id);
+    if (account.status === 'ACTIVE') {
+      return account;
+    }
+    return this.prisma.account.update({ where: { id }, data: { status: 'ACTIVE' } });
+  }
+
   // Smart "Remove" action behind the Wallet/Savings Wallet/Chart of Accounts
   // pages' single delete button: an account nobody has ever posted a real
   // transaction against is safe to actually erase (a brand-new/unused
