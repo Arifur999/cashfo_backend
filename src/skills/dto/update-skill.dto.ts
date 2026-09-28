@@ -2,12 +2,7 @@ import { SkillStatus } from '@prisma/client';
 import { Transform } from 'class-transformer';
 import { IsEnum, IsIn, IsInt, IsNotEmpty, IsString, Max, MaxLength, Min, ValidateIf } from 'class-validator';
 import { SKILL_COLORS, SKILL_ICONS } from '../skill-options.js';
-
-const trim = ({ value }: { value: unknown }) => (typeof value === 'string' ? value.trim() : value);
-
-// ValidateIf(v !== undefined), not IsOptional: IsOptional also skips an
-// explicit null, which would then reach the service as a value.
-const whenSent = (_: unknown, value: unknown) => value !== undefined;
+import { trim, whenSent } from '../../common/dto.js';
 
 // Every field is optional -- the same route edits the details, records
 // progress and moves a skill between shelves (status). The unit is fixed at
