@@ -1,5 +1,8 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, InternalServerErrorException, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { dhakaToday } from '../common/dhaka.js';
+import { createWithinCap } from '../common/user-cap.js';
+import { cleanRequiredText, UNSAFE_TEXT } from '../common/text.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { AddTrackerItemDto } from './dto/add-tracker-item.dto.js';
 import { CreateCustomTrackerDto } from './dto/create-custom-tracker.dto.js';
@@ -13,6 +16,10 @@ const RAMADAN_MONTH = 9;
 const MAX_ITEMS = 20;
 const MAX_ITEM_NAME_LENGTH = 40;
 const MAX_TRACKER_NAME_LENGTH = 60;
+// Others challenges aren't bounded by the (userId, category, month, year)
+// unique index the way Namaz/Ramadan sheets are (month/year are null), so
+// they get a per-user cap of their own, like Books/Skills (createWithinCap).
+const MAX_CHALLENGES = 100;
 
 interface TrackerConfig {
   // 'gregorian': a real calendar month (Create Month). 'ramadan': a sheet of
@@ -39,13 +46,6 @@ function configFor(category: string): TrackerConfig | null {
   return Object.hasOwn(TRACKER_CONFIG, category) ? TRACKER_CONFIG[category] : null;
 }
 
-// Text a habit name / category filter must never contain: control characters
-// (a NUL byte can't be stored in a Postgres text column -- it surfaces as a
-// 500) and lone UTF-16 surrogates (Postgres silently stores them as U+FFFD,
-// so "the same name" could be added again and again as separate columns).
-// eslint-disable-next-line no-control-regex -- rejecting control characters is the point
-const UNSAFE_TEXT = /[\u0000-\u001f\u007f]|[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
-
 function daysInMonth(month: number, year: number): number {
   return new Date(Date.UTC(year, month, 0)).getUTCDate();
 }
@@ -53,24 +53,21 @@ function daysInMonth(month: number, year: number): number {
 // A sheet's real number of days: Ramadan/Others store it directly, a
 // Gregorian month is computed. Every day-bound check goes through this -- a
 // Ramadan row's month=9 would otherwise read as September (30 days) and let
-// a 29-day sheet accept day 30. month/year are only ever null for a
-// 'custom' (Others) tracker, which always has a non-null totalDays, so the
-// daysInMonth() fallback below is only reached with real numbers.
-function sheetDays(tracker: { month: number | null; year: number | null; totalDays: number | null }): number {
-  return tracker.totalDays ?? daysInMonth(tracker.month as number, tracker.year as number);
+// a 29-day sheet accept day 30.
+function sheetDays(tracker: { id: string; month: number | null; year: number | null; totalDays: number | null }): number {
+  if (tracker.totalDays !== null) return tracker.totalDays;
+  const { month, year } = calendarMonth(tracker);
+  return daysInMonth(month, year);
 }
 
-// "Today" for a month sheet is the Asia/Dhaka calendar date (a fixed UTC+6 --
-// Bangladesh has no DST), not UTC: this is a Bangladesh-market app and the
-// Fajr window (00:00-06:00 local) would otherwise fall on the PREVIOUS
-// UTC day, mis-highlighting today and delaying when yesterday's unticked
-// prayers count as missed. (HabitsService's older /api/habits endpoints
-// still use UTC.)
-const DHAKA_OFFSET_MS = 6 * 60 * 60 * 1000;
-
-function todayInDhaka(): { year: number; month: number; day: number } {
-  const d = new Date(Date.now() + DHAKA_OFFSET_MS);
-  return { year: d.getUTCFullYear(), month: d.getUTCMonth() + 1, day: d.getUTCDate() };
+// month/year of a sheet that is a real calendar month (Namaz). They are only
+// null on Others challenges, which never take this path -- but if a row ever
+// broke that rule, fail loudly rather than compute with NaN.
+function calendarMonth(tracker: { id: string; month: number | null; year: number | null }): { month: number; year: number } {
+  if (tracker.month === null || tracker.year === null) {
+    throw new InternalServerErrorException(`Tracker ${tracker.id} has no calendar month`);
+  }
+  return { month: tracker.month, year: tracker.year };
 }
 
 // Days of this sheet's month that are fully behind us (strictly before
@@ -78,7 +75,7 @@ function todayInDhaka(): { year: number; month: number; day: number } {
 // the future isn't a miss yet. The client derives the Cross total from this
 // plus the ticked cells.
 function elapsedDays(month: number, year: number): number {
-  const today = todayInDhaka();
+  const today = dhakaToday();
   const currentKey = today.year * 12 + (today.month - 1);
   const sheetKey = year * 12 + (month - 1);
   if (sheetKey < currentKey) return daysInMonth(month, year);
@@ -90,7 +87,7 @@ function elapsedDays(month: number, year: number): number {
 // null -- the sheet highlights that day column, so the client never has to guess
 // the date (or its timezone) itself.
 function todayDayFor(month: number, year: number): number | null {
-  const today = todayInDhaka();
+  const today = dhakaToday();
   return today.year === year && today.month === month ? today.day : null;
 }
 
@@ -184,17 +181,20 @@ export class HabitTrackersService {
   // index) doesn't apply here and would wrongly treat every challenge after
   // the first as a duplicate; this bypasses it and inserts directly.
   async createCustom(userId: string, dto: CreateCustomTrackerDto): Promise<HabitTrackerView> {
-    const name = dto.name.normalize('NFC').trim().replace(/\s+/g, ' ');
-    if (name.length === 0 || name.length > MAX_TRACKER_NAME_LENGTH) {
-      throw new BadRequestException(`A challenge name must be 1-${MAX_TRACKER_NAME_LENGTH} characters`);
-    }
-    if (UNSAFE_TEXT.test(name)) {
-      throw new BadRequestException("A challenge name can't contain control or invalid characters");
-    }
-    const created = await this.prisma.habitMonthTracker.create({
-      data: { userId, category: 'Others', month: null, year: null, name, totalDays: dto.totalDays, items: [] },
-      include: { checks: { select: { day: true, item: true } } },
-    });
+    const name = cleanRequiredText(dto.name, 'challenge name', MAX_TRACKER_NAME_LENGTH);
+    const created = await createWithinCap(
+      this.prisma,
+      userId,
+      'challenges',
+      MAX_CHALLENGES,
+      `You can keep up to ${MAX_CHALLENGES} challenges`,
+      (tx) => tx.habitMonthTracker.count({ where: { userId, category: 'Others' } }),
+      (tx) =>
+        tx.habitMonthTracker.create({
+          data: { userId, category: 'Others', month: null, year: null, name, totalDays: dto.totalDays, items: [] },
+          include: { checks: { select: { day: true, item: true } } },
+        }),
+    );
     return this.toView(created);
   }
 
@@ -212,8 +212,9 @@ export class HabitTrackersService {
     if (dto.checked) {
       // A day that hasn't come yet can't be ticked. Ramadan/Others sheets have
       // no calendar dates, so they're exempt.
-      if (configFor(tracker.category)?.kind === 'gregorian' && dto.day > lastTickableDay(tracker.month as number, tracker.year as number)) {
-        throw new BadRequestException("You can't tick a day that hasn't come yet");
+      if (configFor(tracker.category)?.kind === 'gregorian') {
+        const { month, year } = calendarMonth(tracker);
+        if (dto.day > lastTickableDay(month, year)) throw new BadRequestException("You can't tick a day that hasn't come yet");
       }
       // createMany + skipDuplicates is a single INSERT .. ON CONFLICT DO
       // NOTHING, so two simultaneous identical ticks can't race into a
@@ -231,13 +232,7 @@ export class HabitTrackersService {
   // Add a habit column (Ramadan). Names are NFC-normalised and trimmed,
   // unique ignoring case, at most MAX_ITEMS per sheet.
   async addItem(userId: string, id: string, dto: AddTrackerItemDto): Promise<HabitTrackerView> {
-    const name = dto.name.normalize('NFC').trim().replace(/\s+/g, ' ');
-    if (name.length === 0 || name.length > MAX_ITEM_NAME_LENGTH) {
-      throw new BadRequestException(`A habit name must be 1-${MAX_ITEM_NAME_LENGTH} characters`);
-    }
-    if (UNSAFE_TEXT.test(name)) {
-      throw new BadRequestException("A habit name can't contain control or invalid characters");
-    }
+    const name = cleanRequiredText(dto.name, 'habit name', MAX_ITEM_NAME_LENGTH);
     return this.editItems(userId, id, (current) => {
       if (current.some((item) => item.toLowerCase() === name.toLowerCase())) {
         throw new ConflictException(`"${name}" is already on this sheet`);
@@ -313,11 +308,7 @@ export class HabitTrackersService {
   // request changed the list in between, re-read and redo the edit (up to 3
   // times) -- so two simultaneous adds of different names both land, and
   // two of the same name end as one success plus a 409 from `plan`.
-  private async editItems(
-    userId: string,
-    id: string,
-    plan: (current: string[]) => { next: string[]; clear: string },
-  ): Promise<HabitTrackerView> {
+  private async editItems(userId: string, id: string, plan: (current: string[]) => { next: string[]; clear: string }): Promise<HabitTrackerView> {
     for (let attempt = 0; attempt < 3; attempt++) {
       const tracker = await this.requireEditableTracker(userId, id);
       const { next, clear } = plan(tracker.items);
@@ -348,7 +339,7 @@ export class HabitTrackersService {
     // Ramadan/Others sheets are just Day 1..N -- no start date is known, so
     // there's no "today" or elapsed-days notion for them, only Namaz's real
     // calendar months.
-    const dateBased = configFor(tracker.category)?.kind === 'gregorian';
+    const calendar = configFor(tracker.category)?.kind === 'gregorian' ? calendarMonth(tracker) : null;
     return {
       id: tracker.id,
       category: tracker.category,
@@ -357,8 +348,8 @@ export class HabitTrackersService {
       name: tracker.name,
       items: tracker.items,
       totalDays: sheetDays(tracker),
-      elapsedDays: dateBased ? elapsedDays(tracker.month as number, tracker.year as number) : 0,
-      todayDay: dateBased ? todayDayFor(tracker.month as number, tracker.year as number) : null,
+      elapsedDays: calendar ? elapsedDays(calendar.month, calendar.year) : 0,
+      todayDay: calendar ? todayDayFor(calendar.month, calendar.year) : null,
       // Drop any tick whose habit was removed (a tick landing mid-removal
       // could otherwise leave an orphan row).
       checks: tracker.checks.filter((c) => tracker.items.includes(c.item)),

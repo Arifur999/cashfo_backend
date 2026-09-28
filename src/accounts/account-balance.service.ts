@@ -68,9 +68,7 @@ export class AccountBalanceService {
     const creditTotal = new Prisma.Decimal(creditAgg._sum.amount ?? 0);
     const opening = new Prisma.Decimal(account.openingBalance);
 
-    const balance = isDebitPositive(account.accountType)
-      ? opening.plus(debitTotal).minus(creditTotal)
-      : opening.plus(creditTotal).minus(debitTotal);
+    const balance = isDebitPositive(account.accountType) ? opening.plus(debitTotal).minus(creditTotal) : opening.plus(creditTotal).minus(debitTotal);
 
     await client.account.update({ where: { id: accountId }, data: { currentBalance: balance } });
     return balance;

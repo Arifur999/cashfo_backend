@@ -43,12 +43,7 @@ export class TicketsController {
 
   @Roles(AdminRole.SUPER_ADMIN, AdminRole.SUPPORT_ADMIN)
   @Patch(':id')
-  update(
-    @Param('id') id: string,
-    @Body() dto: UpdateTicketDto,
-    @CurrentAdmin() admin: RequestAdminUser,
-    @Req() req: Request,
-  ) {
+  update(@Param('id') id: string, @Body() dto: UpdateTicketDto, @CurrentAdmin() admin: RequestAdminUser, @Req() req: Request) {
     return this.ticketsService.update(id, dto, admin.id, req.ip);
   }
 

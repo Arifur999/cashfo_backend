@@ -971,6 +971,11 @@ model Skill {
   unit        SkillUnit
   target      Int
   progress    Int         @default(0)
+  // The progress the activity log last accounted for. It follows every
+  // progress the user reports, but NOT a "Complete" jump (which isn't
+  // activity), so undoing that jump by reporting the old progress again logs
+  // nothing instead of erasing the day's real activity. See SkillsService.
+  loggedProgress Int      @default(0)
   status      SkillStatus @default(WANT_TO_LEARN)
   // Keys into the colour / icon allow-lists (SKILL_COLORS / SKILL_ICONS) --
   // plain strings so adding one is a code change, not a migration.

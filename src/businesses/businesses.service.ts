@@ -187,10 +187,7 @@ export class BusinessesService {
       email: business.email,
       hasPinLock: business.pinHash !== null,
       trialEndsAt: business.trialEndsAt,
-      monthlyFee:
-        business.type === 'BUSINESS' && !business.isDefault
-          ? await this.getAdditionalWorkspaceMonthlyFee(business.ownerId)
-          : null,
+      monthlyFee: business.type === 'BUSINESS' && !business.isDefault ? await this.getAdditionalWorkspaceMonthlyFee(business.ownerId) : null,
     };
   }
 
@@ -224,10 +221,7 @@ export class BusinessesService {
       email: updated.email,
       hasPinLock: updated.pinHash !== null,
       trialEndsAt: updated.trialEndsAt,
-      monthlyFee:
-        updated.type === 'BUSINESS' && !updated.isDefault
-          ? await this.getAdditionalWorkspaceMonthlyFee(updated.ownerId)
-          : null,
+      monthlyFee: updated.type === 'BUSINESS' && !updated.isDefault ? await this.getAdditionalWorkspaceMonthlyFee(updated.ownerId) : null,
     };
   }
 

@@ -106,9 +106,7 @@ export class CouponsService {
     const coupon = await this.requireCoupon(id);
 
     if (coupon.timesRedeemed > 0) {
-      throw new BadRequestException(
-        `Cannot delete this coupon -- it has been redeemed ${coupon.timesRedeemed} time(s). Disable it instead.`,
-      );
+      throw new BadRequestException(`Cannot delete this coupon -- it has been redeemed ${coupon.timesRedeemed} time(s). Disable it instead.`);
     }
 
     await this.prisma.$transaction(async (tx) => {

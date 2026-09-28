@@ -1,9 +1,9 @@
 import { Body, Controller, Delete, Get, Param, ParseUUIDPipe, Patch, Post, Put, UseGuards } from '@nestjs/common';
 import { CurrentUser } from '../user-auth/decorators/current-user.decorator.js';
 import { UserAuthGuard } from '../user-auth/guards/user-auth.guard.js';
+import { SetYearlyGoalDto } from '../common/yearly-goal.js';
 import type { RequestUser } from '../user-auth/interfaces/request-user.interface.js';
 import { CreateSkillDto } from './dto/create-skill.dto.js';
-import { SetSkillGoalDto } from './dto/set-skill-goal.dto.js';
 import { UpdateSkillDto } from './dto/update-skill.dto.js';
 import { SkillsService } from './skills.service.js';
 
@@ -27,7 +27,7 @@ export class SkillsController {
 
   // Static segments, declared before the :id routes below.
   @Put('goal')
-  setGoal(@CurrentUser() user: RequestUser, @Body() dto: SetSkillGoalDto) {
+  setGoal(@CurrentUser() user: RequestUser, @Body() dto: SetYearlyGoalDto) {
     return this.skillsService.setGoal(user.id, dto);
   }
 

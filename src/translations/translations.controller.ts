@@ -34,12 +34,7 @@ export class TranslationsController {
 
   @Roles(AdminRole.SUPER_ADMIN, AdminRole.CONTENT_ADMIN)
   @Patch(':id')
-  update(
-    @Param('id') id: string,
-    @Body() dto: UpdateTranslationDto,
-    @CurrentAdmin() admin: RequestAdminUser,
-    @Req() req: Request,
-  ) {
+  update(@Param('id') id: string, @Body() dto: UpdateTranslationDto, @CurrentAdmin() admin: RequestAdminUser, @Req() req: Request) {
     return this.translationsService.update(id, dto, admin.id, req.ip);
   }
 }

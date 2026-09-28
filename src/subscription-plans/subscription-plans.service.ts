@@ -112,9 +112,7 @@ export class SubscriptionPlansService {
 
     const usersOnPlan = await this.prisma.business.count({ where: { planId: id, isDefault: true, deletedAt: null } });
     if (usersOnPlan > 0) {
-      throw new BadRequestException(
-        `Cannot delete this plan -- ${usersOnPlan} user(s) are currently on it. Archive it instead.`,
-      );
+      throw new BadRequestException(`Cannot delete this plan -- ${usersOnPlan} user(s) are currently on it. Archive it instead.`);
     }
 
     await this.prisma.$transaction(async (tx) => {

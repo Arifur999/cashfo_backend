@@ -160,7 +160,12 @@ export class ReceivablesPayablesService {
         ? { accountId: (await this.requireMoneyAccountForLoan(businessId, dto.moneyAccountId)).id, entryType: 'CREDIT' as const }
         : {
             accountId: (
-              await this.requireAccountOfType(businessId, dto.incomeAccountId ?? (await this.getDefaultIncomeAccountId(businessId)), 'INCOME', 'incomeAccountId')
+              await this.requireAccountOfType(
+                businessId,
+                dto.incomeAccountId ?? (await this.getDefaultIncomeAccountId(businessId)),
+                'INCOME',
+                'incomeAccountId',
+              )
             ).id,
             entryType: 'CREDIT' as const,
           };
@@ -197,7 +202,12 @@ export class ReceivablesPayablesService {
       contact.category === 'LOAN'
         ? (await this.requireMoneyAccountForLoan(businessId, dto.moneyAccountId)).id
         : (
-            await this.requireAccountOfType(businessId, dto.expenseAccountId ?? (await this.getDefaultExpenseAccountId(businessId)), 'EXPENSE', 'expenseAccountId')
+            await this.requireAccountOfType(
+              businessId,
+              dto.expenseAccountId ?? (await this.getDefaultExpenseAccountId(businessId)),
+              'EXPENSE',
+              'expenseAccountId',
+            )
           ).id;
 
     return this.transactionsService.createTransaction(
@@ -658,13 +668,7 @@ export class ReceivablesPayablesService {
     return 'over60';
   }
 
-  private async validatePaymentAmount(
-    businessId: string,
-    contactId: string,
-    direction: Direction,
-    amount: number,
-    appliedToTransactionId?: string,
-  ) {
+  private async validatePaymentAmount(businessId: string, contactId: string, direction: Direction, amount: number, appliedToTransactionId?: string) {
     const breakdown = await this.computeDirection(businessId, contactId, direction);
     const amt = new Prisma.Decimal(amount);
 
@@ -674,9 +678,7 @@ export class ReceivablesPayablesService {
         throw new BadRequestException('appliedToTransactionId does not reference an outstanding transaction for this contact');
       }
       if (amt.greaterThan(target.remainingAmount)) {
-        throw new BadRequestException(
-          `Payment amount (${amt.toFixed(2)}) exceeds the remaining balance (${target.remainingAmount}) of this transaction`,
-        );
+        throw new BadRequestException(`Payment amount (${amt.toFixed(2)}) exceeds the remaining balance (${target.remainingAmount}) of this transaction`);
       }
     } else if (amt.greaterThan(breakdown.remaining)) {
       throw new BadRequestException(`Payment amount (${amt.toFixed(2)}) exceeds the total outstanding balance (${breakdown.remaining})`);

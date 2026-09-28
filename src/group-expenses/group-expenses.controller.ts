@@ -139,12 +139,7 @@ export class GroupExpensesController {
   // ---- Expenses ----
 
   @Get('expenses')
-  listExpenses(
-    @Param('businessId') businessId: string,
-    @Query('from') from?: string,
-    @Query('to') to?: string,
-    @Query('category') category?: string,
-  ) {
+  listExpenses(@Param('businessId') businessId: string, @Query('from') from?: string, @Query('to') to?: string, @Query('category') category?: string) {
     return this.groupExpensesService.listExpenses(businessId, { from, to, category });
   }
 

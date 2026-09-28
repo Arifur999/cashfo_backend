@@ -2,12 +2,7 @@ import { SkillStatus, SkillUnit } from '@prisma/client';
 import { Transform } from 'class-transformer';
 import { IsEnum, IsIn, IsInt, IsNotEmpty, IsString, Max, MaxLength, Min, ValidateIf } from 'class-validator';
 import { SKILL_COLORS, SKILL_ICONS } from '../skill-options.js';
-
-const trim = ({ value }: { value: unknown }) => (typeof value === 'string' ? value.trim() : value);
-
-// Optional fields use ValidateIf(v !== undefined), not IsOptional: IsOptional
-// also skips an explicit null, which would then reach the service as a value.
-const whenSent = (_: unknown, value: unknown) => value !== undefined;
+import { trim, whenSent } from '../../common/dto.js';
 
 export class CreateSkillDto {
   @Transform(trim)

@@ -35,12 +35,7 @@ export class TransactionsController {
 
   @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
   @Post(':id/void')
-  void(
-    @Param('businessId') businessId: string,
-    @Param('id') id: string,
-    @Body() dto: VoidTransactionDto,
-    @CurrentUser() user: RequestUser,
-  ) {
+  void(@Param('businessId') businessId: string, @Param('id') id: string, @Body() dto: VoidTransactionDto, @CurrentUser() user: RequestUser) {
     return this.transactionsService.voidTransaction(businessId, id, dto.reason, user.id);
   }
 }

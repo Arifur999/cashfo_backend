@@ -38,12 +38,7 @@ export class PaymentsController {
 
   @Roles(AdminRole.SUPER_ADMIN, AdminRole.FINANCE_ADMIN)
   @Post(':id/refund')
-  refund(
-    @Param('id') id: string,
-    @Body() dto: RefundPaymentDto,
-    @CurrentAdmin() admin: RequestAdminUser,
-    @Req() req: Request,
-  ) {
+  refund(@Param('id') id: string, @Body() dto: RefundPaymentDto, @CurrentAdmin() admin: RequestAdminUser, @Req() req: Request) {
     return this.paymentsService.refund(id, dto, admin.id, req.ip);
   }
 }

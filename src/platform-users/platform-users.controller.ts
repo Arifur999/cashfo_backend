@@ -32,12 +32,7 @@ export class PlatformUsersController {
 
   @Roles(AdminRole.SUPER_ADMIN, AdminRole.SUPPORT_ADMIN)
   @Patch(':id/suspend')
-  suspend(
-    @Param('id') id: string,
-    @Body() dto: SuspendUserDto,
-    @CurrentAdmin() admin: RequestAdminUser,
-    @Req() req: Request,
-  ) {
+  suspend(@Param('id') id: string, @Body() dto: SuspendUserDto, @CurrentAdmin() admin: RequestAdminUser, @Req() req: Request) {
     return this.platformUsersService.suspend(id, dto, admin.id, req.ip);
   }
 
@@ -49,12 +44,7 @@ export class PlatformUsersController {
 
   @Roles(AdminRole.SUPER_ADMIN, AdminRole.SUPPORT_ADMIN)
   @Patch(':id/ban')
-  ban(
-    @Param('id') id: string,
-    @Body() dto: BanUserDto,
-    @CurrentAdmin() admin: RequestAdminUser,
-    @Req() req: Request,
-  ) {
+  ban(@Param('id') id: string, @Body() dto: BanUserDto, @CurrentAdmin() admin: RequestAdminUser, @Req() req: Request) {
     return this.platformUsersService.ban(id, dto, admin.id, req.ip);
   }
 
@@ -72,12 +62,7 @@ export class PlatformUsersController {
 
   @Roles(AdminRole.SUPER_ADMIN, AdminRole.FINANCE_ADMIN)
   @Patch(':id/change-plan')
-  changePlan(
-    @Param('id') id: string,
-    @Body() dto: ChangePlanDto,
-    @CurrentAdmin() admin: RequestAdminUser,
-    @Req() req: Request,
-  ) {
+  changePlan(@Param('id') id: string, @Body() dto: ChangePlanDto, @CurrentAdmin() admin: RequestAdminUser, @Req() req: Request) {
     return this.platformUsersService.changePlan(id, dto, admin.id, req.ip);
   }
 }
