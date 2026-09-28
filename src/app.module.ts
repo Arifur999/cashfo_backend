@@ -46,6 +46,7 @@ import { SubscriptionPlansModule } from './subscription-plans/subscription-plans
 import { GlobalExceptionFilter } from './system/filters/global-exception.filter.js';
 import { SystemModule } from './system/system.module.js';
 import { TicketsModule } from './tickets/tickets.module.js';
+import { TodosModule } from './todos/todos.module.js';
 import { TransactionsModule } from './transactions/transactions.module.js';
 import { TranslationsModule } from './translations/translations.module.js';
 import { UserAuthModule } from './user-auth/user-auth.module.js';
@@ -101,6 +102,7 @@ import { UserAuthModule } from './user-auth/user-auth.module.js';
     HabitsModule,
     BooksModule,
     SkillsModule,
+    TodosModule,
   ],
   controllers: [AppController],
   providers: [

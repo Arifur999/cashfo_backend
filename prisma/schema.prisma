@@ -702,6 +702,7 @@ model User {
   bookGoals          BookGoal[]
   skills             Skill[]
   skillGoals         SkillGoal[]
+  todoLists          TodoList[]
   // Every Referral row this user created by inviting someone else (as the
   // referrer), vs. the single Referral row recording that this user was
   // THEMSELVES referred by someone else's code at registration.
@@ -1009,6 +1010,33 @@ model SkillGoal {
   target Int
 
   @@unique([userId, year])
+}
+
+// Habit Tracker -> To Do List: one list per (Asia/Dhaka) calendar date the user
+// picks, holding any number of check-off tasks. Unlike the habit trackers, a
+// list has no "protect ticked history" delete rule -- a to-do is disposable,
+// not a record, so it can be deleted at any time regardless of completed tasks.
+model TodoList {
+  id        String     @id @default(uuid())
+  userId    String
+  user      User       @relation(fields: [userId], references: [id])
+  date      DateTime   @db.Date
+  createdAt DateTime   @default(now())
+  items     TodoItem[]
+
+  @@unique([userId, date])
+  @@index([userId])
+}
+
+model TodoItem {
+  id        String   @id @default(uuid())
+  listId    String
+  list      TodoList @relation(fields: [listId], references: [id], onDelete: Cascade)
+  text      String
+  completed Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([listId])
 }
 
 model Business {
