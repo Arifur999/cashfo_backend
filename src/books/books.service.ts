@@ -1,16 +1,15 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { BookStatus, type Book } from '@prisma/client';
 import { dhakaYear } from '../common/dhaka.js';
 import { compareAndSwap, settleShelf, type ShelfItem, type ShelfMessages } from '../common/shelf.js';
 import { cleanOptionalText, cleanRequiredText } from '../common/text.js';
+import { createWithinCap } from '../common/user-cap.js';
+import { clearYearlyGoal, setYearlyGoal, type SetYearlyGoalDto, type YearlyGoal } from '../common/yearly-goal.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { CreateBookDto } from './dto/create-book.dto.js';
-import { SetBookGoalDto } from './dto/set-book-goal.dto.js';
 import { UpdateBookDto } from './dto/update-book.dto.js';
 
-// A soft cap: the count and the insert are separate statements, so a burst of
-// parallel requests can overshoot it slightly. It only guards against runaway
-// data, not against a determined client.
+// Per-user cap, enforced by createWithinCap.
 const MAX_BOOKS = 500;
 
 const MAX_TITLE_LENGTH = 120;
@@ -103,11 +102,16 @@ export class BooksService {
     const title = cleanRequiredText(dto.title, 'title', MAX_TITLE_LENGTH);
     const author = cleanOptionalText(dto.author ?? '', 'author', MAX_AUTHOR_LENGTH);
     const shelf = settleShelf(SHELVES, null, { status: dto.status, progress: dto.pagesRead, total: dto.totalPages }, new Date(), MESSAGES);
-    if ((await this.prisma.book.count({ where: { userId } })) >= MAX_BOOKS) {
-      throw new BadRequestException(`You can keep up to ${MAX_BOOKS} books`);
-    }
-    const book = await this.prisma.book.create({
-      data: {
+    const book = await createWithinCap(
+      this.prisma,
+      userId,
+      'books',
+      MAX_BOOKS,
+      `You can keep up to ${MAX_BOOKS} books`,
+      (tx) => tx.book.count({ where: { userId } }),
+      (tx) =>
+        tx.book.create({
+          data: {
         userId,
         title,
         author,
@@ -116,9 +120,10 @@ export class BooksService {
         status: shelf.status,
         color: dto.color ?? 'walnut',
         startedAt: shelf.startedAt,
-        finishedAt: shelf.doneAt,
-      },
-    });
+            finishedAt: shelf.doneAt,
+          },
+        }),
+    );
     return toView(book);
   }
 
@@ -138,21 +143,16 @@ export class BooksService {
     return { id };
   }
 
-  async setGoal(userId: string, dto: SetBookGoalDto): Promise<{ year: number; goalTarget: number | null }> {
-    const year = dhakaYear(new Date());
-    await this.prisma.bookGoal.upsert({
-      where: { userId_year: { userId, year } },
-      update: { target: dto.target },
-      create: { userId, year, target: dto.target },
-    });
-    return { year, goalTarget: dto.target };
+  setGoal(userId: string, dto: SetYearlyGoalDto): Promise<YearlyGoal> {
+    return setYearlyGoal(dto.target, (year) =>
+      this.prisma.bookGoal.upsert({ where: { userId_year: { userId, year } }, update: { target: dto.target }, create: { userId, year, target: dto.target } }),
+    );
   }
 
-  async clearGoal(userId: string): Promise<{ year: number; goalTarget: number | null }> {
-    const year = dhakaYear(new Date());
-    await this.prisma.bookGoal.deleteMany({ where: { userId, year } });
-    return { year, goalTarget: null };
+  clearGoal(userId: string): Promise<YearlyGoal> {
+    return clearYearlyGoal((year) => this.prisma.bookGoal.deleteMany({ where: { userId, year } }));
   }
+
 
   private async requireBook(userId: string, id: string): Promise<Book> {
     const book = await this.prisma.book.findFirst({ where: { id, userId } });
