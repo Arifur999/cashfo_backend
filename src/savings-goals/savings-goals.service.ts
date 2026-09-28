@@ -72,7 +72,9 @@ export class SavingsGoalsService {
       progressPercent: totalGoals.isZero() ? 0 : Math.min(100, Math.round(totalSaved.dividedBy(totalGoals).times(100).toNumber())),
       monthlyTarget: monthlyTarget.toFixed(2),
       savedThisMonth: savedThisMonth.toFixed(2),
-      monthlyProgressPercent: monthlyTarget.isZero() ? 0 : Math.min(999, Math.round(new Prisma.Decimal(savedThisMonth).dividedBy(monthlyTarget).times(100).toNumber())),
+      monthlyProgressPercent: monthlyTarget.isZero()
+        ? 0
+        : Math.min(999, Math.round(new Prisma.Decimal(savedThisMonth).dividedBy(monthlyTarget).times(100).toNumber())),
       savingsRatePercent: this.percent(savedThisMonth, incomeThisMonth),
     };
   }
@@ -177,9 +179,7 @@ export class SavingsGoalsService {
     const goal = await this.requireGoal(businessId, id);
     const entries = await this.prisma.savingsGoalEntry.findMany({ where: { savingsGoalId: id }, orderBy: { date: 'desc' } });
 
-    const accountIds = [
-      ...new Set([...entries.map((e) => e.moneyAccountId), ...entries.map((e) => e.savingsAccountId)].filter((v): v is string => !!v)),
-    ];
+    const accountIds = [...new Set([...entries.map((e) => e.moneyAccountId), ...entries.map((e) => e.savingsAccountId)].filter((v): v is string => !!v))];
     const relatedGoalIds = [...new Set(entries.map((e) => e.relatedGoalId).filter((v): v is string => !!v))];
     const [accounts, relatedGoals] = await Promise.all([
       accountIds.length ? this.prisma.account.findMany({ where: { id: { in: accountIds } } }) : Promise.resolve([]),

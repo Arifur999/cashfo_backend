@@ -38,12 +38,7 @@ export class SubscriptionPlansController {
 
   @Roles(AdminRole.SUPER_ADMIN, AdminRole.FINANCE_ADMIN)
   @Patch(':id')
-  update(
-    @Param('id') id: string,
-    @Body() dto: UpdatePlanDto,
-    @CurrentAdmin() admin: RequestAdminUser,
-    @Req() req: Request,
-  ) {
+  update(@Param('id') id: string, @Body() dto: UpdatePlanDto, @CurrentAdmin() admin: RequestAdminUser, @Req() req: Request) {
     return this.subscriptionPlansService.update(id, dto, admin.id, req.ip);
   }
 

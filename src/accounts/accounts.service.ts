@@ -261,7 +261,7 @@ export class AccountsService {
       where: { parentId: id, status: 'ACTIVE' },
     });
     if (activeChildCount > 0) {
-      throw new BadRequestException('Archive this account\'s child accounts first.');
+      throw new BadRequestException("Archive this account's child accounts first.");
     }
 
     // TODO (Prompt 5, once the Transaction Engine exists): also block

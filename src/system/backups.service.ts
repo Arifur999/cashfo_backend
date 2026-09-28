@@ -17,9 +17,7 @@ export class BackupsService {
   // into believing a real backup had run. Until real backup automation
   // exists, this honestly refuses rather than fabricating a success record.
   trigger(): never {
-    throw new NotImplementedException(
-      'Real backup automation is not wired up yet -- no pg_dump/storage upload runs anywhere in this app.',
-    );
+    throw new NotImplementedException('Real backup automation is not wired up yet -- no pg_dump/storage upload runs anywhere in this app.');
   }
 
   async statusSummary() {
@@ -33,9 +31,7 @@ export class BackupsService {
       }),
     ]);
 
-    const daysSinceLastBackup = lastSuccess?.completedAt
-      ? Math.floor((Date.now() - lastSuccess.completedAt.getTime()) / (24 * 60 * 60 * 1000))
-      : null;
+    const daysSinceLastBackup = lastSuccess?.completedAt ? Math.floor((Date.now() - lastSuccess.completedAt.getTime()) / (24 * 60 * 60 * 1000)) : null;
 
     const successCount = recentRecords.filter((r) => r.status === 'SUCCESS').length;
     const successRate30d = recentRecords.length > 0 ? Math.round((successCount / recentRecords.length) * 1000) / 10 : null;

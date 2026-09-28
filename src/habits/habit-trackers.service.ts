@@ -308,11 +308,7 @@ export class HabitTrackersService {
   // request changed the list in between, re-read and redo the edit (up to 3
   // times) -- so two simultaneous adds of different names both land, and
   // two of the same name end as one success plus a 409 from `plan`.
-  private async editItems(
-    userId: string,
-    id: string,
-    plan: (current: string[]) => { next: string[]; clear: string },
-  ): Promise<HabitTrackerView> {
+  private async editItems(userId: string, id: string, plan: (current: string[]) => { next: string[]; clear: string }): Promise<HabitTrackerView> {
     for (let attempt = 0; attempt < 3; attempt++) {
       const tracker = await this.requireEditableTracker(userId, id);
       const { next, clear } = plan(tracker.items);

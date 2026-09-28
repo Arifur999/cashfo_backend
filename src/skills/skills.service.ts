@@ -201,17 +201,17 @@ export class SkillsService {
       (tx) =>
         tx.skill.create({
           data: {
-        userId,
-        name,
-        source,
-        unit: dto.unit,
-        target: dto.target,
-        progress: shelf.progress,
-        loggedProgress: shelf.progress,
-        status: shelf.status,
-        color: dto.color ?? 'violet',
-        icon: dto.icon ?? 'sparkles',
-        startedAt: shelf.startedAt,
+            userId,
+            name,
+            source,
+            unit: dto.unit,
+            target: dto.target,
+            progress: shelf.progress,
+            loggedProgress: shelf.progress,
+            status: shelf.status,
+            color: dto.color ?? 'violet',
+            icon: dto.icon ?? 'sparkles',
+            startedAt: shelf.startedAt,
             completedAt: shelf.doneAt,
           },
         }),
@@ -251,7 +251,6 @@ export class SkillsService {
   clearGoal(userId: string): Promise<YearlyGoal> {
     return clearYearlyGoal((year) => this.prisma.skillGoal.deleteMany({ where: { userId, year } }));
   }
-
 
   // Today's activity row for a skill: an increase adds to it, a decrease takes
   // away from it (an undone +30 minutes) down to zero, where the row goes.

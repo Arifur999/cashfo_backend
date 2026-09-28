@@ -22,9 +22,7 @@ export class SuspiciousActivityService {
       orderBy: [{ status: 'asc' }, { createdAt: 'desc' }],
     });
 
-    const adminIds = [
-      ...new Set([...flags.map((f) => f.relatedAdminId), ...flags.map((f) => f.reviewedBy)].filter((id): id is string => Boolean(id))),
-    ];
+    const adminIds = [...new Set([...flags.map((f) => f.relatedAdminId), ...flags.map((f) => f.reviewedBy)].filter((id): id is string => Boolean(id)))];
     const admins = await this.prisma.adminUser.findMany({ where: { id: { in: adminIds } }, select: { id: true, name: true } });
     const adminById = new Map(admins.map((a) => [a.id, a]));
 

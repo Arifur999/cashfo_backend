@@ -24,9 +24,7 @@ export class DashboardService {
       this.prisma.supportTicket.count({ where: { status: { in: ['OPEN', 'IN_PROGRESS'] } } }),
       canSeeRevenue ? this.computeMrr() : Promise.resolve(null),
       isSuperAdmin ? this.prisma.suspiciousActivityFlag.count({ where: { status: 'OPEN' } }) : Promise.resolve(null),
-      isSuperAdmin
-        ? this.prisma.backupRecord.findFirst({ where: { status: 'SUCCESS' }, orderBy: { completedAt: 'desc' } })
-        : Promise.resolve(null),
+      isSuperAdmin ? this.prisma.backupRecord.findFirst({ where: { status: 'SUCCESS' }, orderBy: { completedAt: 'desc' } }) : Promise.resolve(null),
       isSuperAdmin
         ? this.prisma.auditLog.findMany({
             take: 5,

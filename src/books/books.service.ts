@@ -112,14 +112,14 @@ export class BooksService {
       (tx) =>
         tx.book.create({
           data: {
-        userId,
-        title,
-        author,
-        totalPages: dto.totalPages,
-        pagesRead: shelf.progress,
-        status: shelf.status,
-        color: dto.color ?? 'walnut',
-        startedAt: shelf.startedAt,
+            userId,
+            title,
+            author,
+            totalPages: dto.totalPages,
+            pagesRead: shelf.progress,
+            status: shelf.status,
+            color: dto.color ?? 'walnut',
+            startedAt: shelf.startedAt,
             finishedAt: shelf.doneAt,
           },
         }),
@@ -152,7 +152,6 @@ export class BooksService {
   clearGoal(userId: string): Promise<YearlyGoal> {
     return clearYearlyGoal((year) => this.prisma.bookGoal.deleteMany({ where: { userId, year } }));
   }
-
 
   private async requireBook(userId: string, id: string): Promise<Book> {
     const book = await this.prisma.book.findFirst({ where: { id, userId } });
