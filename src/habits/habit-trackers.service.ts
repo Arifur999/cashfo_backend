@@ -1,6 +1,7 @@
 import { BadRequestException, ConflictException, Injectable, InternalServerErrorException, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { dhakaToday } from '../common/dhaka.js';
+import { createWithinCap } from '../common/user-cap.js';
 import { cleanRequiredText, UNSAFE_TEXT } from '../common/text.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { AddTrackerItemDto } from './dto/add-tracker-item.dto.js';
@@ -17,9 +18,7 @@ const MAX_ITEM_NAME_LENGTH = 40;
 const MAX_TRACKER_NAME_LENGTH = 60;
 // Others challenges aren't bounded by the (userId, category, month, year)
 // unique index the way Namaz/Ramadan sheets are (month/year are null), so
-// they get a soft cap of their own, like Books/Skills: the count and the
-// insert are separate statements, so a burst of parallel requests can
-// overshoot it slightly.
+// they get a per-user cap of their own, like Books/Skills (createWithinCap).
 const MAX_CHALLENGES = 100;
 
 interface TrackerConfig {
@@ -183,13 +182,19 @@ export class HabitTrackersService {
   // the first as a duplicate; this bypasses it and inserts directly.
   async createCustom(userId: string, dto: CreateCustomTrackerDto): Promise<HabitTrackerView> {
     const name = cleanRequiredText(dto.name, 'challenge name', MAX_TRACKER_NAME_LENGTH);
-    if ((await this.prisma.habitMonthTracker.count({ where: { userId, category: 'Others' } })) >= MAX_CHALLENGES) {
-      throw new BadRequestException(`You can keep up to ${MAX_CHALLENGES} challenges`);
-    }
-    const created = await this.prisma.habitMonthTracker.create({
-      data: { userId, category: 'Others', month: null, year: null, name, totalDays: dto.totalDays, items: [] },
-      include: { checks: { select: { day: true, item: true } } },
-    });
+    const created = await createWithinCap(
+      this.prisma,
+      userId,
+      'challenges',
+      MAX_CHALLENGES,
+      `You can keep up to ${MAX_CHALLENGES} challenges`,
+      (tx) => tx.habitMonthTracker.count({ where: { userId, category: 'Others' } }),
+      (tx) =>
+        tx.habitMonthTracker.create({
+          data: { userId, category: 'Others', month: null, year: null, name, totalDays: dto.totalDays, items: [] },
+          include: { checks: { select: { day: true, item: true } } },
+        }),
+    );
     return this.toView(created);
   }
 
@@ -227,13 +232,7 @@ export class HabitTrackersService {
   // Add a habit column (Ramadan). Names are NFC-normalised and trimmed,
   // unique ignoring case, at most MAX_ITEMS per sheet.
   async addItem(userId: string, id: string, dto: AddTrackerItemDto): Promise<HabitTrackerView> {
-    const name = dto.name.normalize('NFC').trim().replace(/\s+/g, ' ');
-    if (name.length === 0 || name.length > MAX_ITEM_NAME_LENGTH) {
-      throw new BadRequestException(`A habit name must be 1-${MAX_ITEM_NAME_LENGTH} characters`);
-    }
-    if (UNSAFE_TEXT.test(name)) {
-      throw new BadRequestException("A habit name can't contain control or invalid characters");
-    }
+    const name = cleanRequiredText(dto.name, 'habit name', MAX_ITEM_NAME_LENGTH);
     return this.editItems(userId, id, (current) => {
       if (current.some((item) => item.toLowerCase() === name.toLowerCase())) {
         throw new ConflictException(`"${name}" is already on this sheet`);
@@ -309,11 +308,7 @@ export class HabitTrackersService {
   // request changed the list in between, re-read and redo the edit (up to 3
   // times) -- so two simultaneous adds of different names both land, and
   // two of the same name end as one success plus a 409 from `plan`.
-  private async editItems(
-    userId: string,
-    id: string,
-    plan: (current: string[]) => { next: string[]; clear: string },
-  ): Promise<HabitTrackerView> {
+  private async editItems(userId: string, id: string, plan: (current: string[]) => { next: string[]; clear: string }): Promise<HabitTrackerView> {
     for (let attempt = 0; attempt < 3; attempt++) {
       const tracker = await this.requireEditableTracker(userId, id);
       const { next, clear } = plan(tracker.items);

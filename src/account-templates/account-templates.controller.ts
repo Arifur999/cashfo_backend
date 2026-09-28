@@ -28,12 +28,7 @@ export class AccountTemplatesController {
 
   @Roles(AdminRole.SUPER_ADMIN, AdminRole.CONTENT_ADMIN)
   @Patch(':id')
-  update(
-    @Param('id') id: string,
-    @Body() dto: UpdateAccountTemplateDto,
-    @CurrentAdmin() admin: RequestAdminUser,
-    @Req() req: Request,
-  ) {
+  update(@Param('id') id: string, @Body() dto: UpdateAccountTemplateDto, @CurrentAdmin() admin: RequestAdminUser, @Req() req: Request) {
     return this.accountTemplatesService.update(id, dto, admin.id, req.ip);
   }
 

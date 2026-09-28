@@ -183,10 +183,7 @@ export class TransactionsService {
     if (filters.contactId) where.contactId = filters.contactId;
     if (filters.contactCategory) where.contact = { category: filters.contactCategory };
     if (filters.search) {
-      where.OR = [
-        { description: { contains: filters.search, mode: 'insensitive' } },
-        { referenceNo: { contains: filters.search, mode: 'insensitive' } },
-      ];
+      where.OR = [{ description: { contains: filters.search, mode: 'insensitive' } }, { referenceNo: { contains: filters.search, mode: 'insensitive' } }];
     }
 
     const [data, total] = await Promise.all([

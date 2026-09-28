@@ -42,9 +42,7 @@ export class NotificationCampaignsService {
     if (!SENDABLE_STATUSES.includes(campaign.status)) {
       throw new BadRequestException('Only DRAFT or SCHEDULED campaigns can be sent');
     }
-    throw new NotImplementedException(
-      'Real notification delivery is not wired up yet -- no email/SMS/push provider is integrated in this app.',
-    );
+    throw new NotImplementedException('Real notification delivery is not wired up yet -- no email/SMS/push provider is integrated in this app.');
   }
 
   async cancel(id: string, adminId: string, ipAddress?: string) {

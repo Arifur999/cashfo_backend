@@ -27,17 +27,11 @@ export class PaymentsService {
     if (query.search) {
       const matchingUsers = await this.prisma.platformUser.findMany({
         where: {
-          OR: [
-            { name: { contains: query.search, mode: 'insensitive' } },
-            { email: { contains: query.search, mode: 'insensitive' } },
-          ],
+          OR: [{ name: { contains: query.search, mode: 'insensitive' } }, { email: { contains: query.search, mode: 'insensitive' } }],
         },
         select: { id: true },
       });
-      where.OR = [
-        { platformUserId: { in: matchingUsers.map((u) => u.id) } },
-        { invoice: { invoiceNumber: { contains: query.search, mode: 'insensitive' } } },
-      ];
+      where.OR = [{ platformUserId: { in: matchingUsers.map((u) => u.id) } }, { invoice: { invoiceNumber: { contains: query.search, mode: 'insensitive' } } }];
     }
 
     const [payments, total] = await Promise.all([

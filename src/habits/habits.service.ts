@@ -156,7 +156,10 @@ export class HabitsService {
 
   // ---- Calendar / History ----
 
-  async getMonthLogs(userId: string, month: string): Promise<{ habits: Habit[]; logs: { habitId: string; date: Date; completed: boolean; value: number | null }[] }> {
+  async getMonthLogs(
+    userId: string,
+    month: string,
+  ): Promise<{ habits: Habit[]; logs: { habitId: string; date: Date; completed: boolean; value: number | null }[] }> {
     const habits = await this.listHabits(userId, true);
     const from = new Date(`${month}-01`);
     const to = new Date(from);

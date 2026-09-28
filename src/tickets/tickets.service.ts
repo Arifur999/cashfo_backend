@@ -26,17 +26,11 @@ export class TicketsService {
     if (query.search) {
       const matchingUsers = await this.prisma.platformUser.findMany({
         where: {
-          OR: [
-            { name: { contains: query.search, mode: 'insensitive' } },
-            { email: { contains: query.search, mode: 'insensitive' } },
-          ],
+          OR: [{ name: { contains: query.search, mode: 'insensitive' } }, { email: { contains: query.search, mode: 'insensitive' } }],
         },
         select: { id: true },
       });
-      where.OR = [
-        { subject: { contains: query.search, mode: 'insensitive' } },
-        { platformUserId: { in: matchingUsers.map((u) => u.id) } },
-      ];
+      where.OR = [{ subject: { contains: query.search, mode: 'insensitive' } }, { platformUserId: { in: matchingUsers.map((u) => u.id) } }];
     }
 
     // Default sort: unassigned tickets surface first, then by priority
@@ -105,11 +99,7 @@ export class TicketsService {
     const existing = await this.requireTicket(id);
     const statusChanged = dto.status !== undefined && dto.status !== existing.status;
 
-    const resolvedAt = statusChanged
-      ? RESOLVED_STATUSES.includes(dto.status!)
-        ? new Date()
-        : null
-      : undefined;
+    const resolvedAt = statusChanged ? (RESOLVED_STATUSES.includes(dto.status!) ? new Date() : null) : undefined;
 
     const result = await this.prisma.supportTicket.update({
       where: { id },
@@ -172,9 +162,7 @@ export class TicketsService {
 
     const avgResolutionHours =
       resolvedTickets.length > 0
-        ? resolvedTickets.reduce((sum, t) => sum + (t.resolvedAt!.getTime() - t.createdAt.getTime()), 0) /
-          resolvedTickets.length /
-          (1000 * 60 * 60)
+        ? resolvedTickets.reduce((sum, t) => sum + (t.resolvedAt!.getTime() - t.createdAt.getTime()), 0) / resolvedTickets.length / (1000 * 60 * 60)
         : 0;
 
     return {

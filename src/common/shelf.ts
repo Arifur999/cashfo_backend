@@ -33,19 +33,23 @@ export interface ShelfChange<S> {
 }
 
 export interface SettledShelf<S> extends ShelfItem<S> {
-  // True when the item was explicitly started over from the "done" shelf
-  // (Read again / Learn again): progress went back to zero on purpose.
-  restarted: boolean;
+  // Whether the progress that was sent is what the item ended up with. A move
+  // to done or to not-started decides the progress itself, so a progress sent
+  // alongside it (say, the stale value of a full edit form) is not something
+  // the user reported.
+  progressReported: boolean;
 }
 
 // The shelf, progress and dates an item ends up with. `current` is null when
-// the item is being created. Create and edit go through the same rules:
-//  - moved to done          -> everything done (progress = total)
-//  - moved to not started   -> back to zero; progress sent with it is a 400
-//  - moved to in progress   -> the progress sent (all of it -> done); none
+// the item is being created. An explicit status always wins, whatever the
+// item's current shelf -- the same request gives the same result either way:
+//  - status done            -> everything done (progress = total); a progress
+//                              sent with it is not used
+//  - status not started     -> back to zero; progress above zero is a 400
+//  - status in progress     -> the progress sent (all of it -> done); none
 //                              sent: a done item starts over at zero, any
 //                              other keeps its progress
-//  - no move                -> from the progress: all -> done, some -> in
+//  - no status              -> from the progress: all -> done, some -> in
 //                              progress, none -> stays (done dropped to 0 is
 //                              in progress). A done item whose details are
 //                              edited without a progress (a page-count fix)
@@ -58,18 +62,20 @@ export function settleShelf<S>(shelves: Shelves<S>, current: ShelfItem<S> | null
   const from: ShelfItem<S> = current ?? { status: shelves.todo, progress: 0, startedAt: null, doneAt: null };
   if (change.progress !== undefined && change.progress > total) throw new BadRequestException(messages.overTotal);
 
-  const moved = change.status !== undefined && (current === null || change.status !== from.status);
   let status: S;
   let progress: number;
+  let progressReported = change.progress !== undefined;
 
-  if (moved && change.status === shelves.done) {
+  if (change.status === shelves.done) {
     status = shelves.done;
     progress = total;
-  } else if (moved && change.status === shelves.todo) {
+    progressReported = false;
+  } else if (change.status === shelves.todo) {
     if (change.progress !== undefined && change.progress > 0) throw new BadRequestException(messages.notStarted);
     status = shelves.todo;
     progress = 0;
-  } else if (moved) {
+    progressReported = false;
+  } else if (change.status !== undefined) {
     if (change.progress !== undefined) progress = change.progress;
     else if (from.status === shelves.done) progress = 0;
     else progress = from.progress;
@@ -85,16 +91,17 @@ export function settleShelf<S>(shelves: Shelves<S>, current: ShelfItem<S> | null
     else status = from.status === shelves.done ? shelves.doing : from.status;
   }
 
-  // Only an explicit "start over" resets the start date. Leaving the done
-  // shelf any other way (reporting the real progress after a misclicked
-  // Finish) is a correction, and keeps the original start date.
-  const restarted = moved && from.status === shelves.done && status === shelves.doing && progress === 0;
+  // Only an explicit "start over" (in progress requested on a done item,
+  // landing at zero) resets the start date. Leaving the done shelf any other
+  // way (reporting the real progress after a misclicked Finish) is a
+  // correction, and keeps the original start date.
+  const restarted = change.status === shelves.doing && from.status === shelves.done && progress === 0;
   let startedAt = from.startedAt;
   if (status === shelves.todo) startedAt = null;
   else if (startedAt === null || restarted) startedAt = now;
   const doneAt = status === shelves.done ? (from.doneAt ?? now) : null;
 
-  return { status, progress, startedAt, doneAt, restarted };
+  return { status, progress, startedAt, doneAt, progressReported };
 }
 
 // Runs `attempt` again while its compare-and-swap write loses a race.

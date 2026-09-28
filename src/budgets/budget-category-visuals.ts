@@ -194,17 +194,4 @@ export const BUDGET_CATEGORY_ICONS = [
 
 // Original 8 plus a few more distinct Tailwind hues -- still small enough
 // that the color grid doesn't need its own search box.
-export const BUDGET_CATEGORY_COLORS = [
-  'blue',
-  'green',
-  'purple',
-  'orange',
-  'pink',
-  'yellow',
-  'red',
-  'indigo',
-  'teal',
-  'cyan',
-  'violet',
-  'lime',
-] as const;
+export const BUDGET_CATEGORY_COLORS = ['blue', 'green', 'purple', 'orange', 'pink', 'yellow', 'red', 'indigo', 'teal', 'cyan', 'violet', 'lime'] as const;

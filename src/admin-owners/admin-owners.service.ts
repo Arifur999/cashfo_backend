@@ -120,9 +120,7 @@ export class AdminOwnersService {
       planName: business?.plan?.name ?? null,
       workspaceCount: owner.ownedBusinesses.length,
       suspendedReason:
-        owner.status === UserStatus.SUSPENDED && lastSuspension
-          ? ((lastSuspension.newValue as { reason?: string } | null)?.reason ?? null)
-          : null,
+        owner.status === UserStatus.SUSPENDED && lastSuspension ? ((lastSuspension.newValue as { reason?: string } | null)?.reason ?? null) : null,
       suspendedAt: owner.status === UserStatus.SUSPENDED ? (lastSuspension?.createdAt ?? null) : null,
       activityLog: activityLog.map((log) => ({
         id: log.id,

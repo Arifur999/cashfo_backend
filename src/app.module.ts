@@ -103,10 +103,6 @@ import { UserAuthModule } from './user-auth/user-auth.module.js';
     SkillsModule,
   ],
   controllers: [AppController],
-  providers: [
-    AppService,
-    { provide: APP_GUARD, useClass: ThrottlerGuard },
-    { provide: APP_FILTER, useClass: GlobalExceptionFilter },
-  ],
+  providers: [AppService, { provide: APP_GUARD, useClass: ThrottlerGuard }, { provide: APP_FILTER, useClass: GlobalExceptionFilter }],
 })
 export class AppModule {}

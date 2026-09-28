@@ -30,12 +30,7 @@ export class AdminOwnersController {
 
   @Roles(AdminRole.SUPER_ADMIN, AdminRole.SUPPORT_ADMIN)
   @Patch(':userId/suspend')
-  suspend(
-    @Param('userId') userId: string,
-    @Body() dto: SuspendOwnerDto,
-    @CurrentAdmin() admin: RequestAdminUser,
-    @Req() req: Request,
-  ) {
+  suspend(@Param('userId') userId: string, @Body() dto: SuspendOwnerDto, @CurrentAdmin() admin: RequestAdminUser, @Req() req: Request) {
     return this.adminOwnersService.suspend(userId, dto, admin.id, req.ip);
   }
 
@@ -47,12 +42,7 @@ export class AdminOwnersController {
 
   @Roles(AdminRole.SUPER_ADMIN, AdminRole.FINANCE_ADMIN)
   @Patch(':userId/change-plan')
-  changePlan(
-    @Param('userId') userId: string,
-    @Body() dto: ChangeOwnerPlanDto,
-    @CurrentAdmin() admin: RequestAdminUser,
-    @Req() req: Request,
-  ) {
+  changePlan(@Param('userId') userId: string, @Body() dto: ChangeOwnerPlanDto, @CurrentAdmin() admin: RequestAdminUser, @Req() req: Request) {
     return this.adminOwnersService.changePlan(userId, dto, admin.id, req.ip);
   }
 

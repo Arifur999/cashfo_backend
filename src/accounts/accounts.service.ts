@@ -1,4 +1,4 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { AccountType, Prisma, WorkspaceType } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { CreateAccountDto } from './dto/create-account.dto.js';
@@ -261,7 +261,7 @@ export class AccountsService {
       where: { parentId: id, status: 'ACTIVE' },
     });
     if (activeChildCount > 0) {
-      throw new BadRequestException('Archive this account\'s child accounts first.');
+      throw new BadRequestException("Archive this account's child accounts first.");
     }
 
     // TODO (Prompt 5, once the Transaction Engine exists): also block

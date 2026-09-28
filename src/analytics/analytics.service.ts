@@ -139,24 +139,22 @@ export class AnalyticsService {
 
     const now = new Date();
 
-    return [...cohorts.keys()]
-      .sort()
-      .map((cohortMonthKey) => {
-        const userIds = cohorts.get(cohortMonthKey)!;
-        const [year, month] = cohortMonthKey.split('-').map(Number);
-        const cohortStart = new Date(Date.UTC(year, month - 1, 1));
+    return [...cohorts.keys()].sort().map((cohortMonthKey) => {
+      const userIds = cohorts.get(cohortMonthKey)!;
+      const [year, month] = cohortMonthKey.split('-').map(Number);
+      const cohortStart = new Date(Date.UTC(year, month - 1, 1));
 
-        const monthsSinceSignup = Array.from({ length: COHORT_MONTHS }, (_, i) => {
-          const targetStart = new Date(Date.UTC(cohortStart.getUTCFullYear(), cohortStart.getUTCMonth() + i, 1));
-          if (targetStart > now) return null; // this month hasn't happened yet for this cohort
+      const monthsSinceSignup = Array.from({ length: COHORT_MONTHS }, (_, i) => {
+        const targetStart = new Date(Date.UTC(cohortStart.getUTCFullYear(), cohortStart.getUTCMonth() + i, 1));
+        if (targetStart > now) return null; // this month hasn't happened yet for this cohort
 
-          const targetKey = monthKey(targetStart);
-          const activeCount = userIds.filter((id) => userActiveMonths.get(id)?.has(targetKey)).length;
-          return Math.round((activeCount / userIds.length) * 1000) / 10;
-        });
-
-        return { cohortMonth: cohortMonthKey, cohortSize: userIds.length, monthsSinceSignup };
+        const targetKey = monthKey(targetStart);
+        const activeCount = userIds.filter((id) => userActiveMonths.get(id)?.has(targetKey)).length;
+        return Math.round((activeCount / userIds.length) * 1000) / 10;
       });
+
+      return { cohortMonth: cohortMonthKey, cohortSize: userIds.length, monthsSinceSignup };
+    });
   }
 
   // No real equivalent exists anywhere in this app -- no model captures a
