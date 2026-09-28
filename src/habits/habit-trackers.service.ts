@@ -227,13 +227,7 @@ export class HabitTrackersService {
   // Add a habit column (Ramadan). Names are NFC-normalised and trimmed,
   // unique ignoring case, at most MAX_ITEMS per sheet.
   async addItem(userId: string, id: string, dto: AddTrackerItemDto): Promise<HabitTrackerView> {
-    const name = dto.name.normalize('NFC').trim().replace(/\s+/g, ' ');
-    if (name.length === 0 || name.length > MAX_ITEM_NAME_LENGTH) {
-      throw new BadRequestException(`A habit name must be 1-${MAX_ITEM_NAME_LENGTH} characters`);
-    }
-    if (UNSAFE_TEXT.test(name)) {
-      throw new BadRequestException("A habit name can't contain control or invalid characters");
-    }
+    const name = cleanRequiredText(dto.name, 'habit name', MAX_ITEM_NAME_LENGTH);
     return this.editItems(userId, id, (current) => {
       if (current.some((item) => item.toLowerCase() === name.toLowerCase())) {
         throw new ConflictException(`"${name}" is already on this sheet`);

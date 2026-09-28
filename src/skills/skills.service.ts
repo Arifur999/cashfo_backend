@@ -99,15 +99,16 @@ function asShelfItem(skill: Skill): ShelfItem<SkillStatus> {
 // detected.
 //
 // Only progress the user reports is activity ("+10 minutes", "I'm on lesson
-// 8"), and it counts even when sent together with a status. A move without a
-// progress is not: nobody knows how much of the rest of a course was done
-// today when it is marked Complete. The log is measured against
-// `loggedProgress` -- the progress it last accounted for -- which a Complete
-// jump leaves alone, so reporting the old progress again to undo a misclicked
-// Complete logs nothing (rather than erasing the day's real activity). A move
-// back to zero (Learn again, Want to learn) or a total edit that lowers it
-// brings loggedProgress down with it: progress reported after a restart is
-// new work.
+// 8"), including one sent while moving the skill to Learning. Complete and
+// Want to learn are not: they set the progress themselves (nobody knows how
+// much of the rest of a course was done today), so any progress sent with
+// them -- e.g. a full edit form's stale value -- is ignored for the log. The
+// log is measured against `loggedProgress`, the progress it last accounted
+// for, which a Complete jump leaves alone: reporting the old progress again
+// to undo a misclicked Complete logs nothing, rather than erasing the day's
+// real activity. A move back to zero (Learn again, Want to learn) or a total
+// edit that lowers it brings loggedProgress down with it: progress reported
+// after a restart is new work.
 function buildUpdate(current: Skill, dto: UpdateSkillDto, now: Date) {
   const name = dto.name !== undefined ? cleanRequiredText(dto.name, 'name', MAX_NAME_LENGTH) : current.name;
   const source = dto.source !== undefined ? cleanOptionalText(dto.source, 'source', MAX_SOURCE_LENGTH) : current.source;
@@ -115,7 +116,7 @@ function buildUpdate(current: Skill, dto: UpdateSkillDto, now: Date) {
   checkTarget(current.unit, target);
   const shelf = settleShelf(SHELVES, asShelfItem(current), { status: dto.status, progress: dto.progress, total: target }, now, MESSAGES);
 
-  const reported = dto.progress !== undefined;
+  const reported = shelf.progressReported;
   const logDelta = reported ? shelf.progress - current.loggedProgress : 0;
   const loggedProgress = reported ? shelf.progress : Math.min(current.loggedProgress, shelf.progress);
 
