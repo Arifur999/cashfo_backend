@@ -1,7 +1,8 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma, SkillStatus, SkillUnit, type Skill } from '@prisma/client';
-import { dhakaDateKey, dhakaDateOnly, dhakaYear } from '../common/dhaka.js';
-import { cleanText, INVISIBLE_ONLY } from '../common/text.js';
+import { dhakaDateOnly, dhakaYear } from '../common/dhaka.js';
+import { compareAndSwap, settleShelf, type ShelfItem, type ShelfMessages } from '../common/shelf.js';
+import { cleanOptionalText, cleanRequiredText } from '../common/text.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { CreateSkillDto } from './dto/create-skill.dto.js';
 import { SetSkillGoalDto } from './dto/set-skill-goal.dto.js';
@@ -21,17 +22,6 @@ const MAX_MINUTES = 60000; // 1000 hours
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const STREAK_LOOKBACK_DAYS = 400;
-
-function cleanName(value: string): string {
-  const name = cleanText(value, 'name', MAX_NAME_LENGTH);
-  if (INVISIBLE_ONLY.test(name)) throw new BadRequestException('A name is required');
-  return name;
-}
-
-function cleanSource(value: string): string {
-  const source = cleanText(value, 'source', MAX_SOURCE_LENGTH);
-  return INVISIBLE_ONLY.test(source) ? '' : source;
-}
 
 function checkTarget(unit: SkillUnit, target: number): void {
   if (unit === SkillUnit.LESSONS && target > MAX_LESSONS) {
@@ -94,67 +84,54 @@ function toView(skill: Skill): SkillView {
   };
 }
 
-// The shelf a skill sits on follows from how far the learner is, unless they
-// explicitly moved it (`statusRequested`):
-//  - moved to COMPLETED           -> everything done
-//  - moved to WANT_TO_LEARN       -> back to zero
-//  - moved to LEARNING            -> (re)start: a completed skill starts over at zero
-//  - otherwise, from the progress: all done -> COMPLETED, some -> LEARNING,
-//    none -> stays where it was (a completed skill dropped to 0 is LEARNING).
-function settle(status: SkillStatus, progress: number, target: number, statusRequested: boolean): { status: SkillStatus; progress: number } {
-  if (statusRequested) {
-    if (status === SkillStatus.COMPLETED) return { status, progress: target };
-    if (status === SkillStatus.WANT_TO_LEARN) return { status, progress: 0 };
-    return { status, progress: progress >= target ? 0 : progress };
-  }
-  if (progress >= target) return { status: SkillStatus.COMPLETED, progress: target };
-  if (progress > 0) return { status: SkillStatus.LEARNING, progress };
-  return { status: status === SkillStatus.COMPLETED ? SkillStatus.LEARNING : status, progress: 0 };
-}
+const SHELVES = { todo: SkillStatus.WANT_TO_LEARN, doing: SkillStatus.LEARNING, done: SkillStatus.COMPLETED };
+const MESSAGES: ShelfMessages = {
+  overTotal: "Progress can't be more than the target",
+  notStarted: "A skill you haven't started can't have progress",
+};
 
-function settleDates(current: Pick<Skill, 'status' | 'startedAt' | 'completedAt'> | null, next: SkillStatus, now: Date): { startedAt: Date | null; completedAt: Date | null } {
-  let startedAt = current?.startedAt ?? null;
-  if (next === SkillStatus.WANT_TO_LEARN) {
-    startedAt = null;
-  } else if (startedAt === null || (current?.status === SkillStatus.COMPLETED && next !== SkillStatus.COMPLETED)) {
-    startedAt = now;
-  }
-  const completedAt = next === SkillStatus.COMPLETED ? (current?.completedAt ?? now) : null;
-  return { startedAt, completedAt };
+function asShelfItem(skill: Skill): ShelfItem<SkillStatus> {
+  return { status: skill.status, progress: skill.progress, startedAt: skill.startedAt, doneAt: skill.completedAt };
 }
 
 // The new column values for an edit of `current`, plus how much activity to
 // record. Pure, so it can be re-run on a fresh read when a concurrent write is
 // detected.
+//
+// Only progress the user reports is activity ("+10 minutes", "I'm on lesson
+// 8"), and it counts even when sent together with a status. A move without a
+// progress is not: nobody knows how much of the rest of a course was done
+// today when it is marked Complete. The log is measured against
+// `loggedProgress` -- the progress it last accounted for -- which a Complete
+// jump leaves alone, so reporting the old progress again to undo a misclicked
+// Complete logs nothing (rather than erasing the day's real activity). A move
+// back to zero (Learn again, Want to learn) or a total edit that lowers it
+// brings loggedProgress down with it: progress reported after a restart is
+// new work.
 function buildUpdate(current: Skill, dto: UpdateSkillDto, now: Date) {
-  const name = dto.name !== undefined ? cleanName(dto.name) : current.name;
-  const source = dto.source !== undefined ? cleanSource(dto.source) : current.source;
+  const name = dto.name !== undefined ? cleanRequiredText(dto.name, 'name', MAX_NAME_LENGTH) : current.name;
+  const source = dto.source !== undefined ? cleanOptionalText(dto.source, 'source', MAX_SOURCE_LENGTH) : current.source;
   const target = dto.target ?? current.target;
   checkTarget(current.unit, target);
-  if (dto.progress !== undefined && dto.progress > target) {
-    throw new BadRequestException("Progress can't be more than the target");
-  }
+  const shelf = settleShelf(SHELVES, asShelfItem(current), { status: dto.status, progress: dto.progress, total: target }, now, MESSAGES);
 
-  // Editing only the details of a completed skill (say, correcting its lesson
-  // count) keeps it completed, rather than reopening it at the old progress.
-  const keepCompleted = current.status === SkillStatus.COMPLETED && dto.progress === undefined && (dto.status === undefined || dto.status === SkillStatus.COMPLETED);
-  const progress = keepCompleted ? target : (dto.progress ?? current.progress);
-
-  const statusRequested = dto.status !== undefined && dto.status !== current.status;
-  const settled = settle(dto.status ?? current.status, progress, target, statusRequested);
-  const dates = settleDates(current, settled.status, now);
-
-  // Only an explicit progress change is "activity" (+10 minutes, "I'm on
-  // lesson 8"). Finishing or restarting a skill by changing its status is not:
-  // nobody knows how much of the rest was done today. A target edit that
-  // clamps progress up or down (a count fix) isn't activity either -- it
-  // relabels the goalpost, it doesn't record new work -- so today's log can
-  // end up not matching the skill's current progress after one; that's the
-  // log staying an accurate record of what was reported that day, not a bug.
-  const logDelta = dto.progress !== undefined && !statusRequested ? settled.progress - current.progress : 0;
+  const reported = dto.progress !== undefined;
+  const logDelta = reported ? shelf.progress - current.loggedProgress : 0;
+  const loggedProgress = reported ? shelf.progress : Math.min(current.loggedProgress, shelf.progress);
 
   return {
-    data: { name, source, target, progress: settled.progress, status: settled.status, color: dto.color ?? current.color, icon: dto.icon ?? current.icon, ...dates },
+    data: {
+      name,
+      source,
+      target,
+      progress: shelf.progress,
+      loggedProgress,
+      status: shelf.status,
+      color: dto.color ?? current.color,
+      icon: dto.icon ?? current.icon,
+      startedAt: shelf.startedAt,
+      completedAt: shelf.doneAt,
+    },
     logDelta,
   };
 }
@@ -170,59 +147,53 @@ export class SkillsService {
     // drops the connection when two queries run at once (P1017).
     const skills = await this.prisma.skill.findMany({ where: { userId }, orderBy: { updatedAt: 'desc' } });
     const goal = await this.prisma.skillGoal.findUnique({ where: { userId_year: { userId, year } } });
-    const logs = await this.prisma.skillLog.findMany({
-      where: { userId, date: { gte: new Date(dhakaDateOnly(now).getTime() - STREAK_LOOKBACK_DAYS * DAY_MS) } },
+    const today = dhakaDateOnly(now);
+    const daysAgo = (n: number) => new Date(today.getTime() - n * DAY_MS).toISOString().slice(0, 10);
+
+    // The chart needs amounts (and each skill's unit) for the last 7 days only.
+    const recent = await this.prisma.skillLog.findMany({
+      where: { userId, date: { gte: new Date(today.getTime() - 6 * DAY_MS) } },
       select: { date: true, amount: true, skill: { select: { unit: true } } },
     });
-
     const perDay = new Map<string, { minutes: number; lessons: number }>();
-    for (const log of logs) {
+    for (const log of recent) {
       const key = log.date.toISOString().slice(0, 10);
       const day = perDay.get(key) ?? { minutes: 0, lessons: 0 };
       if (log.skill.unit === SkillUnit.HOURS) day.minutes += log.amount;
       else day.lessons += log.amount;
       perDay.set(key, day);
     }
-    const keyDaysAgo = (n: number) => dhakaDateKey(new Date(now.getTime() - n * DAY_MS));
-
     const week: WeekDay[] = [];
     for (let n = 6; n >= 0; n--) {
-      const key = keyDaysAgo(n);
+      const key = daysAgo(n);
       week.push({ date: key, minutes: perDay.get(key)?.minutes ?? 0, lessons: perDay.get(key)?.lessons ?? 0 });
     }
 
+    // The streak only needs which days had any activity: one row per day.
+    const activeDays = await this.prisma.skillLog.groupBy({
+      by: ['date'],
+      where: { userId, date: { gte: new Date(today.getTime() - STREAK_LOOKBACK_DAYS * DAY_MS) } },
+    });
+    const active = new Set(activeDays.map((row) => row.date.toISOString().slice(0, 10)));
     // Today counts if it has activity; otherwise the streak may still be alive
     // through yesterday (today just isn't over yet).
     let streak = 0;
-    for (let n = perDay.has(keyDaysAgo(0)) ? 0 : 1; n <= STREAK_LOOKBACK_DAYS && perDay.has(keyDaysAgo(n)); n++) streak++;
+    for (let n = active.has(daysAgo(0)) ? 0 : 1; n <= STREAK_LOOKBACK_DAYS && active.has(daysAgo(n)); n++) streak++;
 
     return { year, goalTarget: goal?.target ?? null, streak, week, skills: skills.map(toView) };
   }
 
   async create(userId: string, dto: CreateSkillDto): Promise<SkillView> {
-    const name = cleanName(dto.name);
-    const source = cleanSource(dto.source ?? '');
+    const name = cleanRequiredText(dto.name, 'name', MAX_NAME_LENGTH);
+    const source = cleanOptionalText(dto.source ?? '', 'source', MAX_SOURCE_LENGTH);
     checkTarget(dto.unit, dto.target);
-
-    const progress = dto.progress ?? 0;
-    if (progress > dto.target) {
-      throw new BadRequestException("Progress can't be more than the target");
-    }
-    if (dto.status === SkillStatus.WANT_TO_LEARN && progress > 0) {
-      throw new BadRequestException("A skill you haven't started can't have progress");
-    }
+    const shelf = settleShelf(SHELVES, null, { status: dto.status, progress: dto.progress, total: dto.target }, new Date(), MESSAGES);
     if ((await this.prisma.skill.count({ where: { userId } })) >= MAX_SKILLS) {
       throw new BadRequestException(`You can keep up to ${MAX_SKILLS} skills`);
     }
-
-    // COMPLETED and WANT_TO_LEARN are explicit shelves; LEARNING (or no status)
-    // follows the progress -- so 24 of 24 is a completed course, not a restart.
-    const statusRequested = dto.status === SkillStatus.COMPLETED || dto.status === SkillStatus.WANT_TO_LEARN;
-    const settled = settle(dto.status ?? SkillStatus.WANT_TO_LEARN, progress, dto.target, statusRequested);
-    const dates = settleDates(null, settled.status, new Date());
     // No activity log entry: an initial progress here records ground already
     // covered before the skill was added (possibly long before today), not
-    // something learned today -- unlike update()'s progress changes.
+    // something learned today -- so the log starts out accounting for it.
     const skill = await this.prisma.skill.create({
       data: {
         userId,
@@ -230,35 +201,33 @@ export class SkillsService {
         source,
         unit: dto.unit,
         target: dto.target,
-        progress: settled.progress,
-        status: settled.status,
+        progress: shelf.progress,
+        loggedProgress: shelf.progress,
+        status: shelf.status,
         color: dto.color ?? 'violet',
         icon: dto.icon ?? 'sparkles',
-        ...dates,
+        startedAt: shelf.startedAt,
+        completedAt: shelf.doneAt,
       },
     });
     return toView(skill);
   }
 
-  // Every column is derived from the row as it was read, so the write is a
-  // compare-and-swap on updatedAt: if another request changed the skill in
-  // between, re-read and re-derive instead of overwriting its change with
-  // stale values. The activity log moves in the same transaction, so a lost
-  // race can't double-count it.
+  // Every column is derived from the row as it was read, so the write only
+  // lands if the row is unchanged (see compareAndSwap). The activity log moves
+  // in the same transaction, so a lost race can't double-count it.
   async update(userId: string, id: string, dto: UpdateSkillDto): Promise<SkillView> {
-    for (let attempt = 0; attempt < 3; attempt++) {
+    return compareAndSwap(async () => {
       const current = await this.requireSkill(userId, id);
       const now = new Date();
       const { data, logDelta } = buildUpdate(current, dto, now);
-      const applied = await this.prisma.$transaction(async (tx) => {
-        const { count } = await tx.skill.updateMany({ where: { id, userId, updatedAt: current.updatedAt }, data });
-        if (count !== 1) return false;
+      const skill = await this.prisma.$transaction(async (tx) => {
+        const updated = await tx.skill.update({ where: { id, userId, updatedAt: current.updatedAt }, data });
         if (logDelta !== 0) await this.adjustLog(tx, userId, id, logDelta, dhakaDateOnly(now));
-        return true;
+        return updated;
       });
-      if (applied) return toView(await this.requireSkill(userId, id));
-    }
-    throw new ConflictException('This skill was changed elsewhere -- please try again');
+      return toView(skill);
+    }, 'This skill was changed elsewhere -- please try again');
   }
 
   async remove(userId: string, id: string): Promise<{ id: string }> {

@@ -2,12 +2,7 @@ import { BookStatus } from '@prisma/client';
 import { Transform } from 'class-transformer';
 import { IsEnum, IsIn, IsInt, IsNotEmpty, IsString, Max, MaxLength, Min, ValidateIf } from 'class-validator';
 import { BOOK_COLORS } from '../book-colors.js';
-
-const trim = ({ value }: { value: unknown }) => (typeof value === 'string' ? value.trim() : value);
-
-// Optional fields use ValidateIf(v !== undefined), not IsOptional: IsOptional
-// also skips an explicit null, which would then reach the service as a value.
-const whenSent = (_: unknown, value: unknown) => value !== undefined;
+import { trim, whenSent } from '../../common/dto.js';
 
 export class CreateBookDto {
   @Transform(trim)
