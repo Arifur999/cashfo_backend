@@ -125,6 +125,37 @@ export class TodosService {
     return this.get(userId, listId);
   }
 
+  // An unfinished task can be pushed to tomorrow's list instead of deleted --
+  // "tomorrow" is always this LIST's date + 1 day (not the real calendar
+  // "today"), so pushing from an old list moves it to the day right after,
+  // not to the actual next calendar day. Creates that list on demand, same
+  // find-or-create shape as create().
+  async moveItemToNextDay(userId: string, listId: string, itemId: string): Promise<TodoListView> {
+    const list = await this.requireList(userId, listId);
+    if (!list.items.some((item) => item.id === itemId)) {
+      throw new NotFoundException('Task not found');
+    }
+    const nextDate = new Date(list.date);
+    nextDate.setUTCDate(nextDate.getUTCDate() + 1);
+    const targetList = await this.findOrCreateList(userId, nextDate);
+    await this.prisma.todoItem.update({ where: { id: itemId }, data: { listId: targetList.id } });
+    return this.get(userId, listId);
+  }
+
+  private async findOrCreateList(userId: string, date: Date): Promise<TodoList> {
+    const existing = await this.prisma.todoList.findUnique({ where: { userId_date: { userId, date } } });
+    if (existing) return existing;
+    try {
+      return await this.prisma.todoList.create({ data: { userId, date } });
+    } catch (error) {
+      // Lost a race against another request creating the same date's list.
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+        return this.prisma.todoList.findUniqueOrThrow({ where: { userId_date: { userId, date } } });
+      }
+      throw error;
+    }
+  }
+
   private async requireList(userId: string, id: string): Promise<TodoList & { items: TodoItem[] }> {
     const list = await this.prisma.todoList.findUnique({ where: { id }, include: { items: { orderBy: { createdAt: 'asc' } } } });
     if (!list || list.userId !== userId) {

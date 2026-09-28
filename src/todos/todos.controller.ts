@@ -53,4 +53,9 @@ export class TodosController {
   removeItem(@CurrentUser() user: RequestUser, @Param('id', ParseUUIDPipe) id: string, @Param('itemId', ParseUUIDPipe) itemId: string) {
     return this.todosService.removeItem(user.id, id, itemId);
   }
+
+  @Post(':id/items/:itemId/move-to-next-day')
+  moveItemToNextDay(@CurrentUser() user: RequestUser, @Param('id', ParseUUIDPipe) id: string, @Param('itemId', ParseUUIDPipe) itemId: string) {
+    return this.todosService.moveItemToNextDay(user.id, id, itemId);
+  }
 }
