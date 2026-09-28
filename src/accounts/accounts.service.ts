@@ -1,4 +1,4 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { AccountType, Prisma, WorkspaceType } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { CreateAccountDto } from './dto/create-account.dto.js';
