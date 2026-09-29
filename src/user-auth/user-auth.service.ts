@@ -443,8 +443,27 @@ export class UserAuthService {
 
     const newPasswordHash = await bcrypt.hash(newPassword, 10);
     const { user, sessionsToRevoke } = await this.prisma.$transaction(async (tx) => {
+      // Claim the token first, conditionally: two requests racing with the
+      // same link both pass the read above, but only one can flip usedAt
+      // from null -- the other gets count 0 and is refused, so a link really
+      // is single-use.
+      const now = new Date();
+      const { count } = await tx.passwordResetToken.updateMany({
+        where: { id: resetToken.id, usedAt: null, expiresAt: { gt: now } },
+        data: { usedAt: now },
+      });
+      if (count !== 1) {
+        throw new BadRequestException('This reset link is invalid or has expired. Please request a new one.');
+      }
+      // A link mailed while the account was active must not work after it has
+      // been suspended or deleted -- that would both change the password and
+      // log the user in, bypassing login()'s status checks. Same generic
+      // message, so the link doesn't reveal the account's status.
+      const owner = await tx.user.findUnique({ where: { id: resetToken.userId }, select: { status: true } });
+      if (owner?.status !== 'ACTIVE') {
+        throw new BadRequestException('This reset link is invalid or has expired. Please request a new one.');
+      }
       const updatedUser = await tx.user.update({ where: { id: resetToken.userId }, data: { passwordHash: newPasswordHash } });
-      await tx.passwordResetToken.update({ where: { id: resetToken.id }, data: { usedAt: new Date() } });
       const activeSessions = await tx.userSession.findMany({ where: { userId: resetToken.userId, revokedAt: null } });
       await tx.userSession.updateMany({ where: { userId: resetToken.userId, revokedAt: null }, data: { revokedAt: new Date() } });
       return { user: updatedUser, sessionsToRevoke: activeSessions };

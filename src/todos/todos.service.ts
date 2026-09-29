@@ -138,6 +138,9 @@ export class TodosService {
     const nextDate = new Date(list.date);
     nextDate.setUTCDate(nextDate.getUTCDate() + 1);
     const targetList = await this.findOrCreateList(userId, nextDate);
+    if ((await this.prisma.todoItem.count({ where: { listId: targetList.id } })) >= MAX_ITEMS_PER_LIST) {
+      throw new BadRequestException(`The next day's list already has ${MAX_ITEMS_PER_LIST} tasks`);
+    }
     await this.prisma.todoItem.update({ where: { id: itemId }, data: { listId: targetList.id } });
     return this.get(userId, listId);
   }
