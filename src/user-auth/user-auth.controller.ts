@@ -17,9 +17,11 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { Throttle } from '@nestjs/throttler';
 import type { Request } from 'express';
 import { ChangePasswordDto } from './dto/change-password.dto.js';
+import { ForgotPasswordDto } from './dto/forgot-password.dto.js';
 import { LoginDto } from './dto/login.dto.js';
 import { RefreshDto } from './dto/refresh.dto.js';
 import { RegisterDto } from './dto/register.dto.js';
+import { ResetPasswordDto } from './dto/reset-password.dto.js';
 import { UpdateLanguageDto } from './dto/update-language.dto.js';
 import { UpdateProfileDto } from './dto/update-profile.dto.js';
 import { CurrentUser } from './decorators/current-user.decorator.js';
@@ -73,6 +75,22 @@ export class UserAuthController {
   @Post('refresh')
   refresh(@Body() dto: RefreshDto) {
     return this.userAuthService.refresh(dto.refreshToken);
+  }
+
+  // Tighter than login's 5/15min -- this route's only real traffic pattern
+  // is a genuine user retrying once or twice, so a lower ceiling stops
+  // email-bombing/enumeration probing without hurting anyone legitimate.
+  @Throttle({ default: { limit: 3, ttl: 15 * 60 * 1000 } })
+  @Post('forgot-password')
+  forgotPassword(@Body() dto: ForgotPasswordDto) {
+    return this.userAuthService.forgotPassword(dto.email);
+  }
+
+  @Throttle({ default: { limit: 5, ttl: 15 * 60 * 1000 } })
+  @Post('reset-password')
+  resetPassword(@Body() dto: ResetPasswordDto, @Req() req: Request) {
+    const { ip, userAgent } = this.resolveClientInfo(req);
+    return this.userAuthService.resetPassword(dto.token, dto.newPassword, ip, userAgent);
   }
 
   @Post('logout')

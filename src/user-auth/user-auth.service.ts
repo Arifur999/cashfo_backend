@@ -3,10 +3,11 @@ import { ConfigService } from '@nestjs/config';
 import { JwtService, type JwtSignOptions } from '@nestjs/jwt';
 import { User, WorkspaceType } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
-import { randomBytes, randomUUID } from 'crypto';
+import { createHash, randomBytes, randomUUID } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { AccountsService } from '../accounts/accounts.service.js';
 import { MailService } from '../mail/mail.service.js';
+import { renderPasswordResetEmail } from '../mail/templates/password-reset-email.js';
 import { renderWelcomeEmail } from '../mail/templates/welcome-email.js';
 import { SettingsService } from '../settings/settings.service.js';
 import { ChangePasswordDto } from './dto/change-password.dto.js';
@@ -387,6 +388,84 @@ export class UserAuthService {
     const newPasswordHash = await bcrypt.hash(dto.newPassword, 10);
     await this.prisma.user.update({ where: { id: userId }, data: { passwordHash: newPasswordHash } });
     return { success: true };
+  }
+
+  // "Forgot password?" on the login page. Always resolves to the same
+  // generic {success: true} regardless of whether the email matched a real,
+  // ACTIVE account -- same "don't reveal account existence" instinct as
+  // login()'s identical invalid-email/invalid-password message.
+  async forgotPassword(email: string): Promise<{ success: true }> {
+    const user = await this.prisma.user.findUnique({ where: { email } });
+
+    if (user && user.status === 'ACTIVE') {
+      const rawToken = randomBytes(32).toString('hex');
+      // sha256, not bcrypt -- the token already carries 256 bits of its own
+      // entropy (unlike a human password), so a deterministic hash is fine
+      // and lets resetPassword() below look it up with a plain unique query
+      // instead of bcrypt.compare-ing against every unexpired row.
+      const tokenHash = createHash('sha256').update(rawToken).digest('hex');
+      const expiresAt = new Date(Date.now() + 30 * 60 * 1000);
+
+      await this.prisma.$transaction([
+        // Only the newest link should ever work -- supersede anything still
+        // outstanding for this user rather than leaving multiple valid ones.
+        this.prisma.passwordResetToken.updateMany({ where: { userId: user.id, usedAt: null }, data: { usedAt: new Date() } }),
+        this.prisma.passwordResetToken.create({ data: { userId: user.id, tokenHash, expiresAt } }),
+      ]);
+
+      const frontendUrl = this.configService.get<string>('USER_FRONTEND_URL') ?? 'http://localhost:3001';
+      const resetUrl = `${frontendUrl}/reset-password?token=${rawToken}`;
+      const resetEmail = renderPasswordResetEmail(user.name, resetUrl);
+      try {
+        await this.mailService.sendEmail({ to: user.email, ...resetEmail });
+      } catch (err: unknown) {
+        // Unlike the welcome email, this one isn't fire-and-forget -- but a
+        // send failure still must not change the generic response below, or
+        // it becomes an account-existence oracle (fails only for real emails).
+        this.logger.error(`Failed to send password reset email to ${user.email}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
+    return { success: true };
+  }
+
+  // The link from forgotPassword()'s email. Consuming it also revokes every
+  // other still-active session for this account -- changing your password
+  // signs you out everywhere else, same principle as revokeSession() -- then
+  // logs the caller in fresh, same response shape as login()/register(), so
+  // the frontend can set cookies and redirect straight to /dashboard.
+  async resetPassword(rawToken: string, newPassword: string, ipAddress?: string, userAgent?: string) {
+    const tokenHash = createHash('sha256').update(rawToken).digest('hex');
+    const resetToken = await this.prisma.passwordResetToken.findUnique({ where: { tokenHash } });
+    if (!resetToken || resetToken.usedAt || resetToken.expiresAt < new Date()) {
+      throw new BadRequestException('This reset link is invalid or has expired. Please request a new one.');
+    }
+
+    const newPasswordHash = await bcrypt.hash(newPassword, 10);
+    const { user, sessionsToRevoke } = await this.prisma.$transaction(async (tx) => {
+      const updatedUser = await tx.user.update({ where: { id: resetToken.userId }, data: { passwordHash: newPasswordHash } });
+      await tx.passwordResetToken.update({ where: { id: resetToken.id }, data: { usedAt: new Date() } });
+      const activeSessions = await tx.userSession.findMany({ where: { userId: resetToken.userId, revokedAt: null } });
+      await tx.userSession.updateMany({ where: { userId: resetToken.userId, revokedAt: null }, data: { revokedAt: new Date() } });
+      return { user: updatedUser, sessionsToRevoke: activeSessions };
+    });
+
+    // Outside the transaction, same as revokeSession() -- the in-memory
+    // blacklist isn't transactional state, just a fast-path cache on top of
+    // the persisted revokedAt column above.
+    for (const session of sessionsToRevoke) {
+      this.tokenBlacklist.revoke(session.jti);
+    }
+
+    const { accessToken, refreshToken } = await this.issueTokens(user, ipAddress, userAgent);
+    const defaultBusiness = await this.prisma.business.findFirst({ where: { ownerId: user.id, isDefault: true } });
+
+    return {
+      accessToken,
+      refreshToken,
+      user: { id: user.id, name: user.name, email: user.email, preferredLanguage: user.preferredLanguage },
+      defaultBusinessId: defaultBusiness?.id ?? null,
+    };
   }
 
   private signAccessToken(user: User): string {
