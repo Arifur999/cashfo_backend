@@ -1,3 +1,5 @@
+import { escapeHtml } from './escape-html.js';
+
 export function renderPasswordResetEmail(name: string, resetUrl: string): { subject: string; html: string; text: string } {
   const subject = 'Reset your password';
   const text = `Hi ${name},\n\nWe received a request to reset your password. Click the link below to choose a new one (this link expires in 30 minutes):\n\n${resetUrl}\n\nIf you didn't request this, you can safely ignore this email -- your password won't change.\n\n- Money Management Tracker`;
@@ -5,7 +7,7 @@ export function renderPasswordResetEmail(name: string, resetUrl: string): { subj
     <div style="font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto;">
       <h2 style="color: #111827;">Reset your password</h2>
       <p style="color: #374151; font-size: 14px; line-height: 1.6;">
-        Hi ${name}, we received a request to reset your password. Click the button below to
+        Hi ${escapeHtml(name)}, we received a request to reset your password. Click the button below to
         choose a new one. This link expires in 30 minutes.
       </p>
       <p style="margin: 24px 0;">

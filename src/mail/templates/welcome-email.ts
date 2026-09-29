@@ -1,9 +1,11 @@
+import { escapeHtml } from './escape-html.js';
+
 export function renderWelcomeEmail(name: string): { subject: string; html: string; text: string } {
   const subject = 'Welcome to Money Management Tracker';
   const text = `Hi ${name},\n\nYour account has been created. You can now log in and start tracking your accounts, transactions, and reports.\n\n- Money Management Tracker`;
   const html = `
     <div style="font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto;">
-      <h2 style="color: #111827;">Welcome, ${name}!</h2>
+      <h2 style="color: #111827;">Welcome, ${escapeHtml(name)}!</h2>
       <p style="color: #374151; font-size: 14px; line-height: 1.6;">
         Your account has been created successfully. You can now log in and start tracking
         your accounts, transactions, contacts, and reports.

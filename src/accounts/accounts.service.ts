@@ -275,14 +275,20 @@ export class AccountsService {
     return this.prisma.account.update({ where: { id }, data: { status: 'ARCHIVED' } });
   }
 
-  // The reverse of archive() above -- no guards needed (an account can only
-  // reach ARCHIVED through archive(), which already blocks the system-
-  // savings-pool/active-children cases, so nothing here can put a bad
-  // account back into use).
+  // The reverse of archive() above. archive() refuses to archive a parent
+  // that still has active children, so an active account never sits under an
+  // archived parent -- unarchiving a child whose parent is still archived
+  // would break that, so the parent has to come back first.
   async unarchive(businessId: string, id: string) {
     const account = await this.requireAccount(businessId, id);
     if (account.status === 'ACTIVE') {
       return account;
+    }
+    if (account.parentId) {
+      const parent = await this.prisma.account.findUnique({ where: { id: account.parentId }, select: { status: true } });
+      if (parent?.status === 'ARCHIVED') {
+        throw new BadRequestException('Unarchive the parent account first.');
+      }
     }
     return this.prisma.account.update({ where: { id }, data: { status: 'ACTIVE' } });
   }
