@@ -26,6 +26,9 @@ import { GroupExpensesModule } from './group-expenses/group-expenses.module.js';
 import { BooksModule } from './books/books.module.js';
 import { HabitsModule } from './habits/habits.module.js';
 import { HealthModule } from './health/health.module.js';
+// TEMPORARY -- see src/internal/internal.controller.ts. Remove this import
+// and its entry in the imports array below once production has been seeded.
+import { InternalModule } from './internal/internal.module.js';
 import { InvoicesModule } from './invoices/invoices.module.js';
 import { LegalDocumentsModule } from './legal-documents/legal-documents.module.js';
 import { NotificationsModule } from './notifications/notifications.module.js';
@@ -61,6 +64,8 @@ import { UserAuthModule } from './user-auth/user-auth.module.js';
     PrismaModule,
     BusinessAccessModule,
     HealthModule,
+    // TEMPORARY -- remove once production has been seeded, see internal.controller.ts
+    InternalModule,
     AdminAuthModule,
     AdminUsersModule,
     AdminWorkspacesModule,
