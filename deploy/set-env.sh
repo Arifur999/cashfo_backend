@@ -64,6 +64,12 @@ done
 [ "$changed" = 1 ] || { info "nothing changed"; exit 0; }
 
 step "Applying"
+# Before install.sh has started the stack there is nothing to apply to --
+# and starting it from here would be too early.
+if [ -z "$(docker ps -q --filter name='^smartly-api$')" ]; then
+  info "the stack is not running yet -- install.sh will start it with these values"
+  exit 0
+fi
 # Recreates only the services whose settings changed (the API, usually).
 ( cd "$APP_DIR" && docker compose up -d ) || die "docker compose up failed -- see the output above"
 ok "applied"
