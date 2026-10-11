@@ -1,6 +1,6 @@
 import { CanActivate, ExecutionContext, Injectable } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
-import { AdminRole } from '@prisma/client';
+import { AdminRole } from '../../common/roles.js';
 import { Request } from 'express';
 import { ROLES_KEY } from '../decorators/roles.decorator.js';
 import { RequestAdminUser } from '../interfaces/request-admin-user.interface.js';

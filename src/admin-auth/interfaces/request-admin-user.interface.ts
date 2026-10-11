@@ -1,4 +1,4 @@
-import { AdminRole } from '@prisma/client';
+import { AdminRole } from '../../common/roles.js';
 
 export interface RequestAdminUser {
   id: string;

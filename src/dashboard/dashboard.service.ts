@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { AdminRole } from '@prisma/client';
+import { AdminRole } from '../common/roles.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
