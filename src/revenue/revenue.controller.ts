@@ -1,5 +1,5 @@
 import { Controller, Get, UseGuards } from '@nestjs/common';
-import { AdminRole } from '@prisma/client';
+import { AdminRole } from '../common/roles.js';
 import { Roles } from '../admin-auth/decorators/roles.decorator.js';
 import { AdminAuthGuard } from '../admin-auth/guards/admin-auth.guard.js';
 import { RolesGuard } from '../admin-auth/guards/roles.guard.js';
