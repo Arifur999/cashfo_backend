@@ -9,7 +9,7 @@ const prisma = new PrismaClient({ adapter: new PrismaPg({ connectionString: proc
 // Every seeded login shares this known password -- see the warnings below.
 const SEED_PASSWORD = 'ChangeMe123!';
 
-type SeedAccount = { name: string; email: string; role?: Role; createdBy?: string; preferredLanguage?: 'EN' | 'BN' };
+type SeedAccount = { name: string; email: string; role?: Role; createdBy?: string; preferredLanguage?: 'EN' | 'BN'; emailVerified?: boolean };
 
 // One seeded login: the User row plus its better-auth credential account.
 // Accounts that already exist are left exactly as they are.
@@ -26,16 +26,18 @@ async function upsertSeedAccount(account: SeedAccount, passwordHash: string) {
 async function seedAdmins() {
   const passwordHash = await hashPassword(SEED_PASSWORD);
 
-  const superAdmin = await upsertSeedAccount({ name: 'Super Admin', email: 'admin@example.com', role: Role.SUPER_ADMIN }, passwordHash);
+  // Admin accounts count as verified (vouched for, like the ones a super
+  // admin creates), which lets their Google sign-in link to them.
+  const superAdmin = await upsertSeedAccount({ name: 'Super Admin', email: 'admin@example.com', role: Role.SUPER_ADMIN, emailVerified: true }, passwordHash);
 
   // A second seeded account so the "Impersonate is SUPER_ADMIN only" behavior
   // (Prompt 2 completion criteria) can be verified without manually editing
   // the database.
-  const supportAdmin = await upsertSeedAccount({ name: 'Support Admin', email: 'support@example.com', role: Role.SUPPORT_ADMIN }, passwordHash);
+  const supportAdmin = await upsertSeedAccount({ name: 'Support Admin', email: 'support@example.com', role: Role.SUPPORT_ADMIN, emailVerified: true }, passwordHash);
 
   // For Prompt 5's "CONTENT_ADMIN can edit, SUPPORT_ADMIN cannot" completion
   // criterion -- seeded rather than requiring a manual temporary account.
-  await upsertSeedAccount({ name: 'Content Admin', email: 'content@example.com', role: Role.CONTENT_ADMIN }, passwordHash);
+  await upsertSeedAccount({ name: 'Content Admin', email: 'content@example.com', role: Role.CONTENT_ADMIN, emailVerified: true }, passwordHash);
 
   console.warn(
     '\n⚠️  Seeded admin accounts (admin@/support@/content@/support-admin@/finance-admin@/content-admin@example.com, ' +
@@ -58,7 +60,7 @@ async function seedSubAdmins(superAdminId: string) {
 
   const passwordHash = await hashPassword(SEED_PASSWORD);
   for (const account of accounts) {
-    await upsertSeedAccount({ ...account, createdBy: superAdminId }, passwordHash);
+    await upsertSeedAccount({ ...account, createdBy: superAdminId, emailVerified: true }, passwordHash);
   }
 }
 

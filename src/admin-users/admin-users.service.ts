@@ -49,7 +49,9 @@ export class AdminUsersService {
 
     const admin = await this.prisma.$transaction(async (tx) => {
       const created = await tx.user.create({
-        data: { name: dto.name, email: dto.email, role: dto.role, createdBy: creatorId },
+        // Vouched for by the super admin creating it -- which is also what lets
+        // better-auth link this address's Google sign-in to the account.
+        data: { name: dto.name, email: dto.email, role: dto.role, createdBy: creatorId, emailVerified: true },
       });
       await this.credentials.set(created.id, temporaryPassword, tx);
       return created;
