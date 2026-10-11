@@ -1,6 +1,7 @@
 import { Body, Controller, Get, Param, ParseEnumPipe, Patch, Req, UseGuards } from '@nestjs/common';
 import type { Request } from 'express';
-import { AdminRole, LegalDocType } from '@prisma/client';
+import { LegalDocType } from '@prisma/client';
+import { AdminRole } from '../common/roles.js';
 import { CurrentAdmin } from '../admin-auth/decorators/current-admin.decorator.js';
 import { Roles } from '../admin-auth/decorators/roles.decorator.js';
 import { AdminAuthGuard } from '../admin-auth/guards/admin-auth.guard.js';
