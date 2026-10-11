@@ -6,6 +6,7 @@ import { SettingsModule } from '../settings/settings.module.js';
 import { UploadsModule } from '../uploads/uploads.module.js';
 import { UserAuthController } from './user-auth.controller.js';
 import { UserAuthService } from './user-auth.service.js';
+import { UserProfileService } from './user-profile.service.js';
 import { LoginRateLimitFilter } from './filters/login-rate-limit.filter.js';
 import { UserAuthGuard } from './guards/user-auth.guard.js';
 import { TokenBlacklistService } from './token-blacklist.service.js';
@@ -26,7 +27,7 @@ import { TokenBlacklistService } from './token-blacklist.service.js';
   // MailService, for the post-register welcome email.
   imports: [JwtModule.register({}), AccountsModule, UploadsModule, SettingsModule, MailModule],
   controllers: [UserAuthController],
-  providers: [UserAuthService, UserAuthGuard, TokenBlacklistService, LoginRateLimitFilter],
+  providers: [UserAuthService, UserProfileService, UserAuthGuard, TokenBlacklistService, LoginRateLimitFilter],
   exports: [JwtModule, UserAuthGuard],
 })
 export class UserAuthModule {}

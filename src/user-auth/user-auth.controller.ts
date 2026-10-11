@@ -30,12 +30,14 @@ import { UserAuthGuard } from './guards/user-auth.guard.js';
 import type { RequestUser } from './interfaces/request-user.interface.js';
 import { userAvatarMulterOptions } from './user-avatar-upload.js';
 import { UserAuthService } from './user-auth.service.js';
+import { UserProfileService } from './user-profile.service.js';
 import { ImgbbService } from '../uploads/imgbb.service.js';
 
 @Controller('api/auth')
 export class UserAuthController {
   constructor(
     private readonly userAuthService: UserAuthService,
+    private readonly userProfileService: UserProfileService,
     private readonly imgbbService: ImgbbService,
   ) {}
 
@@ -101,19 +103,19 @@ export class UserAuthController {
   @UseGuards(UserAuthGuard)
   @Get('me')
   me(@CurrentUser() user: RequestUser) {
-    return this.userAuthService.me(user.id);
+    return this.userProfileService.me(user.id);
   }
 
   @UseGuards(UserAuthGuard)
   @Patch('language')
   updateLanguage(@CurrentUser() user: RequestUser, @Body() dto: UpdateLanguageDto) {
-    return this.userAuthService.updateLanguage(user.id, dto);
+    return this.userProfileService.updateLanguage(user.id, dto);
   }
 
   @UseGuards(UserAuthGuard)
   @Patch('profile')
   updateProfile(@CurrentUser() user: RequestUser, @Body() dto: UpdateProfileDto) {
-    return this.userAuthService.updateProfile(user.id, dto);
+    return this.userProfileService.updateProfile(user.id, dto);
   }
 
   @UseGuards(UserAuthGuard)
@@ -124,7 +126,7 @@ export class UserAuthController {
       throw new BadRequestException('No file was uploaded');
     }
     const avatarUrl = await this.imgbbService.uploadImage(file.buffer, file.originalname);
-    return this.userAuthService.updateAvatar(user.id, avatarUrl);
+    return this.userProfileService.updateAvatar(user.id, avatarUrl);
   }
 
   @UseGuards(UserAuthGuard)
