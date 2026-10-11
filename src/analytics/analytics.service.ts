@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { END_USER_WHERE } from '../common/roles.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { DateRangeQueryDto } from './dto/date-range-query.dto.js';
 import { TrackEventDto } from './dto/track-event.dto.js';
@@ -114,7 +115,7 @@ export class AnalyticsService {
   // UsageEvent pairing.
   async cohorts() {
     const [users, sessions] = await Promise.all([
-      this.prisma.user.findMany({ select: { id: true, createdAt: true } }),
+      this.prisma.user.findMany({ where: END_USER_WHERE, select: { id: true, createdAt: true } }),
       this.prisma.userSession.findMany({ select: { userId: true, createdAt: true } }),
     ]);
 

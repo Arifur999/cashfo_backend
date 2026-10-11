@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { AdminRole } from '../common/roles.js';
+import { AdminRole, END_USER_WHERE } from '../common/roles.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
@@ -17,9 +17,9 @@ export class DashboardService {
       // Real registered owners (User), not the old PlatformUser sandbox --
       // "some non-deleted owned business" matches every real signup, same
       // filter AdminOwnersService.list() uses.
-      this.prisma.user.count({ where: { ownedBusinesses: { some: { deletedAt: null } } } }),
+      this.prisma.user.count({ where: { ...END_USER_WHERE, ownedBusinesses: { some: { deletedAt: null } } } }),
       this.prisma.user.count({
-        where: { ownedBusinesses: { some: { deletedAt: null } }, createdAt: { gte: thirtyDaysAgo } },
+        where: { ...END_USER_WHERE, ownedBusinesses: { some: { deletedAt: null } }, createdAt: { gte: thirtyDaysAgo } },
       }),
       this.prisma.supportTicket.count({ where: { status: { in: ['OPEN', 'IN_PROGRESS'] } } }),
       canSeeRevenue ? this.computeMrr() : Promise.resolve(null),

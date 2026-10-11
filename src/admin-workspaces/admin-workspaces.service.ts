@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { END_USER_WHERE } from '../common/roles.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { ListWorkspaceOverviewQueryDto } from './dto/list-workspace-overview-query.dto.js';
 
@@ -14,7 +15,7 @@ export class AdminWorkspacesService {
     // relevant here -- a real signup always gets a default PERSONAL
     // Business, so in practice this is "every registered user", but the
     // filter guards against a user whose only workspace(s) were all deleted.
-    const where = { ownedBusinesses: { some: { deletedAt: null } } };
+    const where = { ...END_USER_WHERE, ownedBusinesses: { some: { deletedAt: null } } };
 
     const [owners, totalCount] = await Promise.all([
       this.prisma.user.findMany({
