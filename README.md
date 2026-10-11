@@ -1,114 +1,65 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# Cashfo API
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+The NestJS backend behind the Cashfo end-user app and its admin panel: one API, one database, one identity table.
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+## Stack
 
-## Description
+NestJS 12 (Express 5) · Prisma 7 on PostgreSQL · better-auth 1.7 with Better Auth Infra · class-validator · Vitest · oxlint. ESM throughout (`"type": "module"`, `.js` relative imports).
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
-
-## Project setup
+## Getting started
 
 ```bash
-$ npm install
+npm install
+cp .env.example .env        # database URL, secrets -- every variable is explained there
+npx prisma migrate deploy   # or `prisma migrate dev` while changing the schema
+npm run seed                # admin and end-user test accounts, password ChangeMe123!
+npm run start:dev           # http://localhost:5000
 ```
 
-## Compile and run the project
+| Script | What it does |
+|---|---|
+| `npm run start:dev` | Watch mode |
+| `npm run build` / `npm run start:prod` | Compile to `dist/` / run it |
+| `npm test` | Unit tests (Vitest) |
+| `npm run lint` | oxlint |
+| `npm run seed` | Idempotent seed (`prisma/seed.ts`) |
 
-```bash
-# development
-$ npm run start
+## Authentication
 
-# watch mode
-$ npm run start:dev
+### One identity, two sides
 
-# production mode
-$ npm run start:prod
-```
+Everyone who signs in is a `User` row. `role` decides the side: `USER` is the end-user app; `SUPER_ADMIN`, `SUPPORT_ADMIN`, `FINANCE_ADMIN` and `CONTENT_ADMIN` are the admin team (`src/common/roles.ts`). Admin-side code reads admins with `ADMIN_USER_WHERE` and customer listings with `END_USER_WHERE`, so neither population leaks into the other's screens or counts.
 
-## Run tests
+### better-auth
 
-```bash
-# unit tests
-$ npm run test
+`src/auth/better-auth.ts` configures the app's single better-auth instance:
 
-# e2e tests
-$ npm run test:e2e
+- **Passwords** live on the user's `credential` `AuthAccount` row, bcrypt-hashed (`src/auth/password.ts`). `CredentialsService` is the only app code that checks or sets one.
+- **Sessions** are `AuthSession` rows, one per signed-in device. A hook refuses to create one for any account that isn't `ACTIVE`.
+- **Google** sign-in runs when `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` are set. It creates an account only when the caller asks (`requestSignUp`), and links to an existing account only when that account's email is verified -- admin accounts are, as they're vouched for by the super admin who creates them.
+- **Better Auth Infra** (`dash()`) is on when `BETTER_AUTH_API_KEY` is set. The dashboard reaches the API at `<BETTER_AUTH_URL>/api/auth/dash/*`, so it connects to a deployed instance only.
 
-# test coverage
-$ npm run test:cov
-```
+Only better-auth's public endpoints are served over HTTP -- Google sign-in and its callback, `get-session`, `sign-out`, `ok`/`error` and the dashboard (`src/auth/auth-routes.ts`). Everything else under `/api/auth` belongs to the app's own controllers.
 
-## Deployment
+### App tokens
 
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
+The frontends keep using an access/refresh JWT pair; each token carries `sid`, the better-auth session it belongs to (`SessionTokensService`).
 
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
+| | Admin | End user |
+|---|---|---|
+| Sign in | `POST /admin/auth/login` | `POST /api/auth/login`, `/register`, `/reset-password` |
+| Google | `POST /admin/auth/session/exchange` | `POST /api/auth/session/exchange` |
+| Refresh / logout | `POST /admin/auth/refresh`, `/logout` | `POST /api/auth/refresh`, `/logout` |
+| Guard | `AdminAuthGuard` (+ `RolesGuard`) | `UserAuthGuard` |
 
-```bash
-$ npm install -g @nestjs/mau
-$ mau deploy
-```
+Sign-in goes through better-auth (so its hooks and the dashboard see it), then the app records the login and issues the pair. The guards and `refresh` accept a token only while its session is alive, so logout, revoking a device, a suspension or a password reset cut access on the very next request. Admin and end-user tokens are signed with different secrets and never cross over.
 
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+The Google exchange is how a browser session becomes app tokens: Google returns to `<BETTER_AUTH_URL>/api/auth/callback/google`, better-auth sets its session cookie, and the frontend forwards that cookie to the matching exchange endpoint.
 
-## Observability
+### Client address
 
-In production applications, observability is essential for understanding how your system behaves, detecting issues early, and maintaining reliable performance.
+`TRUST_PROXY` tells Express which proxies to believe (`src/common/trust-proxy.ts`); `req.ip` is then the real client for the login throttle, login history and audit log, and better-auth is handed the same address.
 
-[NestJS Observe](https://observe.nestjs.com) automatically instruments your NestJS application, giving you deep visibility into your system with minimal setup:
+## Database
 
-- **Distributed tracing:** Follow requests across services and understand how they flow through your system.
-- **Waterfall analysis:** Visualize request execution and identify slow operations, bottlenecks, and unexpected delays.
-- **Performance analysis:** Analyze application performance in real time and quickly pinpoint areas that need optimization.
-- **Metrics:** Track key application and infrastructure metrics to understand system health and performance trends.
-- **Logging:** Centralize and correlate logs with traces and other telemetry to make debugging easier.
-- **Error tracking:** Detect errors quickly and investigate their root causes with the surrounding context.
-- **SLA monitoring:** Track service-level objectives and identify when your application is approaching or exceeding defined thresholds.
-- **Alarms and alerts:** Set up alerts for critical errors, performance degradation, SLA violations, and other anomalies so your team can react quickly.
-
-## Resources
-
-Check out a few resources that may come in handy when working with NestJS:
-
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Auto-instrument your application with [NestJS Observer](https://observer.nestjs.com). Distributed tracing, metrics, and logging made easy. Error tracking and performance monitoring for your NestJS applications.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
-
-## Support
-
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
-
-## Stay in touch
-
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
-
-## License
-
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+Migrations live in `prisma/migrations`; production applies them with `npx prisma migrate deploy`. The better-auth migrations, in order, fold `AdminUser` into `User`, lowercase account emails, add the better-auth tables, move password hashes onto credential accounts and sign out devices from before sessions existed. The first two stop instead of guessing if two accounts share an email (or differ only by case); after deploying, everyone signs in once more.
