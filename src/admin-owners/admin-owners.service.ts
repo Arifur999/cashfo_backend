@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma, UserStatus } from '@prisma/client';
 import { AccountsService } from '../accounts/accounts.service.js';
+import { END_USER_WHERE } from '../common/roles.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { ChangeOwnerPlanDto } from './dto/change-owner-plan.dto.js';
 import { ListOwnersQueryDto } from './dto/list-owners-query.dto.js';
@@ -29,6 +30,7 @@ export class AdminOwnersService {
     // registered user -- it just guards against the edge case of a user whose
     // only workspace(s) were all soft-deleted.
     const where: Prisma.UserWhereInput = {
+      ...END_USER_WHERE,
       ownedBusinesses: { some: { deletedAt: null } },
       ...(query.status ? { status: query.status } : {}),
       ...(query.planId ? { ownedBusinesses: { some: { deletedAt: null, isDefault: true, planId: query.planId } } } : {}),
@@ -91,7 +93,7 @@ export class AdminOwnersService {
   // AuditLog entry instead, so no schema change was needed for it.
   async getById(userId: string) {
     const owner = await this.prisma.user.findUnique({
-      where: { id: userId },
+      where: { id: userId, ...END_USER_WHERE },
       include: { ownedBusinesses: { where: { deletedAt: null }, include: { plan: true } } },
     });
     if (!owner) throw new NotFoundException('Owner not found');
@@ -179,7 +181,7 @@ export class AdminOwnersService {
   // user-scoped, unlike the old PlatformUser.planId this replaces.
   async changePlan(userId: string, dto: ChangeOwnerPlanDto, adminId: string, ipAddress?: string) {
     const owner = await this.prisma.user.findUnique({
-      where: { id: userId },
+      where: { id: userId, ...END_USER_WHERE },
       include: { ownedBusinesses: { where: { deletedAt: null } } },
     });
     if (!owner) throw new NotFoundException('Owner not found');
@@ -212,7 +214,9 @@ export class AdminOwnersService {
   }
 
   private async requireOwner(userId: string) {
-    const owner = await this.prisma.user.findUnique({ where: { id: userId } });
+    // Role-scoped: admin accounts share the User table and must never be
+    // suspended, re-planned or reset through the owner endpoints.
+    const owner = await this.prisma.user.findUnique({ where: { id: userId, ...END_USER_WHERE } });
     if (!owner) throw new NotFoundException('Owner not found');
     return owner;
   }
@@ -230,7 +234,7 @@ export class AdminOwnersService {
   // business.
   async resetOwnerData(userId: string, adminId: string, ipAddress?: string) {
     const owner = await this.prisma.user.findUnique({
-      where: { id: userId },
+      where: { id: userId, ...END_USER_WHERE },
       include: { ownedBusinesses: { where: { deletedAt: null } } },
     });
     if (!owner) throw new NotFoundException('Owner not found');
