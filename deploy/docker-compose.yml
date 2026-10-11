@@ -1,0 +1,69 @@
+# smartly.softech.agency on the shared VPS: lives in /opt/smartly next to its
+# .env (made by init-env.sh) -- see README.md. Nothing here publishes a port.
+# The server's nginx container reaches smartly-web over its own Docker
+# network; the API and the database stay on a private one.
+name: smartly
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: smartly-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: smartly
+      POSTGRES_USER: smartly
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    networks: [internal]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U smartly -d smartly"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    mem_limit: 512m
+
+  api:
+    image: ghcr.io/arifur999/cashfo_backend:${API_TAG:-latest}
+    container_name: smartly-api
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://smartly:${POSTGRES_PASSWORD}@db:5432/smartly
+      NODE_ENV: production
+      PORT: "5000"
+      # Requests arrive from smartly-web over the private network, with the
+      # visitor's address appended to X-Forwarded-For by nginx: trusting the
+      # private-range hops makes req.ip that visitor.
+      TRUST_PROXY: uniquelocal
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - uploads:/app/uploads
+    networks: [internal]
+    mem_limit: 1g
+
+  web:
+    image: ghcr.io/arifur999/cashfo:${WEB_TAG:-latest}
+    container_name: smartly-web
+    restart: unless-stopped
+    environment:
+      API_BASE_URL: http://api:5000
+    depends_on:
+      api:
+        condition: service_healthy
+    networks: [internal, edge]
+    mem_limit: 768m
+
+networks:
+  internal:
+    name: smartly_internal
+  # Where the server's shared nginx (hatim_backend-nginx-1) lives.
+  edge:
+    name: hatim_backend_default
+    external: true
+
+volumes:
+  db-data:
+  uploads:
