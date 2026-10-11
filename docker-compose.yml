@@ -1,0 +1,41 @@
+# Local dev services. Start with `docker compose up -d`, stop with
+# `docker compose down` (add `-v` to also wipe the database volume).
+# Matches the DATABASE_URL in .env.example.
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: cashfo-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: admin_panel
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d admin_panel"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Web UI for the database at http://localhost:5050
+  # (login: admin@local.dev / admin). Optional -- `docker compose up -d postgres`
+  # starts only the database.
+  pgadmin:
+    image: dpage/pgadmin4:9
+    container_name: cashfo-pgadmin
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@local.dev
+      PGADMIN_DEFAULT_PASSWORD: admin
+      PGADMIN_CONFIG_SERVER_MODE: "False"
+    ports:
+      - "5050:80"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pgdata:
