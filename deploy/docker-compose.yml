@@ -1,66 +1,196 @@
-# smartly.softech.agency on the shared VPS: lives in /opt/smartly next to its
-# .env (made by init-env.sh) -- see README.md. Nothing here publishes a port.
-# The server's nginx container reaches smartly-web over its own Docker
-# network; the API and the database stay on a private one.
+# Lives on the VPS at /opt/smartly/docker-compose.yml (bootstrap.sh copies it).
+#
+# Cashfo as smartly.softech.agency on srv1881651, beside furnify,
+# softech.agency and travance -- built the way travelar_backend/deploy put
+# Travelar on the same box:
+#
+# - Images come from GHCR, published by each repo's Deploy workflow once its
+#   quality gate is green. Nothing is built on the server.
+# - No `ports:` anywhere. The nginx container that owns :80/:443
+#   (hatim_backend-nginx-1) reaches smartly-web by name over
+#   hatim_backend_default. The API and the database are not on that network.
+# - Every service and container is named smartly-*. Docker registers each
+#   service name as a DNS alias on every network the service joins, so a
+#   service called `web` on the shared network could answer a neighbour's
+#   lookups.
+# - Memory and CPU limits are ceilings, so this stack can never be why the box
+#   runs out of memory.
+#
+# Every ${VAR} comes from /opt/smartly/.env -- see smartly.env.example.
 name: smartly
 
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-database-url: &database-url postgresql://smartly:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@smartly-db:5432/smartly
+
+x-api-env: &api-env
+  NODE_ENV: production
+  PORT: "5000"
+  DATABASE_URL: *database-url
+  # The visitor's address arrives in X-Forwarded-For through nginx and
+  # smartly-web. Every hop in between is on a private Docker network, so
+  # trusting those ranges makes req.ip the visitor (and nothing a visitor
+  # writes into the header can change that -- nginx appends the real one).
+  TRUST_PROXY: uniquelocal
+  BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?set BETTER_AUTH_SECRET}
+  BETTER_AUTH_URL: https://${DOMAIN:?set DOMAIN}
+  ADMIN_FRONTEND_URL: https://${DOMAIN}
+  USER_FRONTEND_URL: https://${DOMAIN}
+  GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+  GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+  BETTER_AUTH_API_KEY: ${BETTER_AUTH_API_KEY:-}
+  JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
+  JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?set JWT_REFRESH_SECRET}
+  JWT_ACCESS_EXPIRES_IN: ${JWT_ACCESS_EXPIRES_IN:-15m}
+  JWT_REFRESH_EXPIRES_IN: ${JWT_REFRESH_EXPIRES_IN:-7d}
+  USER_JWT_SECRET: ${USER_JWT_SECRET:?set USER_JWT_SECRET}
+  USER_JWT_REFRESH_SECRET: ${USER_JWT_REFRESH_SECRET:?set USER_JWT_REFRESH_SECRET}
+  USER_JWT_ACCESS_EXPIRES_IN: ${USER_JWT_ACCESS_EXPIRES_IN:-15m}
+  USER_JWT_REFRESH_EXPIRES_IN: ${USER_JWT_REFRESH_EXPIRES_IN:-7d}
+  USAGE_TRACKING_API_KEY: ${USAGE_TRACKING_API_KEY:?set USAGE_TRACKING_API_KEY}
+  VAULT_ENCRYPTION_KEY: ${VAULT_ENCRYPTION_KEY:?set VAULT_ENCRYPTION_KEY}
+  VAULT_TOKEN_SECRET: ${VAULT_TOKEN_SECRET:?set VAULT_TOKEN_SECRET}
+  VAULT_TOKEN_EXPIRES_IN: ${VAULT_TOKEN_EXPIRES_IN:-10m}
+  IMGBB_API_KEY: ${IMGBB_API_KEY:-}
+  RESEND_API_KEY: ${RESEND_API_KEY:-}
+  MAIL_FROM: ${MAIL_FROM:-onboarding@resend.dev}
+
 services:
-  db:
+  smartly-db:
     image: postgres:16-alpine
     container_name: smartly-db
     restart: unless-stopped
     environment:
-      POSTGRES_DB: smartly
       POSTGRES_USER: smartly
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: smartly
     volumes:
       - db-data:/var/lib/postgresql/data
     networks: [internal]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U smartly -d smartly"]
-      interval: 10s
+      interval: 5s
       timeout: 5s
-      retries: 10
-    mem_limit: 512m
+      retries: 20
+    deploy:
+      resources:
+        limits: { memory: 512M, cpus: "1.0" }
+    logging: *logging
 
-  api:
-    image: ghcr.io/arifur999/cashfo_backend:${API_TAG:-latest}
+  # pg_dump at start and nightly into /opt/smartly/backups, 14 days kept.
+  # Copy that folder off the machine now and then.
+  smartly-backup:
+    image: postgres:16-alpine
+    container_name: smartly-backup
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "/ops/entrypoint.sh"]
+    environment:
+      PGHOST: smartly-db
+      PGUSER: smartly
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      PGDATABASE: smartly
+      BACKUP_DIR: /backups
+      BACKUP_SCHEDULE: ${BACKUP_SCHEDULE:-0 21 * * *}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
+    volumes:
+      - ./ops/backup:/ops:ro
+      - ./backups:/backups
+    networks: [internal]
+    depends_on:
+      smartly-db:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits: { memory: 128M, cpus: "0.5" }
+    logging: *logging
+
+  # Runs to completion on every `up` whose API image changed, and the API waits
+  # for it, so a release never starts against an old schema -- and a failed
+  # migration stops the release before it serves anything.
+  smartly-migrate:
+    image: ${API_IMAGE:?set API_IMAGE}
+    container_name: smartly-migrate
+    command: ["node_modules/.bin/prisma", "migrate", "deploy"]
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: *database-url
+    networks: [internal]
+    depends_on:
+      smartly-db:
+        condition: service_healthy
+    restart: "no"
+    deploy:
+      resources:
+        limits: { memory: 384M, cpus: "1.0" }
+    logging: *logging
+
+  smartly-api:
+    image: ${API_IMAGE:?set API_IMAGE}
     container_name: smartly-api
     restart: unless-stopped
-    env_file: .env
     environment:
-      DATABASE_URL: postgresql://smartly:${POSTGRES_PASSWORD}@db:5432/smartly
-      NODE_ENV: production
-      PORT: "5000"
-      # Requests arrive from smartly-web over the private network, with the
-      # visitor's address appended to X-Forwarded-For by nginx: trusting the
-      # private-range hops makes req.ip that visitor.
-      TRUST_PROXY: uniquelocal
-    depends_on:
-      db:
-        condition: service_healthy
+      <<: *api-env
+      # Node sizes its heap from the host's memory, not the container's limit;
+      # without this it grows past the limit and the kernel kills it.
+      NODE_OPTIONS: "--max-old-space-size=512"
     volumes:
       - uploads:/app/uploads
+    # Internal only: smartly-web calls it, the browser never does, and
+    # better-auth's public endpoints reach it through smartly-web's /api/auth.
     networks: [internal]
-    mem_limit: 1g
+    depends_on:
+      smartly-migrate:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        limits: { memory: 768M, cpus: "1.0" }
+    logging: *logging
 
-  web:
-    image: ghcr.io/arifur999/cashfo:${WEB_TAG:-latest}
+  smartly-web:
+    image: ${WEB_IMAGE:?set WEB_IMAGE}
     container_name: smartly-web
     restart: unless-stopped
     environment:
-      API_BASE_URL: http://api:5000
+      API_BASE_URL: http://smartly-api:5000
+      NODE_OPTIONS: "--max-old-space-size=384"
+    networks: [internal, proxy]
     depends_on:
-      api:
+      smartly-api:
         condition: service_healthy
-    networks: [internal, edge]
-    mem_limit: 768m
+    deploy:
+      resources:
+        limits: { memory: 512M, cpus: "1.0" }
+    logging: *logging
+
+  # One-shot: creates the first super admin and the reference data. Never
+  # started by `up` (profile); install.sh runs it once the stack is healthy:
+  #   docker compose --profile tools run --rm smartly-bootstrap
+  smartly-bootstrap:
+    image: ${API_IMAGE:?set API_IMAGE}
+    profiles: [tools]
+    command: ["node", "dist/scripts/bootstrap.js"]
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: *database-url
+      SUPER_ADMIN_EMAIL: ${SUPER_ADMIN_EMAIL:?set SUPER_ADMIN_EMAIL}
+      SUPER_ADMIN_NAME: ${SUPER_ADMIN_NAME:-Super Admin}
+      SUPER_ADMIN_PASSWORD: ${SUPER_ADMIN_PASSWORD:?set SUPER_ADMIN_PASSWORD}
+    networks: [internal]
+    depends_on:
+      smartly-db:
+        condition: service_healthy
+    restart: "no"
+    logging: *logging
 
 networks:
   internal:
     name: smartly_internal
   # Where the server's shared nginx (hatim_backend-nginx-1) lives.
-  edge:
+  proxy:
     name: hatim_backend_default
     external: true
 
