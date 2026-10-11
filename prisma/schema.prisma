@@ -690,6 +690,8 @@ model User {
   passwordResetTokens PasswordResetToken[]
   // Admin actions this account performed (admin roles only).
   auditLogs           AuditLog[]
+  authSessions        AuthSession[]
+  authAccounts        AuthAccount[]
 
   // No separate @@index([email]) -- @unique above already creates a unique
   // index covering lookups by email (same reasoning as PlatformUser).
@@ -704,6 +706,61 @@ enum Role {
   FINANCE_ADMIN
   CONTENT_ADMIN
   USER
+}
+
+// --- better-auth (src/auth). It writes these three tables itself; the app
+// reads them for its guards and Device Management. Prefixed Auth* so they
+// never collide with the chart-of-accounts Account model. ---
+
+// One signed-in device. The app's JWTs carry this row's id (sid), so
+// deleting the row signs that device out on its next request.
+model AuthSession {
+  id        String   @id @default(uuid())
+  token     String   @unique
+  expiresAt DateTime
+  ipAddress String?
+  userAgent String?
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+}
+
+// How a user proves who they are: providerId "credential" holds the bcrypt
+// password hash, "google" a linked Google account.
+model AuthAccount {
+  id                    String    @id @default(uuid())
+  accountId             String
+  providerId            String
+  userId                String
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  password              String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@unique([providerId, accountId])
+  @@index([userId])
+}
+
+// Short-lived values better-auth keeps between requests (OAuth state,
+// email verification links).
+model Verification {
+  id         String   @id @default(uuid())
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([identifier])
 }
 
 // Settings > Security > Device Management -- one row per issued refresh
