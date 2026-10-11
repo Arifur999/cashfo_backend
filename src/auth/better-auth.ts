@@ -28,7 +28,12 @@ export const createAuth = ({ prisma, secret, baseURL, trustedOrigins, google, da
     basePath: AUTH_BASE_PATH,
     trustedOrigins,
     database: prismaAdapter(prisma, { provider: 'postgresql' }),
-    advanced: { database: { generateId: 'uuid' } },
+    advanced: {
+      database: { generateId: 'uuid' },
+      // Store IPv6 addresses whole: the /64 default is meant for rate-limit
+      // keys, but it also lands on every session row the dashboard shows.
+      ipAddress: { ipv6Subnet: 128 },
+    },
     user: {
       fields: { image: 'avatarUrl' },
       additionalFields: {
