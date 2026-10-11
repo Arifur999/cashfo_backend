@@ -688,7 +688,15 @@ model User {
   vaultPasswordHash   String?
   preferredLanguage   LanguagePreference   @default(EN)
   status              UserStatus           @default(ACTIVE)
+  // Which side of the product this account reaches: USER is the end-user
+  // app, every other value is an admin role (see src/common/roles.ts).
+  role                Role                 @default(USER)
   emailVerifiedAt     DateTime?
+  // better-auth's own flag; emailVerifiedAt above keeps the "when".
+  emailVerified       Boolean              @default(false)
+  // Loose reference to the admin who created this account (Admin Users >
+  // Create); null for anyone who signed up themselves.
+  createdBy           String?
   lastLoginAt         DateTime?
   createdAt           DateTime             @default(now())
   updatedAt           DateTime             @updatedAt
@@ -712,6 +720,17 @@ model User {
 
   // No separate @@index([email]) -- @unique above already creates a unique
   // index covering lookups by email (same reasoning as AdminUser/PlatformUser).
+  @@index([role])
+}
+
+// One identity table for everyone who signs in -- end users and the admin
+// team alike -- so a single better-auth instance serves both.
+enum Role {
+  SUPER_ADMIN
+  SUPPORT_ADMIN
+  FINANCE_ADMIN
+  CONTENT_ADMIN
+  USER
 }
 
 // Settings > Security > Device Management -- one row per issued refresh
