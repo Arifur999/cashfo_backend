@@ -1,52 +1,39 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import { JwtService, type JwtSignOptions } from '@nestjs/jwt';
-import { User } from '@prisma/client';
-import { randomUUID } from 'crypto';
-import { CredentialsService } from '../auth/credentials.service.js';
+import { AuthSessionsService, type ClientInfo } from '../auth/auth-sessions.service.js';
+import { SessionTokensService } from '../auth/session-tokens.service.js';
 import { isAdminRole } from '../common/roles.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { LoginDto } from './dto/login.dto.js';
-import { TokenBlacklistService } from './token-blacklist.service.js';
-
-interface RefreshTokenPayload {
-  sub: string;
-  jti: string;
-  exp: number;
-}
 
 @Injectable()
 export class AdminAuthService {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly jwtService: JwtService,
-    private readonly configService: ConfigService,
-    private readonly tokenBlacklist: TokenBlacklistService,
-    private readonly credentials: CredentialsService,
+    private readonly sessions: AuthSessionsService,
+    private readonly tokens: SessionTokensService,
   ) {}
 
-  async login(dto: LoginDto, ipAddress?: string, userAgent?: string) {
+  async login(dto: LoginDto, client: ClientInfo) {
     const admin = await this.prisma.user.findUnique({ where: { email: dto.email } });
 
     // An end-user account is "no such admin" here -- same generic answer, so
     // the admin login can't be used to probe which emails have app accounts.
     if (!admin || !isAdminRole(admin.role)) {
-      await this.recordLoginAttempt(dto.email, ipAddress, userAgent, false, 'account_not_found');
+      await this.recordLoginAttempt(dto.email, client, false, 'account_not_found');
       throw new UnauthorizedException('Invalid email or password');
     }
     if (admin.status !== 'ACTIVE') {
-      await this.recordLoginAttempt(dto.email, ipAddress, userAgent, false, 'account_suspended');
+      await this.recordLoginAttempt(dto.email, client, false, 'account_suspended');
       throw new UnauthorizedException('This account has been suspended');
     }
 
-    const passwordMatches = await this.credentials.verify(admin.id, dto.password);
-    if (!passwordMatches) {
-      await this.recordLoginAttempt(dto.email, ipAddress, userAgent, false, 'invalid_password');
+    // better-auth checks the password and opens the session the tokens
+    // below are bound to.
+    const signedIn = await this.sessions.signInWithPassword(dto.email, dto.password, client);
+    if (!signedIn) {
+      await this.recordLoginAttempt(dto.email, client, false, 'invalid_password');
       throw new UnauthorizedException('Invalid email or password');
     }
-
-    const accessToken = this.signAccessToken(admin);
-    const refreshToken = this.signRefreshToken(admin);
 
     await this.prisma.$transaction([
       this.prisma.user.update({ where: { id: admin.id }, data: { lastLoginAt: new Date() } }),
@@ -56,48 +43,50 @@ export class AdminAuthService {
           action: 'ADMIN_LOGIN',
           entityType: 'AdminUser',
           entityId: admin.id,
-          ipAddress,
+          ipAddress: client.ipAddress,
         },
       }),
       this.prisma.loginAttempt.create({
-        data: { email: dto.email, ipAddress: ipAddress ?? 'unknown', userAgent, success: true },
+        data: { email: dto.email, ipAddress: client.ipAddress ?? 'unknown', userAgent: client.userAgent, success: true },
       }),
     ]);
 
     return {
-      accessToken,
-      refreshToken,
+      ...this.tokens.issue('admin', { sub: admin.id, sid: signedIn.sessionId, role: admin.role }),
       adminUser: { id: admin.id, name: admin.name, email: admin.email, role: admin.role },
     };
   }
 
-  private async recordLoginAttempt(email: string, ipAddress: string | undefined, userAgent: string | undefined, success: boolean, failureReason: string) {
+  private async recordLoginAttempt(email: string, client: ClientInfo, success: boolean, failureReason: string) {
     await this.prisma.loginAttempt.create({
-      data: { email, ipAddress: ipAddress ?? 'unknown', userAgent, success, failureReason },
+      data: { email, ipAddress: client.ipAddress ?? 'unknown', userAgent: client.userAgent, success, failureReason },
     });
   }
 
+  // A new access token for as long as the session lives -- logout, a
+  // suspension or a password reset ends it, and with it this refresh.
   async refresh(refreshToken: string) {
-    const payload = this.verifyRefreshToken(refreshToken);
+    const { sub, sid } = this.tokens.verifyRefresh('admin', refreshToken);
 
-    if (this.tokenBlacklist.isRevoked(payload.jti)) {
-      throw new UnauthorizedException('Refresh token has been revoked');
+    const session = await this.sessions.findActive(sid);
+    if (!session || session.userId !== sub) {
+      throw new UnauthorizedException('This session has been signed out');
     }
-
-    const admin = await this.prisma.user.findUnique({ where: { id: payload.sub } });
-    if (!admin || !isAdminRole(admin.role) || admin.status !== 'ACTIVE') {
+    const admin = session.user;
+    if (!isAdminRole(admin.role) || admin.status !== 'ACTIVE') {
       throw new UnauthorizedException('Admin no longer active');
     }
 
-    return { accessToken: this.signAccessToken(admin) };
+    await this.sessions.touch(sid);
+    return { accessToken: this.tokens.signAccess('admin', { sub, sid, role: admin.role }) };
   }
 
   async logout(refreshToken: string) {
-    // Best-effort: an already-expired or malformed refresh token can't
-    // meaningfully be revoked further, so don't fail the logout request over it.
+    // Best-effort: an already-expired or malformed refresh token has no
+    // session left to end, so don't fail the logout request over it.
     try {
-      const payload = this.verifyRefreshToken(refreshToken);
-      this.tokenBlacklist.revoke(payload.jti, payload.exp);
+      const { sid } = this.tokens.verifyRefresh('admin', refreshToken);
+      await this.sessions.revoke(sid);
     } catch {
       // ignore
     }
@@ -110,39 +99,5 @@ export class AdminAuthService {
       throw new UnauthorizedException('Admin no longer exists');
     }
     return { id: admin.id, name: admin.name, email: admin.email, role: admin.role };
-  }
-
-  private signAccessToken(admin: User): string {
-    return this.jwtService.sign(
-      { sub: admin.id, role: admin.role },
-      {
-        secret: this.configService.get<string>('JWT_SECRET'),
-        // Cast: env vars are plain strings, but jsonwebtoken's `expiresIn`
-        // type is a branded `StringValue` (from the `ms` package) rather than
-        // `string` -- the runtime happily parses "15m"/"7d", only the type
-        // needs the nudge.
-        expiresIn: (this.configService.get<string>('JWT_ACCESS_EXPIRES_IN') ?? '15m') as JwtSignOptions['expiresIn'],
-      },
-    );
-  }
-
-  private signRefreshToken(admin: User): string {
-    return this.jwtService.sign(
-      { sub: admin.id, jti: randomUUID() },
-      {
-        secret: this.configService.get<string>('JWT_REFRESH_SECRET'),
-        expiresIn: (this.configService.get<string>('JWT_REFRESH_EXPIRES_IN') ?? '7d') as JwtSignOptions['expiresIn'],
-      },
-    );
-  }
-
-  private verifyRefreshToken(token: string): RefreshTokenPayload {
-    try {
-      return this.jwtService.verify<RefreshTokenPayload>(token, {
-        secret: this.configService.get<string>('JWT_REFRESH_SECRET'),
-      });
-    } catch {
-      throw new UnauthorizedException('Invalid or expired refresh token');
-    }
   }
 }

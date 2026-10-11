@@ -6,6 +6,7 @@ import { AuthSessionsService } from './auth-sessions.service.js';
 import { authOptionsFromEnv } from './auth.config.js';
 import { BETTER_AUTH, createAuth } from './better-auth.js';
 import { CredentialsService } from './credentials.service.js';
+import { SessionAuthenticator } from './session-authenticator.service.js';
 import { SessionTokensService } from './session-tokens.service.js';
 
 // Global, like PrismaModule: the auth core is needed by the admin and the
@@ -18,12 +19,13 @@ import { SessionTokensService } from './session-tokens.service.js';
     CredentialsService,
     SessionTokensService,
     AuthSessionsService,
+    SessionAuthenticator,
     {
       provide: BETTER_AUTH,
       inject: [PrismaService, ConfigService],
       useFactory: (prisma: PrismaService, config: ConfigService) => createAuth({ prisma, ...authOptionsFromEnv(config) }),
     },
   ],
-  exports: [CredentialsService, SessionTokensService, AuthSessionsService, BETTER_AUTH],
+  exports: [CredentialsService, SessionTokensService, AuthSessionsService, SessionAuthenticator, BETTER_AUTH],
 })
 export class AuthModule {}

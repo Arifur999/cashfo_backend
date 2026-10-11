@@ -53,9 +53,10 @@ export class AuthSessionsService {
     return session.id;
   }
 
-  // The session a token points at, while it exists and hasn't expired.
+  // The session a token points at, with its user, while it exists and
+  // hasn't expired.
   async findActive(sessionId: string) {
-    const session = await this.prisma.authSession.findUnique({ where: { id: sessionId } });
+    const session = await this.prisma.authSession.findUnique({ where: { id: sessionId }, include: { user: true } });
     return session && session.expiresAt > new Date() ? session : null;
   }
 

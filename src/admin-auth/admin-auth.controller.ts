@@ -19,7 +19,7 @@ export class AdminAuthController {
   @UseFilters(LoginRateLimitFilter)
   @Post('login')
   login(@Body() dto: LoginDto, @Req() req: Request) {
-    return this.adminAuthService.login(dto, req.ip, req.headers['user-agent']);
+    return this.adminAuthService.login(dto, { ipAddress: req.ip, userAgent: req.headers['user-agent'] });
   }
 
   @Post('refresh')

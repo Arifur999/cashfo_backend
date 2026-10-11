@@ -1,64 +1,30 @@
 import { CanActivate, ExecutionContext, Injectable, UnauthorizedException } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import { JwtService } from '@nestjs/jwt';
 import { Request } from 'express';
+import { SessionAuthenticator } from '../../auth/session-authenticator.service.js';
 import { isAdminRole } from '../../common/roles.js';
-import { PrismaService } from '../../prisma/prisma.service.js';
 import { RequestAdminUser } from '../interfaces/request-admin-user.interface.js';
 
-interface AccessTokenPayload {
-  sub: string;
-}
-
-// Verifies the access token and attaches `request.adminUser`. Apply this
-// before RolesGuard on any route that needs authentication -- RolesGuard
-// assumes `request.adminUser` is already set.
+// Verifies the access token and its live session, then attaches
+// `request.adminUser`. Apply this before RolesGuard on any route that needs
+// authentication -- RolesGuard assumes `request.adminUser` is already set.
 @Injectable()
 export class AdminAuthGuard implements CanActivate {
-  constructor(
-    private readonly jwtService: JwtService,
-    private readonly configService: ConfigService,
-    private readonly prisma: PrismaService,
-  ) {}
+  constructor(private readonly authenticator: SessionAuthenticator) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest<Request & { adminUser?: RequestAdminUser }>();
-    const token = this.extractToken(request);
-    if (!token) {
-      throw new UnauthorizedException('Access token missing');
-    }
-
-    let payload: AccessTokenPayload;
-    try {
-      payload = this.jwtService.verify<AccessTokenPayload>(token, {
-        secret: this.configService.get<string>('JWT_SECRET'),
-      });
-    } catch {
-      throw new UnauthorizedException('Invalid or expired access token');
-    }
+    const { user: admin, sessionId } = await this.authenticator.authenticate('admin', request);
 
     // Admins and end users share the User table: the role check is what keeps
     // an end-user account out of every admin route.
-    const admin = await this.prisma.user.findUnique({ where: { id: payload.sub } });
-    if (!admin || !isAdminRole(admin.role)) {
+    if (!isAdminRole(admin.role)) {
       throw new UnauthorizedException('Admin no longer exists');
     }
     if (admin.status !== 'ACTIVE') {
       throw new UnauthorizedException('This admin account has been suspended');
     }
 
-    request.adminUser = { id: admin.id, email: admin.email, role: admin.role };
+    request.adminUser = { id: admin.id, email: admin.email, role: admin.role, sessionId };
     return true;
-  }
-
-  // Prefer the Authorization header (the admin frontend forwards its
-  // httpOnly-cookie-stored token this way), fall back to a same-origin
-  // cookie if one is present.
-  private extractToken(request: Request): string | undefined {
-    const authHeader = request.headers.authorization;
-    if (authHeader?.startsWith('Bearer ')) {
-      return authHeader.slice('Bearer '.length);
-    }
-    return (request as Request & { cookies?: Record<string, string> }).cookies?.accessToken;
   }
 }
