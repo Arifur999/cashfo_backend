@@ -1,5 +1,5 @@
 import { IsEnum, IsNotEmpty, IsOptional, IsString } from 'class-validator';
-import { AdminRole } from '@prisma/client';
+import { AdminRole } from '../../common/roles.js';
 
 export class UpdateAdminDto {
   @IsOptional()
