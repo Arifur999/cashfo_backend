@@ -1,26 +1,20 @@
-import { BadRequestException, ConflictException, ForbiddenException, Injectable, Logger, NotFoundException, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, Logger, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { JwtService, type JwtSignOptions } from '@nestjs/jwt';
-import { User, WorkspaceType } from '@prisma/client';
-import { createHash, randomBytes, randomUUID } from 'crypto';
+import { Role, type User } from '@prisma/client';
+import { createHash, randomBytes } from 'crypto';
+import { AuthSessionsService, type ClientInfo } from '../auth/auth-sessions.service.js';
 import { CredentialsService } from '../auth/credentials.service.js';
-import { PrismaService } from '../prisma/prisma.service.js';
-import { AccountsService } from '../accounts/accounts.service.js';
+import { SessionTokensService } from '../auth/session-tokens.service.js';
 import { MailService } from '../mail/mail.service.js';
 import { renderPasswordResetEmail } from '../mail/templates/password-reset-email.js';
-import { renderWelcomeEmail } from '../mail/templates/welcome-email.js';
-import { SettingsService } from '../settings/settings.service.js';
+import { PrismaService } from '../prisma/prisma.service.js';
 import { ChangePasswordDto } from './dto/change-password.dto.js';
 import { LoginDto } from './dto/login.dto.js';
 import { RegisterDto } from './dto/register.dto.js';
-import { parseDeviceLabel } from './device-label.js';
-import { TokenBlacklistService } from './token-blacklist.service.js';
+import { UserProvisioningService } from './user-provisioning.service.js';
+import { UserSessionsService } from './user-sessions.service.js';
 
-interface RefreshTokenPayload {
-  sub: string;
-  jti: string;
-  exp: number;
-}
+const INVALID_RESET_LINK = 'This reset link is invalid or has expired. Please request a new one.';
 
 @Injectable()
 export class UserAuthService {
@@ -28,280 +22,117 @@ export class UserAuthService {
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
-    private readonly tokenBlacklist: TokenBlacklistService,
-    private readonly accountsService: AccountsService,
-    private readonly settingsService: SettingsService,
     private readonly mailService: MailService,
     private readonly credentials: CredentialsService,
+    private readonly sessions: AuthSessionsService,
+    private readonly tokens: SessionTokensService,
+    private readonly devices: UserSessionsService,
+    private readonly provisioning: UserProvisioningService,
   ) {}
 
-  async register(dto: RegisterDto, ipAddress?: string, userAgent?: string) {
+  async register(dto: RegisterDto, client: ClientInfo) {
     const existing = await this.prisma.user.findUnique({ where: { email: dto.email } });
     if (existing) {
       throw new ConflictException('An account with this email already exists');
     }
 
-    const freePlan = await this.prisma.subscriptionPlan.findUnique({ where: { slug: 'free' } });
-    // Read once, outside the transaction below -- SettingsService.get()
-    // uses the plain (non-transactional) PrismaService client, and calling
-    // it from inside an open interactive transaction against `prisma dev`'s
-    // single-connection pool starves that transaction until it hits its
-    // 5s timeout (P2028). The reward amount is just a snapshot value; it
-    // doesn't need transactional consistency with the user-creation below.
-    const referralRewardAmount = (await this.settingsService.get()).referralRewardAmount;
+    // better-auth creates the account and its credential, then signs it in.
+    // emailVerifiedAt stays null -- an email verification flow is still a
+    // separate future feature.
+    const signedIn = await this.sessions.signUpWithPassword(
+      { name: dto.name, email: dto.email, password: dto.password, phone: dto.phone, preferredLanguage: dto.preferredLanguage },
+      client,
+    );
+    if (!signedIn) {
+      throw new ConflictException('An account with this email already exists');
+    }
 
-    // All-or-nothing: a user must never exist without their default
-    // workspace (and vice versa) -- see Prompt 2 spec.
-    const { user, defaultBusinessId } = await this.prisma.$transaction(async (tx) => {
-      const createdUser = await tx.user.create({
-        data: {
-          name: dto.name,
-          email: dto.email,
-          phone: dto.phone,
-          preferredLanguage: dto.preferredLanguage,
-          // emailVerifiedAt stays null -- a real verification-email flow
-          // (token + verify endpoint + frontend page) is still a separate
-          // future feature; MailService now exists for it when that's built.
-        },
-      });
-      await this.credentials.set(createdUser.id, dto.password, tx);
+    const defaultBusinessId = await this.provisioning.ensureDefaultWorkspace(signedIn.userId, { referralCode: dto.referralCode });
+    const user = await this.prisma.user.findUniqueOrThrow({ where: { id: signedIn.userId } });
+    return this.signedInResponse(user, signedIn.sessionId, client, defaultBusinessId);
+  }
 
-      // Generate this user's own shareable referral code (same short-code
-      // algorithm ReferralsService.generateUniqueReferralCode() uses for
-      // backfilling pre-existing users -- duplicated here, not imported, to
-      // avoid a circular UserAuthModule <-> ReferralsModule dependency; see
-      // that method's own comment).
-      let referralCode: string | undefined;
-      for (let attempt = 0; attempt < 5; attempt++) {
-        const candidate = randomBytes(5).toString('hex').toUpperCase().slice(0, 8);
-        const clash = await tx.user.findUnique({ where: { referralCode: candidate } });
-        if (!clash) {
-          referralCode = candidate;
-          break;
-        }
-      }
-      await tx.user.update({ where: { id: createdUser.id }, data: { referralCode } });
+  async login(dto: LoginDto, client: ClientInfo) {
+    const user = await this.prisma.user.findUnique({ where: { email: dto.email } });
 
-      // If this signup came through someone else's referral link, record it --
-      // an unknown/stale code is silently ignored (registration must never fail
-      // just because of a bad referral link).
-      if (dto.referralCode) {
-        const referrer = await tx.user.findUnique({ where: { referralCode: dto.referralCode } });
-        if (referrer) {
-          await tx.referral.create({
-            data: { referrerId: referrer.id, referredUserId: createdUser.id, rewardAmount: referralRewardAmount, status: 'PENDING' },
-          });
-        }
-      }
+    // DELETED is treated the same as "no account" -- a soft-deleted account
+    // shouldn't reveal its own existence any more than a nonexistent email
+    // would -- and so is an admin account, which signs in on the admin side.
+    // SUSPENDED gets a distinct, honest message (spec's explicit completion
+    // criterion): the owner should know the account is theirs and how to
+    // resolve it.
+    if (!user || user.status === 'DELETED' || user.role !== Role.USER) {
+      await this.recordLoginAttempt(dto.email, client, false, 'account_not_found');
+      throw new UnauthorizedException('Invalid email or password');
+    }
+    if (user.status === 'SUSPENDED') {
+      await this.recordLoginAttempt(dto.email, client, false, 'account_suspended');
+      throw new ForbiddenException('Your account has been suspended. Contact support for assistance.');
+    }
 
-      const defaultBusiness = await tx.business.create({
-        data: {
-          ownerId: createdUser.id,
-          name: 'Personal',
-          type: WorkspaceType.PERSONAL,
-          isDefault: true,
-          planId: freePlan?.id,
-          members: { create: { userId: createdUser.id, role: 'OWNER' } },
-        },
-      });
+    const signedIn = await this.sessions.signInWithPassword(dto.email, dto.password, client);
+    if (!signedIn) {
+      await this.recordLoginAttempt(dto.email, client, false, 'invalid_password');
+      throw new UnauthorizedException('Invalid email or password');
+    }
 
-      // Prompt 4: the default workspace should never exist without its
-      // starter Chart of Accounts -- seeded in this same transaction, same
-      // all-or-nothing reasoning as the user/workspace/membership rows above.
-      await this.accountsService.seedDefaultAccounts(defaultBusiness.id, WorkspaceType.PERSONAL, tx);
+    await this.prisma.$transaction([
+      this.prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } }),
+      this.prisma.loginAttempt.create({
+        data: { email: dto.email, ipAddress: client.ipAddress ?? 'unknown', userAgent: client.userAgent, success: true },
+      }),
+    ]);
 
-      return { user: createdUser, defaultBusinessId: defaultBusiness.id };
-    });
+    // Also completes an account created elsewhere that has no workspace yet.
+    const defaultBusinessId = await this.provisioning.ensureDefaultWorkspace(user.id);
+    return this.signedInResponse(user, signedIn.sessionId, client, defaultBusinessId);
+  }
 
-    const { accessToken, refreshToken } = await this.issueTokens(user, ipAddress, userAgent);
-
-    // Best-effort: a flaky/unconfigured email provider must never fail
-    // registration itself (same reasoning as the referral-code lookup
-    // above) -- log and move on rather than throwing.
-    const welcomeEmail = renderWelcomeEmail(user.name);
-    this.mailService.sendEmail({ to: user.email, ...welcomeEmail }).catch((err: unknown) => {
-      this.logger.error(`Failed to send welcome email to ${user.email}: ${err instanceof Error ? err.message : String(err)}`);
-    });
-
+  // Shared by register/login/resetPassword: records the device for Device
+  // Management and issues the token pair bound to its session.
+  private async signedInResponse(user: User, sessionId: string, client: ClientInfo, defaultBusinessId: string) {
+    await this.devices.record(user.id, sessionId, client);
     return {
-      accessToken,
-      refreshToken,
+      ...this.tokens.issue('user', { sub: user.id, sid: sessionId, role: user.role }),
       user: { id: user.id, name: user.name, email: user.email, preferredLanguage: user.preferredLanguage },
       defaultBusinessId,
     };
   }
 
-  async login(dto: LoginDto, ipAddress?: string, userAgent?: string) {
-    const user = await this.prisma.user.findUnique({ where: { email: dto.email } });
-
-    // DELETED is treated the same as "no account" -- a soft-deleted account
-    // shouldn't reveal its own existence any more than a nonexistent email
-    // would. SUSPENDED gets a distinct, honest message (spec's explicit
-    // completion criterion), since that's an account the owner should know
-    // is theirs and be told how to resolve.
-    if (!user || user.status === 'DELETED') {
-      await this.recordLoginAttempt(dto.email, ipAddress, userAgent, false, 'account_not_found');
-      throw new UnauthorizedException('Invalid email or password');
-    }
-    if (user.status === 'SUSPENDED') {
-      await this.recordLoginAttempt(dto.email, ipAddress, userAgent, false, 'account_suspended');
-      throw new ForbiddenException('Your account has been suspended. Contact support for assistance.');
-    }
-
-    const passwordMatches = await this.credentials.verify(user.id, dto.password);
-    if (!passwordMatches) {
-      await this.recordLoginAttempt(dto.email, ipAddress, userAgent, false, 'invalid_password');
-      throw new UnauthorizedException('Invalid email or password');
-    }
-
-    const defaultBusiness = await this.prisma.business.findFirst({ where: { ownerId: user.id, isDefault: true } });
-
-    await this.prisma.$transaction([
-      this.prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } }),
-      this.prisma.loginAttempt.create({
-        data: { email: dto.email, ipAddress: ipAddress ?? 'unknown', userAgent, success: true },
-      }),
-    ]);
-
-    const { accessToken, refreshToken } = await this.issueTokens(user, ipAddress, userAgent);
-
-    return {
-      accessToken,
-      refreshToken,
-      user: { id: user.id, name: user.name, email: user.email, preferredLanguage: user.preferredLanguage },
-      defaultBusinessId: defaultBusiness?.id ?? null,
-    };
-  }
-
-  // Shared by register()/login() -- signs both tokens off the SAME jti and
-  // persists a UserSession row for it (Settings > Security's Device
-  // Management), rather than each caller duplicating this.
-  private async issueTokens(user: User, ipAddress: string | undefined, userAgent: string | undefined) {
-    const jti = randomUUID();
-    const accessToken = this.signAccessToken(user);
-    const refreshToken = this.signRefreshToken(user, jti);
-    await this.prisma.userSession.create({
-      data: {
-        userId: user.id,
-        jti,
-        deviceLabel: parseDeviceLabel(userAgent),
-        ipAddress: ipAddress ?? 'unknown',
-        userAgent,
-      },
-    });
-    return { accessToken, refreshToken };
-  }
-
-  private async recordLoginAttempt(email: string, ipAddress: string | undefined, userAgent: string | undefined, success: boolean, failureReason: string) {
+  private async recordLoginAttempt(email: string, client: ClientInfo, success: boolean, failureReason: string) {
     await this.prisma.loginAttempt.create({
-      data: { email, ipAddress: ipAddress ?? 'unknown', userAgent, success, failureReason },
+      data: { email, ipAddress: client.ipAddress ?? 'unknown', userAgent: client.userAgent, success, failureReason },
     });
   }
 
+  // A new access token for as long as the device's session lives -- logout,
+  // revoking the device, a suspension or a password reset ends it.
   async refresh(refreshToken: string) {
-    const payload = this.verifyRefreshToken(refreshToken);
+    const { sub, sid } = this.tokens.verifyRefresh('user', refreshToken);
 
-    if (this.tokenBlacklist.isRevoked(payload.jti)) {
-      throw new UnauthorizedException('Refresh token has been revoked');
-    }
-
-    // Persisted check, on top of the in-memory blacklist above -- a session
-    // revoked from Settings > Security's Device Management (or from any
-    // OTHER backend instance/after a restart) must stay rejected even
-    // though the in-memory blacklist itself doesn't survive either of those.
-    const session = await this.prisma.userSession.findUnique({ where: { jti: payload.jti } });
-    if (session?.revokedAt) {
+    const session = await this.sessions.findActive(sid);
+    if (!session || session.userId !== sub) {
       throw new UnauthorizedException('This session has been signed out');
     }
-
-    const user = await this.prisma.user.findUnique({ where: { id: payload.sub } });
-    if (!user || user.status !== 'ACTIVE') {
+    if (session.user.status !== 'ACTIVE' || session.user.role !== Role.USER) {
       throw new UnauthorizedException('Account no longer active');
     }
 
-    if (session) {
-      await this.prisma.userSession.update({ where: { jti: payload.jti }, data: { lastUsedAt: new Date() } });
-    }
-
-    return { accessToken: this.signAccessToken(user) };
+    await this.devices.touch(sid);
+    return { accessToken: this.tokens.signAccess('user', { sub, sid, role: session.user.role }) };
   }
 
   async logout(refreshToken: string) {
-    // Best-effort: an already-expired or malformed refresh token can't
-    // meaningfully be revoked further, so don't fail the logout request over it.
+    // Best-effort: an already-expired or malformed refresh token has no
+    // session left to end, so don't fail the logout request over it.
     try {
-      const payload = this.verifyRefreshToken(refreshToken);
-      this.tokenBlacklist.revoke(payload.jti, payload.exp);
-      await this.prisma.userSession.updateMany({ where: { jti: payload.jti, revokedAt: null }, data: { revokedAt: new Date() } });
+      const { sid } = this.tokens.verifyRefresh('user', refreshToken);
+      await this.devices.end(sid);
     } catch {
       // ignore
     }
     return { success: true };
-  }
-
-  // Settings > Security > Device Management's "Devices" list -- every
-  // still-active session (never revoked), most recently used first.
-  // isCurrent is a best-effort match on THIS request's ip+userAgent, not a
-  // cryptographic session identity -- the access token that authenticated
-  // this call carries no jti (see signAccessToken()), only the refresh
-  // token does, and the frontend never sends that back except to the
-  // dedicated /refresh call. Good enough to highlight "this looks like the
-  // device you're on right now" without overclaiming precision.
-  async listSessions(userId: string, currentIp?: string, currentUserAgent?: string) {
-    const sessions = await this.prisma.userSession.findMany({
-      where: { userId, revokedAt: null },
-      orderBy: { lastUsedAt: 'desc' },
-    });
-    return sessions.map((s) => ({
-      id: s.id,
-      deviceLabel: s.deviceLabel,
-      ipAddress: s.ipAddress,
-      createdAt: s.createdAt,
-      lastUsedAt: s.lastUsedAt,
-      isCurrent: !!currentUserAgent && s.ipAddress === currentIp && s.userAgent === currentUserAgent,
-    }));
-  }
-
-  // Ends one specific session -- blocks its refresh token from minting any
-  // further access tokens (both the immediate in-memory blacklist and the
-  // persisted revokedAt refresh() itself checks). Doesn't retroactively
-  // invalidate an access token already issued to that device before this
-  // call -- same real-world limitation every short-lived-access-token
-  // system has; it simply expires within USER_JWT_ACCESS_EXPIRES_IN (15m
-  // default) on its own.
-  async revokeSession(userId: string, sessionId: string) {
-    const session = await this.prisma.userSession.findUnique({ where: { id: sessionId } });
-    if (!session || session.userId !== userId) {
-      throw new NotFoundException('Session not found');
-    }
-    await this.prisma.userSession.update({ where: { id: sessionId }, data: { revokedAt: new Date() } });
-    this.tokenBlacklist.revoke(session.jti);
-    return { success: true };
-  }
-
-  // Settings > Security's "History" list -- every login attempt (success
-  // AND failure) recorded against this account's email, most recent first.
-  // Keyed by email rather than userId because LoginAttempt already records
-  // attempts against emails that never resolve to a real user (see
-  // login()'s account_not_found case) -- there's no userId to key by for
-  // those, so this whole table has always been email-keyed, including the
-  // rows that DO belong to a real account.
-  async getLoginHistory(email: string) {
-    const attempts = await this.prisma.loginAttempt.findMany({
-      where: { email },
-      orderBy: { createdAt: 'desc' },
-      take: 50,
-    });
-    return attempts.map((a) => ({
-      id: a.id,
-      ipAddress: a.ipAddress,
-      deviceLabel: parseDeviceLabel(a.userAgent),
-      success: a.success,
-      failureReason: a.failureReason,
-      createdAt: a.createdAt,
-    }));
   }
 
   async changePassword(userId: string, dto: ChangePasswordDto) {
@@ -321,12 +152,13 @@ export class UserAuthService {
 
   // "Forgot password?" on the login page. Always resolves to the same
   // generic {success: true} regardless of whether the email matched a real,
-  // ACTIVE account -- same "don't reveal account existence" instinct as
-  // login()'s identical invalid-email/invalid-password message.
+  // ACTIVE end-user account -- same "don't reveal account existence"
+  // instinct as login()'s identical invalid-email/invalid-password message.
+  // Admin passwords are reset by a super admin, never by email link.
   async forgotPassword(email: string): Promise<{ success: true }> {
     const user = await this.prisma.user.findUnique({ where: { email } });
 
-    if (user && user.status === 'ACTIVE') {
+    if (user && user.status === 'ACTIVE' && user.role === Role.USER) {
       const rawToken = randomBytes(32).toString('hex');
       // sha256, not bcrypt -- the token already carries 256 bits of its own
       // entropy (unlike a human password), so a deterministic hash is fine
@@ -358,19 +190,18 @@ export class UserAuthService {
     return { success: true };
   }
 
-  // The link from forgotPassword()'s email. Consuming it also revokes every
-  // other still-active session for this account -- changing your password
-  // signs you out everywhere else, same principle as revokeSession() -- then
-  // logs the caller in fresh, same response shape as login()/register(), so
-  // the frontend can set cookies and redirect straight to /dashboard.
-  async resetPassword(rawToken: string, newPassword: string, ipAddress?: string, userAgent?: string) {
+  // The link from forgotPassword()'s email. Consuming it signs the account
+  // out on every device -- changing your password signs you out everywhere
+  // else -- then signs the caller in fresh, same response shape as
+  // login()/register(), so the frontend can set cookies and go straight on.
+  async resetPassword(rawToken: string, newPassword: string, client: ClientInfo) {
     const tokenHash = createHash('sha256').update(rawToken).digest('hex');
     const resetToken = await this.prisma.passwordResetToken.findUnique({ where: { tokenHash } });
     if (!resetToken || resetToken.usedAt || resetToken.expiresAt < new Date()) {
-      throw new BadRequestException('This reset link is invalid or has expired. Please request a new one.');
+      throw new BadRequestException(INVALID_RESET_LINK);
     }
 
-    const { user, sessionsToRevoke } = await this.prisma.$transaction(async (tx) => {
+    const user = await this.prisma.$transaction(async (tx) => {
       // Claim the token first, conditionally: two requests racing with the
       // same link both pass the read above, but only one can flip usedAt
       // from null -- the other gets count 0 and is refused, so a link really
@@ -381,71 +212,23 @@ export class UserAuthService {
         data: { usedAt: now },
       });
       if (count !== 1) {
-        throw new BadRequestException('This reset link is invalid or has expired. Please request a new one.');
+        throw new BadRequestException(INVALID_RESET_LINK);
       }
       // A link mailed while the account was active must not work after it has
       // been suspended or deleted -- that would both change the password and
       // log the user in, bypassing login()'s status checks. Same generic
       // message, so the link doesn't reveal the account's status.
-      const owner = await tx.user.findUnique({ where: { id: resetToken.userId }, select: { status: true } });
-      if (owner?.status !== 'ACTIVE') {
-        throw new BadRequestException('This reset link is invalid or has expired. Please request a new one.');
+      const owner = await tx.user.findUnique({ where: { id: resetToken.userId } });
+      if (owner?.status !== 'ACTIVE' || owner.role !== Role.USER) {
+        throw new BadRequestException(INVALID_RESET_LINK);
       }
-      await this.credentials.set(resetToken.userId, newPassword, tx);
-      const updatedUser = await tx.user.findUniqueOrThrow({ where: { id: resetToken.userId } });
-      const activeSessions = await tx.userSession.findMany({ where: { userId: resetToken.userId, revokedAt: null } });
-      await tx.userSession.updateMany({ where: { userId: resetToken.userId, revokedAt: null }, data: { revokedAt: new Date() } });
-      return { user: updatedUser, sessionsToRevoke: activeSessions };
+      await this.credentials.set(owner.id, newPassword, tx);
+      return owner;
     });
 
-    // Outside the transaction, same as revokeSession() -- the in-memory
-    // blacklist isn't transactional state, just a fast-path cache on top of
-    // the persisted revokedAt column above.
-    for (const session of sessionsToRevoke) {
-      this.tokenBlacklist.revoke(session.jti);
-    }
-
-    const { accessToken, refreshToken } = await this.issueTokens(user, ipAddress, userAgent);
-    const defaultBusiness = await this.prisma.business.findFirst({ where: { ownerId: user.id, isDefault: true } });
-
-    return {
-      accessToken,
-      refreshToken,
-      user: { id: user.id, name: user.name, email: user.email, preferredLanguage: user.preferredLanguage },
-      defaultBusinessId: defaultBusiness?.id ?? null,
-    };
-  }
-
-  private signAccessToken(user: User): string {
-    return this.jwtService.sign(
-      { sub: user.id },
-      {
-        secret: this.configService.get<string>('USER_JWT_SECRET'),
-        expiresIn: (this.configService.get<string>('USER_JWT_ACCESS_EXPIRES_IN') ?? '15m') as JwtSignOptions['expiresIn'],
-      },
-    );
-  }
-
-  // jti is passed in (generated by issueTokens()) rather than randomUUID()'d
-  // here, so the SAME id backs both this token's own claim and its
-  // UserSession row -- one session per issued refresh token.
-  private signRefreshToken(user: User, jti: string): string {
-    return this.jwtService.sign(
-      { sub: user.id, jti },
-      {
-        secret: this.configService.get<string>('USER_JWT_REFRESH_SECRET'),
-        expiresIn: (this.configService.get<string>('USER_JWT_REFRESH_EXPIRES_IN') ?? '7d') as JwtSignOptions['expiresIn'],
-      },
-    );
-  }
-
-  private verifyRefreshToken(token: string): RefreshTokenPayload {
-    try {
-      return this.jwtService.verify<RefreshTokenPayload>(token, {
-        secret: this.configService.get<string>('USER_JWT_REFRESH_SECRET'),
-      });
-    } catch {
-      throw new UnauthorizedException('Invalid or expired refresh token');
-    }
+    await this.devices.endAll(user.id);
+    const sessionId = await this.sessions.create(user.id, client);
+    const defaultBusinessId = await this.provisioning.ensureDefaultWorkspace(user.id);
+    return this.signedInResponse(user, sessionId, client, defaultBusinessId);
   }
 }
