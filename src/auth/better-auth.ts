@@ -50,7 +50,18 @@ export const createAuth = ({ prisma, secret, baseURL, trustedOrigins, google, da
       // The app's bcrypt pair, so existing hashes keep working (see password.ts).
       password: { hash: hashPassword, verify: ({ hash, password }) => verifyPassword(password, hash) },
     },
-    socialProviders: google ? { google } : undefined,
+    socialProviders: google
+      ? {
+          google: {
+            ...google,
+            // New accounts only when the caller asks (requestSignUp: true) --
+            // the end-user signup does; the admin panel's button never does,
+            // so a stranger's Google account can't appear through it.
+            disableImplicitSignUp: true,
+            prompt: 'select_account',
+          },
+        }
+      : undefined,
     databaseHooks: {
       session: {
         create: {
