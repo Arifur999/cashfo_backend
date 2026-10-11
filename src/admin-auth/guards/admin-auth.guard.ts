@@ -2,6 +2,7 @@ import { CanActivate, ExecutionContext, Injectable, UnauthorizedException } from
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { Request } from 'express';
+import { isAdminRole } from '../../common/roles.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
 import { RequestAdminUser } from '../interfaces/request-admin-user.interface.js';
 
@@ -36,8 +37,10 @@ export class AdminAuthGuard implements CanActivate {
       throw new UnauthorizedException('Invalid or expired access token');
     }
 
-    const admin = await this.prisma.adminUser.findUnique({ where: { id: payload.sub } });
-    if (!admin) {
+    // Admins and end users share the User table: the role check is what keeps
+    // an end-user account out of every admin route.
+    const admin = await this.prisma.user.findUnique({ where: { id: payload.sub } });
+    if (!admin || !isAdminRole(admin.role)) {
       throw new UnauthorizedException('Admin no longer exists');
     }
     if (admin.status !== 'ACTIVE') {

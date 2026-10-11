@@ -9,50 +9,21 @@ datasource db {
   provider = "postgresql"
 }
 
-// --- Admin domain only for now. End-user tables (transactions, accounts, etc.)
-// come later in the separate user-app build plan. ---
-
-model AdminUser {
-  id           String      @id @default(uuid())
-  name         String
-  email        String      @unique
-  passwordHash String
-  role         AdminRole
-  status       AdminStatus @default(ACTIVE)
-  lastLoginAt  DateTime?
-  createdBy    String? // loose reference to the AdminUser (usually SUPER_ADMIN) who created this account, if any
-  createdAt    DateTime    @default(now())
-  updatedAt    DateTime    @updatedAt
-  auditLogs    AuditLog[]
-
-  // Note: no separate @@index([email]) here -- @unique already creates a
-  // unique index covering lookups by email, so a second index would be
-  // redundant.
-}
-
-enum AdminRole {
-  SUPER_ADMIN
-  SUPPORT_ADMIN
-  FINANCE_ADMIN
-  CONTENT_ADMIN
-}
-
-enum AdminStatus {
-  ACTIVE
-  SUSPENDED
-}
+// --- Admin domain. Admin accounts are User rows with an admin Role (see the
+// User model and src/common/roles.ts); there is no separate admin table. ---
 
 model AuditLog {
-  id          String    @id @default(uuid())
+  id          String   @id @default(uuid())
+  // The admin who acted -- a User whose role is one of the admin roles.
   adminUserId String
-  adminUser   AdminUser @relation(fields: [adminUserId], references: [id])
+  adminUser   User     @relation(fields: [adminUserId], references: [id])
   action      String // e.g. "ADMIN_LOGIN", "USER_SUSPENDED", "PLAN_UPDATED"
   entityType  String // e.g. "AdminUser", "PlatformUser", "SubscriptionPlan"
   entityId    String?
   oldValue    Json?
   newValue    Json?
   ipAddress   String?
-  createdAt   DateTime  @default(now())
+  createdAt   DateTime @default(now())
 
   @@index([adminUserId, createdAt])
   @@index([entityType, entityId])
@@ -717,9 +688,11 @@ model User {
   referralsMade       Referral[]           @relation("Referrer")
   referredAs          Referral?            @relation("Referred")
   passwordResetTokens PasswordResetToken[]
+  // Admin actions this account performed (admin roles only).
+  auditLogs           AuditLog[]
 
   // No separate @@index([email]) -- @unique above already creates a unique
-  // index covering lookups by email (same reasoning as AdminUser/PlatformUser).
+  // index covering lookups by email (same reasoning as PlatformUser).
   @@index([role])
 }
 

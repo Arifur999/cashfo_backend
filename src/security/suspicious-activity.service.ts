@@ -1,5 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma, SuspiciousActivityType } from '@prisma/client';
+import { ADMIN_USER_WHERE } from '../common/roles.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { ListFlagsQueryDto } from './dto/list-flags-query.dto.js';
 import { UpdateFlagDto } from './dto/update-flag.dto.js';
@@ -23,7 +24,7 @@ export class SuspiciousActivityService {
     });
 
     const adminIds = [...new Set([...flags.map((f) => f.relatedAdminId), ...flags.map((f) => f.reviewedBy)].filter((id): id is string => Boolean(id)))];
-    const admins = await this.prisma.adminUser.findMany({ where: { id: { in: adminIds } }, select: { id: true, name: true } });
+    const admins = await this.prisma.user.findMany({ where: { id: { in: adminIds }, ...ADMIN_USER_WHERE }, select: { id: true, name: true } });
     const adminById = new Map(admins.map((a) => [a.id, a]));
 
     return flags.map((flag) => ({

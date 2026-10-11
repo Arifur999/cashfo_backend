@@ -1,6 +1,6 @@
 import 'dotenv/config';
 import { PrismaPg } from '@prisma/adapter-pg';
-import { AdminRole, BillingCycle, CategoryDirection, DiscountType, LegalDocType, PrismaClient, WorkspaceType } from '@prisma/client';
+import { BillingCycle, CategoryDirection, DiscountType, LegalDocType, PrismaClient, Role, WorkspaceType } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 
 const prisma = new PrismaClient({ adapter: new PrismaPg({ connectionString: process.env.DATABASE_URL }) });
@@ -9,14 +9,14 @@ async function seedAdmins() {
   const superAdminEmail = 'admin@example.com';
   const superAdminPasswordHash = await bcrypt.hash('ChangeMe123!', 10);
 
-  const superAdmin = await prisma.adminUser.upsert({
+  const superAdmin = await prisma.user.upsert({
     where: { email: superAdminEmail },
     update: {},
     create: {
       name: 'Super Admin',
       email: superAdminEmail,
       passwordHash: superAdminPasswordHash,
-      role: AdminRole.SUPER_ADMIN,
+      role: Role.SUPER_ADMIN,
     },
   });
 
@@ -26,14 +26,14 @@ async function seedAdmins() {
   const supportAdminEmail = 'support@example.com';
   const supportAdminPasswordHash = await bcrypt.hash('ChangeMe123!', 10);
 
-  const supportAdmin = await prisma.adminUser.upsert({
+  const supportAdmin = await prisma.user.upsert({
     where: { email: supportAdminEmail },
     update: {},
     create: {
       name: 'Support Admin',
       email: supportAdminEmail,
       passwordHash: supportAdminPasswordHash,
-      role: AdminRole.SUPPORT_ADMIN,
+      role: Role.SUPPORT_ADMIN,
     },
   });
 
@@ -42,14 +42,14 @@ async function seedAdmins() {
   const contentAdminEmail = 'content@example.com';
   const contentAdminPasswordHash = await bcrypt.hash('ChangeMe123!', 10);
 
-  await prisma.adminUser.upsert({
+  await prisma.user.upsert({
     where: { email: contentAdminEmail },
     update: {},
     create: {
       name: 'Content Admin',
       email: contentAdminEmail,
       passwordHash: contentAdminPasswordHash,
-      role: AdminRole.CONTENT_ADMIN,
+      role: Role.CONTENT_ADMIN,
     },
   });
 
@@ -66,15 +66,15 @@ async function seedAdmins() {
 // (Prompt 4's revenue-visibility check had no way to be tested end-to-end),
 // plus more accounts for exercising the Admin Accounts management UI.
 async function seedSubAdmins(superAdminId: string) {
-  const accounts: { name: string; email: string; role: AdminRole }[] = [
-    { name: 'Support Admin 2', email: 'support-admin@example.com', role: AdminRole.SUPPORT_ADMIN },
-    { name: 'Finance Admin', email: 'finance-admin@example.com', role: AdminRole.FINANCE_ADMIN },
-    { name: 'Content Admin 2', email: 'content-admin@example.com', role: AdminRole.CONTENT_ADMIN },
+  const accounts: { name: string; email: string; role: Role }[] = [
+    { name: 'Support Admin 2', email: 'support-admin@example.com', role: Role.SUPPORT_ADMIN },
+    { name: 'Finance Admin', email: 'finance-admin@example.com', role: Role.FINANCE_ADMIN },
+    { name: 'Content Admin 2', email: 'content-admin@example.com', role: Role.CONTENT_ADMIN },
   ];
 
   for (const account of accounts) {
     const passwordHash = await bcrypt.hash('ChangeMe123!', 10);
-    await prisma.adminUser.upsert({
+    await prisma.user.upsert({
       where: { email: account.email },
       update: {},
       create: { ...account, passwordHash, createdBy: superAdminId },

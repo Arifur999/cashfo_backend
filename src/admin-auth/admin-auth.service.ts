@@ -1,9 +1,10 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService, type JwtSignOptions } from '@nestjs/jwt';
-import { AdminUser } from '@prisma/client';
+import { User } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { randomUUID } from 'crypto';
+import { isAdminRole } from '../common/roles.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { LoginDto } from './dto/login.dto.js';
 import { TokenBlacklistService } from './token-blacklist.service.js';
@@ -24,9 +25,11 @@ export class AdminAuthService {
   ) {}
 
   async login(dto: LoginDto, ipAddress?: string, userAgent?: string) {
-    const admin = await this.prisma.adminUser.findUnique({ where: { email: dto.email } });
+    const admin = await this.prisma.user.findUnique({ where: { email: dto.email } });
 
-    if (!admin) {
+    // An end-user account is "no such admin" here -- same generic answer, so
+    // the admin login can't be used to probe which emails have app accounts.
+    if (!admin || !isAdminRole(admin.role)) {
       await this.recordLoginAttempt(dto.email, ipAddress, userAgent, false, 'account_not_found');
       throw new UnauthorizedException('Invalid email or password');
     }
@@ -45,7 +48,7 @@ export class AdminAuthService {
     const refreshToken = this.signRefreshToken(admin);
 
     await this.prisma.$transaction([
-      this.prisma.adminUser.update({ where: { id: admin.id }, data: { lastLoginAt: new Date() } }),
+      this.prisma.user.update({ where: { id: admin.id }, data: { lastLoginAt: new Date() } }),
       this.prisma.auditLog.create({
         data: {
           adminUserId: admin.id,
@@ -80,8 +83,8 @@ export class AdminAuthService {
       throw new UnauthorizedException('Refresh token has been revoked');
     }
 
-    const admin = await this.prisma.adminUser.findUnique({ where: { id: payload.sub } });
-    if (!admin || admin.status !== 'ACTIVE') {
+    const admin = await this.prisma.user.findUnique({ where: { id: payload.sub } });
+    if (!admin || !isAdminRole(admin.role) || admin.status !== 'ACTIVE') {
       throw new UnauthorizedException('Admin no longer active');
     }
 
@@ -101,14 +104,14 @@ export class AdminAuthService {
   }
 
   async me(adminId: string) {
-    const admin = await this.prisma.adminUser.findUnique({ where: { id: adminId } });
-    if (!admin) {
+    const admin = await this.prisma.user.findUnique({ where: { id: adminId } });
+    if (!admin || !isAdminRole(admin.role)) {
       throw new UnauthorizedException('Admin no longer exists');
     }
     return { id: admin.id, name: admin.name, email: admin.email, role: admin.role };
   }
 
-  private signAccessToken(admin: AdminUser): string {
+  private signAccessToken(admin: User): string {
     return this.jwtService.sign(
       { sub: admin.id, role: admin.role },
       {
@@ -122,7 +125,7 @@ export class AdminAuthService {
     );
   }
 
-  private signRefreshToken(admin: AdminUser): string {
+  private signRefreshToken(admin: User): string {
     return this.jwtService.sign(
       { sub: admin.id, jti: randomUUID() },
       {

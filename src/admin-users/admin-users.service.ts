@@ -1,6 +1,7 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import * as bcrypt from 'bcrypt';
 import { randomBytes } from 'crypto';
+import { ADMIN_USER_WHERE } from '../common/roles.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { CreateAdminDto } from './dto/create-admin.dto.js';
 import { UpdateAdminDto } from './dto/update-admin.dto.js';
@@ -13,30 +14,32 @@ export class AdminUsersService {
   // (Prompt 6 tickets) -- open to any authenticated admin, unlike list()
   // below which is SUPER_ADMIN only per Prompt 8's admin-management scope.
   listAssignable() {
-    return this.prisma.adminUser.findMany({
-      where: { status: 'ACTIVE' },
+    return this.prisma.user.findMany({
+      where: { ...ADMIN_USER_WHERE, status: 'ACTIVE' },
       select: { id: true, name: true, role: true },
       orderBy: { name: 'asc' },
     });
   }
 
   list() {
-    return this.prisma.adminUser.findMany({
+    return this.prisma.user.findMany({
+      where: ADMIN_USER_WHERE,
       select: { id: true, name: true, email: true, role: true, status: true, lastLoginAt: true, createdAt: true },
       orderBy: { createdAt: 'asc' },
     });
   }
 
   async create(dto: CreateAdminDto, creatorId: string, ipAddress?: string) {
-    const existing = await this.prisma.adminUser.findUnique({ where: { email: dto.email } });
+    // Any account, not just admins: end users share the table and its unique email.
+    const existing = await this.prisma.user.findUnique({ where: { email: dto.email } });
     if (existing) {
-      throw new ConflictException('An admin with this email already exists');
+      throw new ConflictException('An account with this email already exists');
     }
 
     const temporaryPassword = dto.temporaryPassword ?? this.generateTempPassword();
     const passwordHash = await bcrypt.hash(temporaryPassword, 10);
 
-    const admin = await this.prisma.adminUser.create({
+    const admin = await this.prisma.user.create({
       data: { name: dto.name, email: dto.email, role: dto.role, passwordHash, createdBy: creatorId },
     });
 
@@ -65,7 +68,7 @@ export class AdminUsersService {
       throw new BadRequestException('You cannot change your own role.');
     }
 
-    const result = await this.prisma.adminUser.update({
+    const result = await this.prisma.user.update({
       where: { id },
       data: {
         ...(dto.name !== undefined && { name: dto.name }),
@@ -94,7 +97,7 @@ export class AdminUsersService {
     }
     const admin = await this.requireAdmin(id);
 
-    const result = await this.prisma.adminUser.update({ where: { id }, data: { status: 'SUSPENDED' } });
+    const result = await this.prisma.user.update({ where: { id }, data: { status: 'SUSPENDED' } });
 
     await this.prisma.auditLog.create({
       data: {
@@ -117,7 +120,7 @@ export class AdminUsersService {
     const temporaryPassword = this.generateTempPassword();
     const passwordHash = await bcrypt.hash(temporaryPassword, 10);
 
-    await this.prisma.adminUser.update({ where: { id }, data: { passwordHash } });
+    await this.prisma.user.update({ where: { id }, data: { passwordHash } });
 
     await this.prisma.auditLog.create({
       data: {
@@ -134,7 +137,7 @@ export class AdminUsersService {
   }
 
   private async requireAdmin(id: string) {
-    const admin = await this.prisma.adminUser.findUnique({ where: { id } });
+    const admin = await this.prisma.user.findUnique({ where: { id, ...ADMIN_USER_WHERE } });
     if (!admin) {
       throw new NotFoundException('Admin not found');
     }
