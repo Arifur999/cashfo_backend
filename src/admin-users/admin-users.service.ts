@@ -7,6 +7,10 @@ import { PrismaService } from '../prisma/prisma.service.js';
 import { CreateAdminDto } from './dto/create-admin.dto.js';
 import { UpdateAdminDto } from './dto/update-admin.dto.js';
 
+// What the admin panel sees of an admin account. Admins are User rows, so a
+// bare row would also carry end-user columns (vault hash, referral code...).
+const ADMIN_ACCOUNT_SELECT = { id: true, name: true, email: true, role: true, status: true, lastLoginAt: true, createdAt: true } as const;
+
 @Injectable()
 export class AdminUsersService {
   constructor(
@@ -29,7 +33,7 @@ export class AdminUsersService {
   list() {
     return this.prisma.user.findMany({
       where: ADMIN_USER_WHERE,
-      select: { id: true, name: true, email: true, role: true, status: true, lastLoginAt: true, createdAt: true },
+      select: ADMIN_ACCOUNT_SELECT,
       orderBy: { createdAt: 'asc' },
     });
   }
@@ -82,6 +86,7 @@ export class AdminUsersService {
         ...(dto.name !== undefined && { name: dto.name }),
         ...(dto.role !== undefined && { role: dto.role }),
       },
+      select: ADMIN_ACCOUNT_SELECT,
     });
 
     await this.prisma.auditLog.create({
@@ -105,7 +110,7 @@ export class AdminUsersService {
     }
     const admin = await this.requireAdmin(id);
 
-    const result = await this.prisma.user.update({ where: { id }, data: { status: 'SUSPENDED' } });
+    const result = await this.prisma.user.update({ where: { id }, data: { status: 'SUSPENDED' }, select: ADMIN_ACCOUNT_SELECT });
 
     await this.prisma.auditLog.create({
       data: {
