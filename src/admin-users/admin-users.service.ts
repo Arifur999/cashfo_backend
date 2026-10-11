@@ -1,6 +1,6 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { randomBytes } from 'crypto';
-import { hashPassword } from '../auth/password.js';
+import { CredentialsService } from '../auth/credentials.service.js';
 import { ADMIN_USER_WHERE } from '../common/roles.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { CreateAdminDto } from './dto/create-admin.dto.js';
@@ -8,7 +8,10 @@ import { UpdateAdminDto } from './dto/update-admin.dto.js';
 
 @Injectable()
 export class AdminUsersService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly credentials: CredentialsService,
+  ) {}
 
   // Minimal read used to populate "assign to admin" / filter dropdowns
   // (Prompt 6 tickets) -- open to any authenticated admin, unlike list()
@@ -37,10 +40,13 @@ export class AdminUsersService {
     }
 
     const temporaryPassword = dto.temporaryPassword ?? this.generateTempPassword();
-    const passwordHash = await hashPassword(temporaryPassword);
 
-    const admin = await this.prisma.user.create({
-      data: { name: dto.name, email: dto.email, role: dto.role, passwordHash, createdBy: creatorId },
+    const admin = await this.prisma.$transaction(async (tx) => {
+      const created = await tx.user.create({
+        data: { name: dto.name, email: dto.email, role: dto.role, createdBy: creatorId },
+      });
+      await this.credentials.set(created.id, temporaryPassword, tx);
+      return created;
     });
 
     await this.prisma.auditLog.create({
@@ -118,9 +124,7 @@ export class AdminUsersService {
     await this.requireAdmin(id);
 
     const temporaryPassword = this.generateTempPassword();
-    const passwordHash = await hashPassword(temporaryPassword);
-
-    await this.prisma.user.update({ where: { id }, data: { passwordHash } });
+    await this.credentials.set(id, temporaryPassword);
 
     await this.prisma.auditLog.create({
       data: {

@@ -3,7 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { JwtService, type JwtSignOptions } from '@nestjs/jwt';
 import { User } from '@prisma/client';
 import { randomUUID } from 'crypto';
-import { verifyPassword } from '../auth/password.js';
+import { CredentialsService } from '../auth/credentials.service.js';
 import { isAdminRole } from '../common/roles.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { LoginDto } from './dto/login.dto.js';
@@ -22,6 +22,7 @@ export class AdminAuthService {
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
     private readonly tokenBlacklist: TokenBlacklistService,
+    private readonly credentials: CredentialsService,
   ) {}
 
   async login(dto: LoginDto, ipAddress?: string, userAgent?: string) {
@@ -38,7 +39,7 @@ export class AdminAuthService {
       throw new UnauthorizedException('This account has been suspended');
     }
 
-    const passwordMatches = await verifyPassword(dto.password, admin.passwordHash);
+    const passwordMatches = await this.credentials.verify(admin.id, dto.password);
     if (!passwordMatches) {
       await this.recordLoginAttempt(dto.email, ipAddress, userAgent, false, 'invalid_password');
       throw new UnauthorizedException('Invalid email or password');

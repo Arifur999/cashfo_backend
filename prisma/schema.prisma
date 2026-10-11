@@ -642,7 +642,8 @@ model User {
   // statically from /uploads/avatars. Null shows the initials-circle
   // fallback in the UI instead.
   avatarUrl           String?
-  passwordHash        String
+  // No password column: the hash lives on this user's "credential"
+  // AuthAccount row, where better-auth reads it (src/auth/credential-account.ts).
   // Shareable short code for this user's own referral link ("Referral
   // Program" menu) -- nullable because pre-existing users only get one
   // lazily backfilled the first time they open that page (see
@@ -652,7 +653,7 @@ model User {
   // field is looked up.
   referralCode        String?              @unique
   // Settings > Password Manager's own unlock secret -- deliberately separate
-  // from passwordHash above (a leaked account password must not also unlock
+  // from the account password (a leaked account password must not also unlock
   // the vault). Null until the user completes first-time vault setup (see
   // PasswordVaultService.setVaultPassword()); the vault menu shows a "Set up"
   // prompt instead of an unlock form until then.

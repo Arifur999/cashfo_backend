@@ -1,61 +1,45 @@
 import 'dotenv/config';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { BillingCycle, CategoryDirection, DiscountType, LegalDocType, PrismaClient, Role, WorkspaceType } from '@prisma/client';
+import { credentialAccountData, credentialAccountKey } from '../src/auth/credential-account.js';
 import { hashPassword } from '../src/auth/password.js';
 
 const prisma = new PrismaClient({ adapter: new PrismaPg({ connectionString: process.env.DATABASE_URL }) });
 
-async function seedAdmins() {
-  const superAdminEmail = 'admin@example.com';
-  const superAdminPasswordHash = await hashPassword('ChangeMe123!');
+// Every seeded login shares this known password -- see the warnings below.
+const SEED_PASSWORD = 'ChangeMe123!';
 
-  const superAdmin = await prisma.user.upsert({
-    where: { email: superAdminEmail },
+type SeedAccount = { name: string; email: string; role?: Role; createdBy?: string; preferredLanguage?: 'EN' | 'BN' };
+
+// One seeded login: the User row plus its better-auth credential account.
+// Accounts that already exist are left exactly as they are.
+async function upsertSeedAccount(account: SeedAccount, passwordHash: string) {
+  const user = await prisma.user.upsert({ where: { email: account.email }, update: {}, create: account });
+  await prisma.authAccount.upsert({
+    where: credentialAccountKey(user.id),
     update: {},
-    create: {
-      name: 'Super Admin',
-      email: superAdminEmail,
-      passwordHash: superAdminPasswordHash,
-      role: Role.SUPER_ADMIN,
-    },
+    create: credentialAccountData(user.id, passwordHash),
   });
+  return user;
+}
+
+async function seedAdmins() {
+  const passwordHash = await hashPassword(SEED_PASSWORD);
+
+  const superAdmin = await upsertSeedAccount({ name: 'Super Admin', email: 'admin@example.com', role: Role.SUPER_ADMIN }, passwordHash);
 
   // A second seeded account so the "Impersonate is SUPER_ADMIN only" behavior
   // (Prompt 2 completion criteria) can be verified without manually editing
   // the database.
-  const supportAdminEmail = 'support@example.com';
-  const supportAdminPasswordHash = await hashPassword('ChangeMe123!');
-
-  const supportAdmin = await prisma.user.upsert({
-    where: { email: supportAdminEmail },
-    update: {},
-    create: {
-      name: 'Support Admin',
-      email: supportAdminEmail,
-      passwordHash: supportAdminPasswordHash,
-      role: Role.SUPPORT_ADMIN,
-    },
-  });
+  const supportAdmin = await upsertSeedAccount({ name: 'Support Admin', email: 'support@example.com', role: Role.SUPPORT_ADMIN }, passwordHash);
 
   // For Prompt 5's "CONTENT_ADMIN can edit, SUPPORT_ADMIN cannot" completion
   // criterion -- seeded rather than requiring a manual temporary account.
-  const contentAdminEmail = 'content@example.com';
-  const contentAdminPasswordHash = await hashPassword('ChangeMe123!');
-
-  await prisma.user.upsert({
-    where: { email: contentAdminEmail },
-    update: {},
-    create: {
-      name: 'Content Admin',
-      email: contentAdminEmail,
-      passwordHash: contentAdminPasswordHash,
-      role: Role.CONTENT_ADMIN,
-    },
-  });
+  await upsertSeedAccount({ name: 'Content Admin', email: 'content@example.com', role: Role.CONTENT_ADMIN }, passwordHash);
 
   console.warn(
     '\n⚠️  Seeded admin accounts (admin@/support@/content@/support-admin@/finance-admin@/content-admin@example.com, ' +
-      'password ChangeMe123!) share a known password -- rotate or delete every one of these before real production use.\n',
+      `password ${SEED_PASSWORD}) share a known password -- rotate or delete every one of these before real production use.\n`,
   );
 
   return { superAdminId: superAdmin.id, supportAdminId: supportAdmin.id };
@@ -66,19 +50,15 @@ async function seedAdmins() {
 // (Prompt 4's revenue-visibility check had no way to be tested end-to-end),
 // plus more accounts for exercising the Admin Accounts management UI.
 async function seedSubAdmins(superAdminId: string) {
-  const accounts: { name: string; email: string; role: Role }[] = [
+  const accounts: SeedAccount[] = [
     { name: 'Support Admin 2', email: 'support-admin@example.com', role: Role.SUPPORT_ADMIN },
     { name: 'Finance Admin', email: 'finance-admin@example.com', role: Role.FINANCE_ADMIN },
     { name: 'Content Admin 2', email: 'content-admin@example.com', role: Role.CONTENT_ADMIN },
   ];
 
+  const passwordHash = await hashPassword(SEED_PASSWORD);
   for (const account of accounts) {
-    const passwordHash = await hashPassword('ChangeMe123!');
-    await prisma.user.upsert({
-      where: { email: account.email },
-      update: {},
-      create: { ...account, passwordHash, createdBy: superAdminId },
-    });
+    await upsertSeedAccount({ ...account, createdBy: superAdminId }, passwordHash);
   }
 }
 
@@ -488,7 +468,7 @@ async function seedAccountsForBusiness(businessId: string, workspaceType: Worksp
 async function seedEndUserAppAccounts(plans: { id: string; slug: string }[]) {
   const freePlan = plans.find((p) => p.slug === 'free');
   const proPlan = plans.find((p) => p.slug === 'monthly-pro');
-  const passwordHash = await hashPassword('ChangeMe123!');
+  const passwordHash = await hashPassword(SEED_PASSWORD);
 
   const testUsers: { name: string; email: string; preferredLanguage: 'EN' | 'BN'; secondBusiness?: boolean }[] = [
     { name: 'Rafiqul Islam', email: 'rafiqul.islam@example.com', preferredLanguage: 'EN' },
@@ -500,16 +480,10 @@ async function seedEndUserAppAccounts(plans: { id: string; slug: string }[]) {
   ];
 
   for (const testUser of testUsers) {
-    const user = await prisma.user.upsert({
-      where: { email: testUser.email },
-      update: {},
-      create: {
-        name: testUser.name,
-        email: testUser.email,
-        passwordHash,
-        preferredLanguage: testUser.preferredLanguage,
-      },
-    });
+    const user = await upsertSeedAccount(
+      { name: testUser.name, email: testUser.email, preferredLanguage: testUser.preferredLanguage },
+      passwordHash,
+    );
 
     let defaultBusiness = await prisma.business.findFirst({ where: { ownerId: user.id, isDefault: true } });
     if (!defaultBusiness) {
@@ -554,7 +528,7 @@ async function seedEndUserAppAccounts(plans: { id: string; slug: string }[]) {
     }
   }
 
-  console.warn('\n⚠️  4 end-user test accounts created (password ChangeMe123! for all) -- rafiqul.islam@, nusrat.jahan@, tanvir.ahmed@, shirin.akter@example.com.\n');
+  console.warn(`\n⚠️  4 end-user test accounts created (password ${SEED_PASSWORD} for all) -- rafiqul.islam@, nusrat.jahan@, tanvir.ahmed@, shirin.akter@example.com.\n`);
 }
 
 async function main() {

@@ -3,7 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { JwtService, type JwtSignOptions } from '@nestjs/jwt';
 import { User, WorkspaceType } from '@prisma/client';
 import { createHash, randomBytes, randomUUID } from 'crypto';
-import { hashPassword, verifyPassword } from '../auth/password.js';
+import { CredentialsService } from '../auth/credentials.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { AccountsService } from '../accounts/accounts.service.js';
 import { MailService } from '../mail/mail.service.js';
@@ -36,6 +36,7 @@ export class UserAuthService {
     private readonly accountsService: AccountsService,
     private readonly settingsService: SettingsService,
     private readonly mailService: MailService,
+    private readonly credentials: CredentialsService,
   ) {}
 
   async register(dto: RegisterDto, ipAddress?: string, userAgent?: string) {
@@ -44,7 +45,6 @@ export class UserAuthService {
       throw new ConflictException('An account with this email already exists');
     }
 
-    const passwordHash = await hashPassword(dto.password);
     const freePlan = await this.prisma.subscriptionPlan.findUnique({ where: { slug: 'free' } });
     // Read once, outside the transaction below -- SettingsService.get()
     // uses the plain (non-transactional) PrismaService client, and calling
@@ -62,13 +62,13 @@ export class UserAuthService {
           name: dto.name,
           email: dto.email,
           phone: dto.phone,
-          passwordHash,
           preferredLanguage: dto.preferredLanguage,
           // emailVerifiedAt stays null -- a real verification-email flow
           // (token + verify endpoint + frontend page) is still a separate
           // future feature; MailService now exists for it when that's built.
         },
       });
+      await this.credentials.set(createdUser.id, dto.password, tx);
 
       // Generate this user's own shareable referral code (same short-code
       // algorithm ReferralsService.generateUniqueReferralCode() uses for
@@ -152,7 +152,7 @@ export class UserAuthService {
       throw new ForbiddenException('Your account has been suspended. Contact support for assistance.');
     }
 
-    const passwordMatches = await verifyPassword(dto.password, user.passwordHash);
+    const passwordMatches = await this.credentials.verify(user.id, dto.password);
     if (!passwordMatches) {
       await this.recordLoginAttempt(dto.email, ipAddress, userAgent, false, 'invalid_password');
       throw new UnauthorizedException('Invalid email or password');
@@ -380,13 +380,12 @@ export class UserAuthService {
       throw new UnauthorizedException('Account no longer exists');
     }
 
-    const currentMatches = await verifyPassword(dto.currentPassword, user.passwordHash);
+    const currentMatches = await this.credentials.verify(userId, dto.currentPassword);
     if (!currentMatches) {
       throw new BadRequestException('Current password is incorrect');
     }
 
-    const newPasswordHash = await hashPassword(dto.newPassword);
-    await this.prisma.user.update({ where: { id: userId }, data: { passwordHash: newPasswordHash } });
+    await this.credentials.set(userId, dto.newPassword);
     return { success: true };
   }
 
@@ -441,7 +440,6 @@ export class UserAuthService {
       throw new BadRequestException('This reset link is invalid or has expired. Please request a new one.');
     }
 
-    const newPasswordHash = await hashPassword(newPassword);
     const { user, sessionsToRevoke } = await this.prisma.$transaction(async (tx) => {
       // Claim the token first, conditionally: two requests racing with the
       // same link both pass the read above, but only one can flip usedAt
@@ -463,7 +461,8 @@ export class UserAuthService {
       if (owner?.status !== 'ACTIVE') {
         throw new BadRequestException('This reset link is invalid or has expired. Please request a new one.');
       }
-      const updatedUser = await tx.user.update({ where: { id: resetToken.userId }, data: { passwordHash: newPasswordHash } });
+      await this.credentials.set(resetToken.userId, newPassword, tx);
+      const updatedUser = await tx.user.findUniqueOrThrow({ where: { id: resetToken.userId } });
       const activeSessions = await tx.userSession.findMany({ where: { userId: resetToken.userId, revokedAt: null } });
       await tx.userSession.updateMany({ where: { userId: resetToken.userId, revokedAt: null }, data: { revokedAt: new Date() } });
       return { user: updatedUser, sessionsToRevoke: activeSessions };
