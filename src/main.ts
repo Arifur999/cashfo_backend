@@ -1,12 +1,18 @@
 import { join } from 'node:path';
 import { ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
+import type { NestExpressApplication } from '@nestjs/platform-express';
 import cookieParser from 'cookie-parser';
 import express from 'express';
 import { AppModule } from './app.module.js';
+import { parseTrustProxy } from './common/trust-proxy.js';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create<NestExpressApplication>(AppModule);
+
+  // Must be set before anything reads req.ip -- the login throttle, Login
+  // Monitoring and the audit log all key on it. See common/trust-proxy.ts.
+  app.set('trust proxy', parseTrustProxy(process.env.TRUST_PROXY));
 
   app.use(cookieParser());
   // Uploaded contact photos (see contacts/contact-photo-upload.ts) -- local
