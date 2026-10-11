@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma, UserStatus } from '@prisma/client';
 import { AccountsService } from '../accounts/accounts.service.js';
+import { AuthSessionsService } from '../auth/auth-sessions.service.js';
 import { END_USER_WHERE } from '../common/roles.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { ChangeOwnerPlanDto } from './dto/change-owner-plan.dto.js';
@@ -18,6 +19,7 @@ export class AdminOwnersService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly accountsService: AccountsService,
+    private readonly sessions: AuthSessionsService,
   ) {}
 
   async list(query: ListOwnersQueryDto) {
@@ -152,6 +154,8 @@ export class AdminOwnersService {
       });
       return updated;
     });
+    // Signed out on every device at once, not just refused on the next request.
+    await this.sessions.revokeAllForUser(userId);
     return { id, status };
   }
 

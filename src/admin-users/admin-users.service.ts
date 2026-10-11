@@ -1,5 +1,6 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { randomBytes } from 'crypto';
+import { AuthSessionsService } from '../auth/auth-sessions.service.js';
 import { CredentialsService } from '../auth/credentials.service.js';
 import { ADMIN_USER_WHERE } from '../common/roles.js';
 import { PrismaService } from '../prisma/prisma.service.js';
@@ -11,6 +12,7 @@ export class AdminUsersService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly credentials: CredentialsService,
+    private readonly sessions: AuthSessionsService,
   ) {}
 
   // Minimal read used to populate "assign to admin" / filter dropdowns
@@ -117,6 +119,8 @@ export class AdminUsersService {
       },
     });
 
+    // Signed out everywhere at once, not just refused on the next request.
+    await this.sessions.revokeAllForUser(id);
     return result;
   }
 
@@ -125,6 +129,8 @@ export class AdminUsersService {
 
     const temporaryPassword = this.generateTempPassword();
     await this.credentials.set(id, temporaryPassword);
+    // Whoever was signed in with the old password is signed out.
+    await this.sessions.revokeAllForUser(id);
 
     await this.prisma.auditLog.create({
       data: {
