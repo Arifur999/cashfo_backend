@@ -2,8 +2,8 @@ import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService, type JwtSignOptions } from '@nestjs/jwt';
 import { User } from '@prisma/client';
-import * as bcrypt from 'bcrypt';
 import { randomUUID } from 'crypto';
+import { verifyPassword } from '../auth/password.js';
 import { isAdminRole } from '../common/roles.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { LoginDto } from './dto/login.dto.js';
@@ -38,7 +38,7 @@ export class AdminAuthService {
       throw new UnauthorizedException('This account has been suspended');
     }
 
-    const passwordMatches = await bcrypt.compare(dto.password, admin.passwordHash);
+    const passwordMatches = await verifyPassword(dto.password, admin.passwordHash);
     if (!passwordMatches) {
       await this.recordLoginAttempt(dto.email, ipAddress, userAgent, false, 'invalid_password');
       throw new UnauthorizedException('Invalid email or password');

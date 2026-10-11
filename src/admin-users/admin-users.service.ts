@@ -1,6 +1,6 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
-import * as bcrypt from 'bcrypt';
 import { randomBytes } from 'crypto';
+import { hashPassword } from '../auth/password.js';
 import { ADMIN_USER_WHERE } from '../common/roles.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { CreateAdminDto } from './dto/create-admin.dto.js';
@@ -37,7 +37,7 @@ export class AdminUsersService {
     }
 
     const temporaryPassword = dto.temporaryPassword ?? this.generateTempPassword();
-    const passwordHash = await bcrypt.hash(temporaryPassword, 10);
+    const passwordHash = await hashPassword(temporaryPassword);
 
     const admin = await this.prisma.user.create({
       data: { name: dto.name, email: dto.email, role: dto.role, passwordHash, createdBy: creatorId },
@@ -118,7 +118,7 @@ export class AdminUsersService {
     await this.requireAdmin(id);
 
     const temporaryPassword = this.generateTempPassword();
-    const passwordHash = await bcrypt.hash(temporaryPassword, 10);
+    const passwordHash = await hashPassword(temporaryPassword);
 
     await this.prisma.user.update({ where: { id }, data: { passwordHash } });
 

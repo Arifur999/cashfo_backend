@@ -1,13 +1,13 @@
 import 'dotenv/config';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { BillingCycle, CategoryDirection, DiscountType, LegalDocType, PrismaClient, Role, WorkspaceType } from '@prisma/client';
-import * as bcrypt from 'bcrypt';
+import { hashPassword } from '../src/auth/password.js';
 
 const prisma = new PrismaClient({ adapter: new PrismaPg({ connectionString: process.env.DATABASE_URL }) });
 
 async function seedAdmins() {
   const superAdminEmail = 'admin@example.com';
-  const superAdminPasswordHash = await bcrypt.hash('ChangeMe123!', 10);
+  const superAdminPasswordHash = await hashPassword('ChangeMe123!');
 
   const superAdmin = await prisma.user.upsert({
     where: { email: superAdminEmail },
@@ -24,7 +24,7 @@ async function seedAdmins() {
   // (Prompt 2 completion criteria) can be verified without manually editing
   // the database.
   const supportAdminEmail = 'support@example.com';
-  const supportAdminPasswordHash = await bcrypt.hash('ChangeMe123!', 10);
+  const supportAdminPasswordHash = await hashPassword('ChangeMe123!');
 
   const supportAdmin = await prisma.user.upsert({
     where: { email: supportAdminEmail },
@@ -40,7 +40,7 @@ async function seedAdmins() {
   // For Prompt 5's "CONTENT_ADMIN can edit, SUPPORT_ADMIN cannot" completion
   // criterion -- seeded rather than requiring a manual temporary account.
   const contentAdminEmail = 'content@example.com';
-  const contentAdminPasswordHash = await bcrypt.hash('ChangeMe123!', 10);
+  const contentAdminPasswordHash = await hashPassword('ChangeMe123!');
 
   await prisma.user.upsert({
     where: { email: contentAdminEmail },
@@ -73,7 +73,7 @@ async function seedSubAdmins(superAdminId: string) {
   ];
 
   for (const account of accounts) {
-    const passwordHash = await bcrypt.hash('ChangeMe123!', 10);
+    const passwordHash = await hashPassword('ChangeMe123!');
     await prisma.user.upsert({
       where: { email: account.email },
       update: {},
@@ -488,7 +488,7 @@ async function seedAccountsForBusiness(businessId: string, workspaceType: Worksp
 async function seedEndUserAppAccounts(plans: { id: string; slug: string }[]) {
   const freePlan = plans.find((p) => p.slug === 'free');
   const proPlan = plans.find((p) => p.slug === 'monthly-pro');
-  const passwordHash = await bcrypt.hash('ChangeMe123!', 10);
+  const passwordHash = await hashPassword('ChangeMe123!');
 
   const testUsers: { name: string; email: string; preferredLanguage: 'EN' | 'BN'; secondBusiness?: boolean }[] = [
     { name: 'Rafiqul Islam', email: 'rafiqul.islam@example.com', preferredLanguage: 'EN' },

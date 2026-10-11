@@ -2,8 +2,8 @@ import { BadRequestException, ConflictException, ForbiddenException, Injectable,
 import { ConfigService } from '@nestjs/config';
 import { JwtService, type JwtSignOptions } from '@nestjs/jwt';
 import { User, WorkspaceType } from '@prisma/client';
-import * as bcrypt from 'bcrypt';
 import { createHash, randomBytes, randomUUID } from 'crypto';
+import { hashPassword, verifyPassword } from '../auth/password.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { AccountsService } from '../accounts/accounts.service.js';
 import { MailService } from '../mail/mail.service.js';
@@ -44,7 +44,7 @@ export class UserAuthService {
       throw new ConflictException('An account with this email already exists');
     }
 
-    const passwordHash = await bcrypt.hash(dto.password, 10);
+    const passwordHash = await hashPassword(dto.password);
     const freePlan = await this.prisma.subscriptionPlan.findUnique({ where: { slug: 'free' } });
     // Read once, outside the transaction below -- SettingsService.get()
     // uses the plain (non-transactional) PrismaService client, and calling
@@ -152,7 +152,7 @@ export class UserAuthService {
       throw new ForbiddenException('Your account has been suspended. Contact support for assistance.');
     }
 
-    const passwordMatches = await bcrypt.compare(dto.password, user.passwordHash);
+    const passwordMatches = await verifyPassword(dto.password, user.passwordHash);
     if (!passwordMatches) {
       await this.recordLoginAttempt(dto.email, ipAddress, userAgent, false, 'invalid_password');
       throw new UnauthorizedException('Invalid email or password');
@@ -380,12 +380,12 @@ export class UserAuthService {
       throw new UnauthorizedException('Account no longer exists');
     }
 
-    const currentMatches = await bcrypt.compare(dto.currentPassword, user.passwordHash);
+    const currentMatches = await verifyPassword(dto.currentPassword, user.passwordHash);
     if (!currentMatches) {
       throw new BadRequestException('Current password is incorrect');
     }
 
-    const newPasswordHash = await bcrypt.hash(dto.newPassword, 10);
+    const newPasswordHash = await hashPassword(dto.newPassword);
     await this.prisma.user.update({ where: { id: userId }, data: { passwordHash: newPasswordHash } });
     return { success: true };
   }
@@ -441,7 +441,7 @@ export class UserAuthService {
       throw new BadRequestException('This reset link is invalid or has expired. Please request a new one.');
     }
 
-    const newPasswordHash = await bcrypt.hash(newPassword, 10);
+    const newPasswordHash = await hashPassword(newPassword);
     const { user, sessionsToRevoke } = await this.prisma.$transaction(async (tx) => {
       // Claim the token first, conditionally: two requests racing with the
       // same link both pass the read above, but only one can flip usedAt
