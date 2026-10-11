@@ -1,6 +1,10 @@
-// Shared class-transformer / class-validator helpers for the Habit Tracker DTOs.
+// Shared class-transformer / class-validator helpers.
 
 export const trim = ({ value }: { value: unknown }) => (typeof value === 'string' ? value.trim() : value);
+
+// Account emails are stored lowercase -- better-auth looks every address up
+// that way -- so each one a client sends is trimmed and lowercased first.
+export const normalizeEmail = ({ value }: { value: unknown }) => (typeof value === 'string' ? value.trim().toLowerCase() : value);
 
 // Optional fields use ValidateIf(whenSent), not IsOptional: IsOptional also
 // skips an explicit null, which would then reach the service as a value (a

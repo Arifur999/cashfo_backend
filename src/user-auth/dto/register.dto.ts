@@ -1,5 +1,7 @@
-import { IsEmail, IsEnum, IsNotEmpty, IsOptional, IsString, Matches, MinLength } from 'class-validator';
 import { LanguagePreference } from '@prisma/client';
+import { Transform } from 'class-transformer';
+import { IsEmail, IsEnum, IsNotEmpty, IsOptional, IsString, Matches, MinLength } from 'class-validator';
+import { normalizeEmail } from '../../common/dto.js';
 
 // Permissive international phone check -- optional leading "+", digits,
 // spaces, and hyphens, 6-20 characters total. Not restricted to Bangladeshi
@@ -11,6 +13,7 @@ export class RegisterDto {
   @IsNotEmpty()
   name: string;
 
+  @Transform(normalizeEmail)
   @IsEmail()
   email: string;
 
