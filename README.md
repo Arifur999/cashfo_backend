@@ -63,3 +63,9 @@ The Google exchange is how a browser session becomes app tokens: Google returns 
 ## Database
 
 Migrations live in `prisma/migrations`; production applies them with `npx prisma migrate deploy`. The better-auth migrations, in order, fold `AdminUser` into `User`, lowercase account emails, add the better-auth tables, move password hashes onto credential accounts and sign out devices from before sessions existed. The first two stop instead of guessing if two accounts share an email (or differ only by case); after deploying, everyone signs in once more.
+
+The development seed (`npm run seed`) adds demo admins and end users that share one known password. Production never runs it: `dist/scripts/bootstrap.js` creates one real super admin and the reference data (plans, default chart of accounts, translations, feature flags, notification templates) and nothing else.
+
+## Deploying
+
+`main` is the live site, `smartly.softech.agency`. Every pull request runs CI (`.github/workflows/ci.yml`); a merge to `main` publishes `ghcr.io/arifur999/cashfo_backend`, and the VPS pulls it within two minutes, rolling back if the release doesn't come up healthy. Setup, operations and rollback: [deploy/README.md](deploy/README.md).
