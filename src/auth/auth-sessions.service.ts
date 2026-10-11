@@ -1,4 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
+import type { LanguagePreference } from '@prisma/client';
 import { isAPIError } from 'better-auth/api';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { BETTER_AUTH, type Auth } from './better-auth.js';
@@ -13,6 +14,14 @@ export interface ClientInfo {
 export interface SignedIn {
   userId: string;
   sessionId: string;
+}
+
+export interface NewPasswordAccount {
+  name: string;
+  email: string;
+  password: string;
+  phone?: string;
+  preferredLanguage?: LanguagePreference;
 }
 
 const clientHeaders = ({ ipAddress, userAgent }: ClientInfo): Headers => {
@@ -41,6 +50,20 @@ export class AuthSessionsService {
       return { userId: user.id, sessionId: await this.idOfToken(token) };
     } catch (error) {
       if (isAPIError(error) && (error.statusCode === 401 || error.statusCode === 403)) return null;
+      throw error;
+    }
+  }
+
+  // Creates the account and its credential through better-auth (so the
+  // dashboard sees the signup) and signs it straight in. Null when the email
+  // is already taken.
+  async signUpWithPassword(account: NewPasswordAccount, client: ClientInfo): Promise<SignedIn | null> {
+    try {
+      const { token, user } = await this.auth.api.signUpEmail({ body: account, headers: clientHeaders(client) });
+      const sessionId = token ? await this.idOfToken(token) : await this.create(user.id, client);
+      return { userId: user.id, sessionId };
+    } catch (error) {
+      if (isAPIError(error) && error.body?.code === 'USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL') return null;
       throw error;
     }
   }
