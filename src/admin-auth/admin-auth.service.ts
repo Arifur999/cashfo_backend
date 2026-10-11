@@ -1,4 +1,5 @@
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { ForbiddenException, Injectable, UnauthorizedException } from '@nestjs/common';
+import type { User } from '@prisma/client';
 import { AuthSessionsService, type ClientInfo } from '../auth/auth-sessions.service.js';
 import { SessionTokensService } from '../auth/session-tokens.service.js';
 import { isAdminRole } from '../common/roles.js';
@@ -35,6 +36,31 @@ export class AdminAuthService {
       throw new UnauthorizedException('Invalid email or password');
     }
 
+    return this.completeSignIn(admin, signedIn.sessionId, client);
+  }
+
+  // Google sign-in ends on better-auth's callback, which leaves a session
+  // cookie in the browser. The frontend forwards that cookie here and gets
+  // the usual token pair, bound to that same session. An end user's session
+  // is refused, not ended, so the frontend can exchange it on the user side.
+  async exchangeSession(cookieHeader: string | undefined, client: ClientInfo) {
+    const signedIn = await this.sessions.fromCookie(cookieHeader);
+    if (!signedIn) {
+      throw new UnauthorizedException('No signed-in session to exchange');
+    }
+    const admin = await this.prisma.user.findUniqueOrThrow({ where: { id: signedIn.userId } });
+    if (!isAdminRole(admin.role)) {
+      throw new ForbiddenException('This account does not sign in to the admin panel');
+    }
+    if (admin.status !== 'ACTIVE') {
+      throw new UnauthorizedException('This account has been suspended');
+    }
+    return this.completeSignIn(admin, signedIn.sessionId, client);
+  }
+
+  // Shared by both ways in: stamps the login, audits it and issues the
+  // token pair bound to the session.
+  private async completeSignIn(admin: User, sessionId: string, client: ClientInfo) {
     await this.prisma.$transaction([
       this.prisma.user.update({ where: { id: admin.id }, data: { lastLoginAt: new Date() } }),
       this.prisma.auditLog.create({
@@ -47,12 +73,12 @@ export class AdminAuthService {
         },
       }),
       this.prisma.loginAttempt.create({
-        data: { email: dto.email, ipAddress: client.ipAddress ?? 'unknown', userAgent: client.userAgent, success: true },
+        data: { email: admin.email, ipAddress: client.ipAddress ?? 'unknown', userAgent: client.userAgent, success: true },
       }),
     ]);
 
     return {
-      ...this.tokens.issue('admin', { sub: admin.id, sid: signedIn.sessionId, role: admin.role }),
+      ...this.tokens.issue('admin', { sub: admin.id, sid: sessionId, role: admin.role }),
       adminUser: { id: admin.id, name: admin.name, email: admin.email, role: admin.role },
     };
   }

@@ -75,6 +75,14 @@ export class UserAuthController {
     return this.userAuthService.login(dto, this.resolveClientInfo(req));
   }
 
+  // The second half of Google sign-in: the better-auth session cookie the
+  // callback left in the browser, forwarded by the frontend, for tokens.
+  @Throttle({ default: { limit: 10, ttl: 60 * 1000 } })
+  @Post('session/exchange')
+  exchangeSession(@Req() req: Request) {
+    return this.userAuthService.exchangeSession(req.headers.cookie, this.resolveClientInfo(req));
+  }
+
   @Post('refresh')
   refresh(@Body() dto: RefreshDto) {
     return this.userAuthService.refresh(dto.refreshToken);

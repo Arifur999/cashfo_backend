@@ -68,6 +68,14 @@ export class AuthSessionsService {
     }
   }
 
+  // The session a browser's better-auth cookie names -- what a Google
+  // sign-in leaves behind -- if the cookie is genuine and the session live.
+  async fromCookie(cookieHeader: string | undefined): Promise<SignedIn | null> {
+    if (!cookieHeader) return null;
+    const result = await this.auth.api.getSession({ headers: new Headers({ cookie: cookieHeader }), query: { disableRefresh: true } });
+    return result ? { userId: result.user.id, sessionId: result.session.id } : null;
+  }
+
   // A session for someone who has already proven who they are some other
   // way -- just registered, or opened a password-reset link.
   async create(userId: string, { ipAddress, userAgent }: ClientInfo): Promise<string> {

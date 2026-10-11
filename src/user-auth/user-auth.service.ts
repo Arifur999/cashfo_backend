@@ -89,6 +89,34 @@ export class UserAuthService {
     return this.signedInResponse(user, signedIn.sessionId, client, defaultBusinessId);
   }
 
+  // Google sign-in ends on better-auth's callback, which leaves a session
+  // cookie in the browser. The frontend forwards that cookie here and gets
+  // the usual token pair, bound to that same session. An admin's session is
+  // refused, not ended, so the frontend can exchange it on the admin side.
+  async exchangeSession(cookieHeader: string | undefined, client: ClientInfo) {
+    const signedIn = await this.sessions.fromCookie(cookieHeader);
+    if (!signedIn) {
+      throw new UnauthorizedException('No signed-in session to exchange');
+    }
+    const user = await this.prisma.user.findUniqueOrThrow({ where: { id: signedIn.userId } });
+    if (user.role !== Role.USER) {
+      throw new ForbiddenException('This account signs in to the admin panel');
+    }
+    if (user.status !== 'ACTIVE') {
+      throw new ForbiddenException('Your account has been suspended. Contact support for assistance.');
+    }
+
+    await this.prisma.$transaction([
+      this.prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } }),
+      this.prisma.loginAttempt.create({
+        data: { email: user.email, ipAddress: client.ipAddress ?? 'unknown', userAgent: client.userAgent, success: true },
+      }),
+    ]);
+    // A first Google sign-in is also the signup: this creates the workspace.
+    const defaultBusinessId = await this.provisioning.ensureDefaultWorkspace(user.id);
+    return this.signedInResponse(user, signedIn.sessionId, client, defaultBusinessId);
+  }
+
   // Shared by register/login/resetPassword: records the device for Device
   // Management and issues the token pair bound to its session.
   private async signedInResponse(user: User, sessionId: string, client: ClientInfo, defaultBusinessId: string) {

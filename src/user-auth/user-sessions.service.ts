@@ -15,9 +15,13 @@ export class UserSessionsService {
     private readonly sessions: AuthSessionsService,
   ) {}
 
+  // Upsert: one session can be exchanged for tokens more than once (a
+  // reloaded Google sign-in page), and it is still one device.
   async record(userId: string, sessionId: string, { ipAddress, userAgent }: ClientInfo): Promise<void> {
-    await this.prisma.userSession.create({
-      data: { userId, jti: sessionId, deviceLabel: parseDeviceLabel(userAgent), ipAddress: ipAddress ?? 'unknown', userAgent },
+    await this.prisma.userSession.upsert({
+      where: { jti: sessionId },
+      create: { userId, jti: sessionId, deviceLabel: parseDeviceLabel(userAgent), ipAddress: ipAddress ?? 'unknown', userAgent },
+      update: { lastUsedAt: new Date() },
     });
   }
 

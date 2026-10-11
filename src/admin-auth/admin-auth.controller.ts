@@ -22,6 +22,14 @@ export class AdminAuthController {
     return this.adminAuthService.login(dto, { ipAddress: req.ip, userAgent: req.headers['user-agent'] });
   }
 
+  // The second half of Google sign-in: the better-auth session cookie the
+  // callback left in the browser, forwarded by the frontend, for tokens.
+  @Throttle({ default: { limit: 10, ttl: 60 * 1000 } })
+  @Post('session/exchange')
+  exchangeSession(@Req() req: Request) {
+    return this.adminAuthService.exchangeSession(req.headers.cookie, { ipAddress: req.ip, userAgent: req.headers['user-agent'] });
+  }
+
   @Post('refresh')
   refresh(@Body() dto: RefreshDto) {
     return this.adminAuthService.refresh(dto.refreshToken);
