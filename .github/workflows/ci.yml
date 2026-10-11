@@ -1,0 +1,96 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # Deploy runs this as its quality gate before publishing an image.
+  workflow_call:
+    inputs:
+      skip-image-build:
+        description: The caller builds and pushes the image itself.
+        type: boolean
+        default: false
+
+concurrency:
+  # github.workflow is the CALLER's name when Deploy runs this, so the two runs
+  # of one push land in different groups and can't cancel each other.
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Lint, typecheck, unit tests, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # `prisma generate` runs on install and loads prisma.config.ts, which
+      # wants a URL. Nothing connects to it here.
+      DATABASE_URL: postgresql://ci:ci@localhost:5432/ci
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npx tsc --noEmit
+      - run: npm test
+      - run: npm run build
+
+  # Production starts from an empty database and only ever runs
+  # `prisma migrate deploy` and the bootstrap. Both are exercised here, and a
+  # schema change without its migration fails the run.
+  database:
+    name: Migrations and bootstrap on an empty database
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres -d ci"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://postgres:ci@localhost:5432/ci
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npx prisma migrate deploy
+      - name: Schema and migrations agree
+        run: npx prisma migrate diff --from-config-datasource --to-schema prisma/schema.prisma --exit-code
+      - run: npm run build
+      - name: Bootstrap, twice (it must be idempotent)
+        env:
+          SUPER_ADMIN_EMAIL: ci-admin@softech.agency
+          SUPER_ADMIN_PASSWORD: ci-password-123
+        run: |
+          node dist/scripts/bootstrap.js
+          node dist/scripts/bootstrap.js | grep -q "already exists"
+
+  docker:
+    name: Production image builds
+    # A negation on purpose: on push and pull_request `inputs` is empty, and
+    # GitHub compares null == false as true, so `inputs.x != false` would skip it.
+    if: ${{ !inputs.skip-image-build }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          tags: cashfo-backend:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
