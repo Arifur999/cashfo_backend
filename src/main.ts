@@ -5,6 +5,8 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 import cookieParser from 'cookie-parser';
 import express from 'express';
 import { AppModule } from './app.module.js';
+import { BETTER_AUTH, type Auth } from './auth/better-auth.js';
+import { betterAuthMiddleware } from './auth/better-auth.middleware.js';
 import { parseTrustProxy } from './common/trust-proxy.js';
 
 async function bootstrap() {
@@ -23,6 +25,9 @@ async function bootstrap() {
     origin: process.env.ADMIN_FRONTEND_URL ?? 'http://localhost:3000',
     credentials: true,
   });
+  // Google sign-in, session checks and the Better Auth dashboard. Must stay
+  // ahead of Nest's body parser, which is only added when the app starts.
+  app.use(betterAuthMiddleware(app.get<Auth>(BETTER_AUTH)));
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,

@@ -9,50 +9,21 @@ datasource db {
   provider = "postgresql"
 }
 
-// --- Admin domain only for now. End-user tables (transactions, accounts, etc.)
-// come later in the separate user-app build plan. ---
-
-model AdminUser {
-  id           String      @id @default(uuid())
-  name         String
-  email        String      @unique
-  passwordHash String
-  role         AdminRole
-  status       AdminStatus @default(ACTIVE)
-  lastLoginAt  DateTime?
-  createdBy    String? // loose reference to the AdminUser (usually SUPER_ADMIN) who created this account, if any
-  createdAt    DateTime    @default(now())
-  updatedAt    DateTime    @updatedAt
-  auditLogs    AuditLog[]
-
-  // Note: no separate @@index([email]) here -- @unique already creates a
-  // unique index covering lookups by email, so a second index would be
-  // redundant.
-}
-
-enum AdminRole {
-  SUPER_ADMIN
-  SUPPORT_ADMIN
-  FINANCE_ADMIN
-  CONTENT_ADMIN
-}
-
-enum AdminStatus {
-  ACTIVE
-  SUSPENDED
-}
+// --- Admin domain. Admin accounts are User rows with an admin Role (see the
+// User model and src/common/roles.ts); there is no separate admin table. ---
 
 model AuditLog {
-  id          String    @id @default(uuid())
+  id          String   @id @default(uuid())
+  // The admin who acted -- a User whose role is one of the admin roles.
   adminUserId String
-  adminUser   AdminUser @relation(fields: [adminUserId], references: [id])
+  adminUser   User     @relation(fields: [adminUserId], references: [id])
   action      String // e.g. "ADMIN_LOGIN", "USER_SUSPENDED", "PLAN_UPDATED"
   entityType  String // e.g. "AdminUser", "PlatformUser", "SubscriptionPlan"
   entityId    String?
   oldValue    Json?
   newValue    Json?
   ipAddress   String?
-  createdAt   DateTime  @default(now())
+  createdAt   DateTime @default(now())
 
   @@index([adminUserId, createdAt])
   @@index([entityType, entityId])
@@ -671,7 +642,8 @@ model User {
   // statically from /uploads/avatars. Null shows the initials-circle
   // fallback in the UI instead.
   avatarUrl           String?
-  passwordHash        String
+  // No password column: the hash lives on this user's "credential"
+  // AuthAccount row, where better-auth reads it (src/auth/credential-account.ts).
   // Shareable short code for this user's own referral link ("Referral
   // Program" menu) -- nullable because pre-existing users only get one
   // lazily backfilled the first time they open that page (see
@@ -681,7 +653,7 @@ model User {
   // field is looked up.
   referralCode        String?              @unique
   // Settings > Password Manager's own unlock secret -- deliberately separate
-  // from passwordHash above (a leaked account password must not also unlock
+  // from the account password (a leaked account password must not also unlock
   // the vault). Null until the user completes first-time vault setup (see
   // PasswordVaultService.setVaultPassword()); the vault menu shows a "Set up"
   // prompt instead of an unlock form until then.
@@ -717,9 +689,13 @@ model User {
   referralsMade       Referral[]           @relation("Referrer")
   referredAs          Referral?            @relation("Referred")
   passwordResetTokens PasswordResetToken[]
+  // Admin actions this account performed (admin roles only).
+  auditLogs           AuditLog[]
+  authSessions        AuthSession[]
+  authAccounts        AuthAccount[]
 
   // No separate @@index([email]) -- @unique above already creates a unique
-  // index covering lookups by email (same reasoning as AdminUser/PlatformUser).
+  // index covering lookups by email (same reasoning as PlatformUser).
   @@index([role])
 }
 
@@ -731,6 +707,61 @@ enum Role {
   FINANCE_ADMIN
   CONTENT_ADMIN
   USER
+}
+
+// --- better-auth (src/auth). It writes these three tables itself; the app
+// reads them for its guards and Device Management. Prefixed Auth* so they
+// never collide with the chart-of-accounts Account model. ---
+
+// One signed-in device. The app's JWTs carry this row's id (sid), so
+// deleting the row signs that device out on its next request.
+model AuthSession {
+  id        String   @id @default(uuid())
+  token     String   @unique
+  expiresAt DateTime
+  ipAddress String?
+  userAgent String?
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+}
+
+// How a user proves who they are: providerId "credential" holds the bcrypt
+// password hash, "google" a linked Google account.
+model AuthAccount {
+  id                    String    @id @default(uuid())
+  accountId             String
+  providerId            String
+  userId                String
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  password              String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@unique([providerId, accountId])
+  @@index([userId])
+}
+
+// Short-lived values better-auth keeps between requests (OAuth state,
+// email verification links).
+model Verification {
+  id         String   @id @default(uuid())
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([identifier])
 }
 
 // Settings > Security > Device Management -- one row per issued refresh

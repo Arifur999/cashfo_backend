@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+# Stage 1 -- prepares /opt/smartly. Touches NOTHING that serves traffic: no
+# nginx config, no container, no other project's files. Safe to re-run; after
+# a `git pull` it refreshes the compose file and the backup scripts.
+#
+#   bash bootstrap.sh your-real@email [smartly.softech.agency]
+#
+# The email becomes the first super admin's login (SUPER_ADMIN_EMAIL) and the
+# Let's Encrypt contact.
+set -euo pipefail
+
+SRC="$(cd "$(dirname "$0")" && pwd)"
+. "$SRC/lib.sh"
+
+EMAIL="${1:-}"
+DOMAIN_ARG="${2:-smartly.softech.agency}"
+
+require_root
+
+step "1. What is already here"
+command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1 \
+  || die "docker with the compose plugin is required (it runs furnify already, so this should not happen)"
+docker network inspect "$PROXY_NET" >/dev/null 2>&1 \
+  || die "network $PROXY_NET not found -- it belongs to the furnify stack"
+docker inspect "$NGINX_CTR" >/dev/null 2>&1 || die "container $NGINX_CTR not found"
+command -v openssl >/dev/null 2>&1 || die "openssl is required"
+ok "docker, $PROXY_NET and $NGINX_CTR present"
+
+step "2. $APP_DIR"
+mkdir -p "$APP_DIR/nginx" "$APP_DIR/backups" "$APP_DIR/ops/backup"
+
+if [ -f "$APP_DIR/docker-compose.yml" ] && ! cmp -s "$SRC/docker-compose.yml" "$APP_DIR/docker-compose.yml"; then
+  cp "$APP_DIR/docker-compose.yml" "$APP_DIR/docker-compose.yml.bak-$(date +%Y%m%d-%H%M%S)"
+  info "compose file changed -- previous one kept as a .bak"
+fi
+cp "$SRC/docker-compose.yml" "$APP_DIR/docker-compose.yml"
+# File by file into the existing folder, never by replacing the folder: the
+# backup container bind-mounts it, and a replaced folder is a new inode the
+# running container would never see.
+cp -f "$SRC"/ops/backup/* "$APP_DIR/ops/backup/"
+chmod 0755 "$APP_DIR"/ops/backup/*.sh
+ok "docker-compose.yml and ops/backup in place"
+
+step "3. $ENV_FILE"
+if [ -f "$ENV_FILE" ]; then
+  ok "already exists -- left as is (DOMAIN=$(env_get DOMAIN))"
+else
+  [ -n "$EMAIL" ] || die "usage: bash bootstrap.sh your-real@email [domain]  (the email is needed to create .env)"
+  is_placeholder_email "$EMAIL" \
+    && die "\"$EMAIL\" is not a usable email address. Give the real one -- it becomes the super admin login and the Let's Encrypt contact."
+  secret() { openssl rand -hex 32; }
+  # Letters, digits and a symbol, so it passes any password rule.
+  admin_password="Sm-$(openssl rand -hex 10)"
+  umask 077
+  sed \
+    -e "s|^DOMAIN=.*|DOMAIN=$DOMAIN_ARG|" \
+    -e "s|^SUPER_ADMIN_EMAIL=.*|SUPER_ADMIN_EMAIL=$EMAIL|" \
+    -e "s|^SUPER_ADMIN_PASSWORD=.*|SUPER_ADMIN_PASSWORD=$admin_password|" \
+    -e "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=$(secret)|" \
+    -e "s|^BETTER_AUTH_SECRET=.*|BETTER_AUTH_SECRET=$(secret)|" \
+    -e "s|^JWT_SECRET=.*|JWT_SECRET=$(secret)|" \
+    -e "s|^JWT_REFRESH_SECRET=.*|JWT_REFRESH_SECRET=$(secret)|" \
+    -e "s|^USER_JWT_SECRET=.*|USER_JWT_SECRET=$(secret)|" \
+    -e "s|^USER_JWT_REFRESH_SECRET=.*|USER_JWT_REFRESH_SECRET=$(secret)|" \
+    -e "s|^USAGE_TRACKING_API_KEY=.*|USAGE_TRACKING_API_KEY=$(secret)|" \
+    -e "s|^VAULT_ENCRYPTION_KEY=.*|VAULT_ENCRYPTION_KEY=$(secret)|" \
+    -e "s|^VAULT_TOKEN_SECRET=.*|VAULT_TOKEN_SECRET=$(secret)|" \
+    "$SRC/smartly.env.example" > "$ENV_FILE"
+  chmod 600 "$ENV_FILE"
+  ok "wrote $ENV_FILE with generated secrets (mode 600)"
+  info "super admin login: $EMAIL -- password: grep SUPER_ADMIN_PASSWORD $ENV_FILE"
+fi
+
+step "4. Nothing else changed"
+info "containers running:"
+docker ps --format '     {{.Names}}  {{.Status}}'
+
+cat <<EOF
+
+$(printf '\033[1mStage 1 done.\033[0m') Nothing serving traffic was touched.
+
+Next:
+  1. Outside services (Google sign-in, email, avatars, the Infra dashboard) --
+     can wait, each one asks and hides what you type:
+       bash $SRC/set-env.sh GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET
+  2. bash $SRC/install.sh          start the stack, create the super admin, install the timers
+  3. bash $SRC/attach-site.sh      certificate + nginx vhost for $(env_get DOMAIN)
+EOF

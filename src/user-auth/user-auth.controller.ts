@@ -16,6 +16,7 @@ import {
 import { FileInterceptor } from '@nestjs/platform-express';
 import { Throttle } from '@nestjs/throttler';
 import type { Request } from 'express';
+import type { ClientInfo } from '../auth/auth-sessions.service.js';
 import { ChangePasswordDto } from './dto/change-password.dto.js';
 import { ForgotPasswordDto } from './dto/forgot-password.dto.js';
 import { LoginDto } from './dto/login.dto.js';
@@ -30,12 +31,16 @@ import { UserAuthGuard } from './guards/user-auth.guard.js';
 import type { RequestUser } from './interfaces/request-user.interface.js';
 import { userAvatarMulterOptions } from './user-avatar-upload.js';
 import { UserAuthService } from './user-auth.service.js';
+import { UserProfileService } from './user-profile.service.js';
+import { UserSessionsService } from './user-sessions.service.js';
 import { ImgbbService } from '../uploads/imgbb.service.js';
 
 @Controller('api/auth')
 export class UserAuthController {
   constructor(
     private readonly userAuthService: UserAuthService,
+    private readonly userProfileService: UserProfileService,
+    private readonly userSessionsService: UserSessionsService,
     private readonly imgbbService: ImgbbService,
   ) {}
 
@@ -48,19 +53,18 @@ export class UserAuthController {
   // two custom headers; every other caller (curl, a script, anything that
   // doesn't set them) still falls back to the raw request exactly as
   // before this existed.
-  private resolveClientInfo(req: Request): { ip: string | undefined; userAgent: string | undefined } {
+  private resolveClientInfo(req: Request): ClientInfo {
     const forwardedUserAgent = req.headers['x-client-user-agent'];
     const forwardedIp = req.headers['x-client-ip'];
     return {
-      ip: (Array.isArray(forwardedIp) ? forwardedIp[0] : forwardedIp) ?? req.ip,
+      ipAddress: (Array.isArray(forwardedIp) ? forwardedIp[0] : forwardedIp) ?? req.ip,
       userAgent: (Array.isArray(forwardedUserAgent) ? forwardedUserAgent[0] : forwardedUserAgent) ?? req.headers['user-agent'],
     };
   }
 
   @Post('register')
   register(@Body() dto: RegisterDto, @Req() req: Request) {
-    const { ip, userAgent } = this.resolveClientInfo(req);
-    return this.userAuthService.register(dto, ip, userAgent);
+    return this.userAuthService.register(dto, this.resolveClientInfo(req));
   }
 
   // Max 5 attempts per 15 minutes per IP, same policy as admin login.
@@ -68,8 +72,15 @@ export class UserAuthController {
   @UseFilters(LoginRateLimitFilter)
   @Post('login')
   login(@Body() dto: LoginDto, @Req() req: Request) {
-    const { ip, userAgent } = this.resolveClientInfo(req);
-    return this.userAuthService.login(dto, ip, userAgent);
+    return this.userAuthService.login(dto, this.resolveClientInfo(req));
+  }
+
+  // The second half of Google sign-in: the better-auth session cookie the
+  // callback left in the browser, forwarded by the frontend, for tokens.
+  @Throttle({ default: { limit: 10, ttl: 60 * 1000 } })
+  @Post('session/exchange')
+  exchangeSession(@Req() req: Request) {
+    return this.userAuthService.exchangeSession(req.headers.cookie, this.resolveClientInfo(req));
   }
 
   @Post('refresh')
@@ -89,8 +100,7 @@ export class UserAuthController {
   @Throttle({ default: { limit: 5, ttl: 15 * 60 * 1000 } })
   @Post('reset-password')
   resetPassword(@Body() dto: ResetPasswordDto, @Req() req: Request) {
-    const { ip, userAgent } = this.resolveClientInfo(req);
-    return this.userAuthService.resetPassword(dto.token, dto.newPassword, ip, userAgent);
+    return this.userAuthService.resetPassword(dto.token, dto.newPassword, this.resolveClientInfo(req));
   }
 
   @Post('logout')
@@ -101,19 +111,19 @@ export class UserAuthController {
   @UseGuards(UserAuthGuard)
   @Get('me')
   me(@CurrentUser() user: RequestUser) {
-    return this.userAuthService.me(user.id);
+    return this.userProfileService.me(user.id);
   }
 
   @UseGuards(UserAuthGuard)
   @Patch('language')
   updateLanguage(@CurrentUser() user: RequestUser, @Body() dto: UpdateLanguageDto) {
-    return this.userAuthService.updateLanguage(user.id, dto);
+    return this.userProfileService.updateLanguage(user.id, dto);
   }
 
   @UseGuards(UserAuthGuard)
   @Patch('profile')
   updateProfile(@CurrentUser() user: RequestUser, @Body() dto: UpdateProfileDto) {
-    return this.userAuthService.updateProfile(user.id, dto);
+    return this.userProfileService.updateProfile(user.id, dto);
   }
 
   @UseGuards(UserAuthGuard)
@@ -124,7 +134,7 @@ export class UserAuthController {
       throw new BadRequestException('No file was uploaded');
     }
     const avatarUrl = await this.imgbbService.uploadImage(file.buffer, file.originalname);
-    return this.userAuthService.updateAvatar(user.id, avatarUrl);
+    return this.userProfileService.updateAvatar(user.id, avatarUrl);
   }
 
   @UseGuards(UserAuthGuard)
@@ -135,20 +145,19 @@ export class UserAuthController {
 
   @UseGuards(UserAuthGuard)
   @Get('sessions')
-  listSessions(@CurrentUser() user: RequestUser, @Req() req: Request) {
-    const { ip, userAgent } = this.resolveClientInfo(req);
-    return this.userAuthService.listSessions(user.id, ip, userAgent);
+  listSessions(@CurrentUser() user: RequestUser) {
+    return this.userSessionsService.list(user.id, user.sessionId);
   }
 
   @UseGuards(UserAuthGuard)
   @Delete('sessions/:id')
   revokeSession(@CurrentUser() user: RequestUser, @Param('id') id: string) {
-    return this.userAuthService.revokeSession(user.id, id);
+    return this.userSessionsService.revoke(user.id, id);
   }
 
   @UseGuards(UserAuthGuard)
   @Get('login-history')
   getLoginHistory(@CurrentUser() user: RequestUser) {
-    return this.userAuthService.getLoginHistory(user.email);
+    return this.userSessionsService.loginHistory(user.email);
   }
 }

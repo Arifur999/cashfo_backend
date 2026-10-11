@@ -2,6 +2,7 @@ import { BadRequestException, ForbiddenException, Injectable, NotFoundException,
 import { ConfigService } from '@nestjs/config';
 import { JwtService, type JwtSignOptions } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
+import { CredentialsService } from '../auth/credentials.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { CreateVaultEntryDto } from './dto/create-vault-entry.dto.js';
 import { SetVaultPasswordDto } from './dto/set-vault-password.dto.js';
@@ -15,6 +16,7 @@ export class PasswordVaultService {
     private readonly prisma: PrismaService,
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
+    private readonly credentials: CredentialsService,
   ) {}
 
   async getStatus(userId: string) {
@@ -26,8 +28,7 @@ export class PasswordVaultService {
   // the account password (not the old vault password), same trust level as
   // ChangePasswordDto for the main account password.
   async setVaultPassword(userId: string, dto: SetVaultPasswordDto) {
-    const user = await this.prisma.user.findUniqueOrThrow({ where: { id: userId } });
-    const matches = await bcrypt.compare(dto.currentPassword, user.passwordHash);
+    const matches = await this.credentials.verify(userId, dto.currentPassword);
     if (!matches) {
       throw new BadRequestException('Your account password is incorrect');
     }

@@ -1,13 +1,13 @@
 import { CanActivate, ExecutionContext, Injectable } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
-import { AdminRole } from '../../common/roles.js';
 import { Request } from 'express';
+import { AdminRole } from '../../common/roles.js';
 import { ROLES_KEY } from '../decorators/roles.decorator.js';
 import { RequestAdminUser } from '../interfaces/request-admin-user.interface.js';
 
-// Only one admin (SUPER_ADMIN) exists right now, but this checks against the
-// full AdminRole enum so role-restricted routes work correctly once
-// Prompt 2 adds SUPPORT_ADMIN/FINANCE_ADMIN/CONTENT_ADMIN accounts.
+// Narrows an admin route to specific admin roles. Whether the caller is an
+// admin at all is AdminAuthGuard's job (it rejects role USER), so this only
+// ever compares one admin role against another.
 @Injectable()
 export class RolesGuard implements CanActivate {
   constructor(private readonly reflector: Reflector) {}

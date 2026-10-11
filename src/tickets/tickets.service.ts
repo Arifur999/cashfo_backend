@@ -1,5 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma, TicketStatus } from '@prisma/client';
+import { ADMIN_USER_WHERE } from '../common/roles.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { AddMessageDto } from './dto/add-message.dto.js';
 import { AssignTicketDto } from './dto/assign-ticket.dto.js';
@@ -66,7 +67,7 @@ export class TicketsService {
         select: { id: true, name: true, email: true, plan: { select: { id: true, name: true } } },
       }),
       ticket.assignedToAdminId
-        ? this.prisma.adminUser.findUnique({ where: { id: ticket.assignedToAdminId }, select: { id: true, name: true } })
+        ? this.prisma.user.findUnique({ where: { id: ticket.assignedToAdminId, ...ADMIN_USER_WHERE }, select: { id: true, name: true } })
         : Promise.resolve(null),
     ]);
 
@@ -195,8 +196,8 @@ export class TicketsService {
 
   private async attachAssignedAdmins<T extends { assignedToAdminId: string | null }>(tickets: T[]) {
     const adminIds = [...new Set(tickets.map((t) => t.assignedToAdminId).filter((id): id is string => Boolean(id)))];
-    const admins = await this.prisma.adminUser.findMany({
-      where: { id: { in: adminIds } },
+    const admins = await this.prisma.user.findMany({
+      where: { id: { in: adminIds }, ...ADMIN_USER_WHERE },
       select: { id: true, name: true },
     });
     const adminById = new Map(admins.map((a) => [a.id, a]));

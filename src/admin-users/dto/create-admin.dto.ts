@@ -1,4 +1,6 @@
+import { Transform } from 'class-transformer';
 import { IsEmail, IsEnum, IsNotEmpty, IsOptional, IsString, MinLength } from 'class-validator';
+import { normalizeEmail } from '../../common/dto.js';
 import { AdminRole } from '../../common/roles.js';
 
 export class CreateAdminDto {
@@ -6,6 +8,7 @@ export class CreateAdminDto {
   @IsNotEmpty()
   name: string;
 
+  @Transform(normalizeEmail)
   @IsEmail()
   email: string;
 

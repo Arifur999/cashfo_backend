@@ -3,6 +3,7 @@ import { Throttle } from '@nestjs/throttler';
 import { exec } from 'node:child_process';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
+import { ADMIN_USER_WHERE } from '../common/roles.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 
 const execAsync = promisify(exec);
@@ -49,9 +50,9 @@ export class InternalController {
 
     seedRunning = true;
     try {
-      const alreadySeeded = await this.prisma.adminUser.count();
+      const alreadySeeded = await this.prisma.user.count({ where: ADMIN_USER_WHERE });
       if (alreadySeeded > 0) {
-        throw new ConflictException('Database already has AdminUser rows -- refusing to seed again.');
+        throw new ConflictException('Database already has admin accounts -- refusing to seed again.');
       }
 
       const { stdout, stderr } = await execAsync('npm run prisma:seed', {

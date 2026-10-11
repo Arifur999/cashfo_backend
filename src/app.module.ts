@@ -13,6 +13,7 @@ import { AnnouncementsModule } from './announcements/announcements.module.js';
 import { AppController } from './app.controller.js';
 import { AppService } from './app.service.js';
 import { AssetsModule } from './assets/assets.module.js';
+import { AuthModule } from './auth/auth.module.js';
 import { AuditLogsModule } from './audit-logs/audit-logs.module.js';
 import { BudgetsModule } from './budgets/budgets.module.js';
 import { BusinessAccessModule } from './business-access/business-access.module.js';
@@ -62,6 +63,7 @@ import { UserAuthModule } from './user-auth/user-auth.module.js';
     // tight budget.
     ThrottlerModule.forRoot([{ name: 'default', ttl: 60_000, limit: 100 }]),
     PrismaModule,
+    AuthModule,
     BusinessAccessModule,
     HealthModule,
     // TEMPORARY -- remove once production has been seeded, see internal.controller.ts
