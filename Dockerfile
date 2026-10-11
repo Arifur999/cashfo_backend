@@ -1,5 +1,7 @@
 # syntax=docker/dockerfile:1.7
-# The API image: built by GitHub Actions, run on the VPS by deploy/docker-compose.yml.
+# The API image: built by GitHub Actions, run on the VPS by deploy/docker-compose.yml
+# -- as smartly-api, and as smartly-migrate, which applies pending migrations
+# before every release starts (prisma migrate deploy).
 
 # Shared install inputs. `prisma generate` runs on install and loads
 # prisma.config.ts, which wants a DATABASE_URL -- nothing connects to it.
@@ -16,7 +18,7 @@ COPY tsconfig.json tsconfig.build.json nest-cli.json ./
 COPY src ./src
 RUN npm run build
 
-# Production dependencies only -- the Prisma CLI is one of them, for migrations.
+# Production dependencies only -- the Prisma CLI is one of them, for smartly-migrate.
 FROM base AS prod-deps
 RUN npm ci --omit=dev
 
@@ -33,5 +35,4 @@ RUN mkdir uploads && chown node:node uploads
 USER node
 EXPOSE 5000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 CMD wget -qO- http://127.0.0.1:5000/health >/dev/null || exit 1
-# Pending migrations first (Prisma takes a lock, so this is safe on every start), then the API.
-CMD ["sh", "-c", "node_modules/.bin/prisma migrate deploy && exec node dist/main.js"]
+CMD ["node", "dist/main.js"]
