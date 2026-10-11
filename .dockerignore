@@ -1,0 +1,17 @@
+# Secrets never enter the image -- production env comes from the server.
+.env
+.env.*
+!.env.example
+
+node_modules
+dist
+coverage
+uploads
+*.log
+*.tsbuildinfo
+.git
+.github
+test
+setup
+deploy
+docker-compose.yml
