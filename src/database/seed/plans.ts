@@ -1,6 +1,9 @@
 import { BillingCycle, type PrismaClient } from '@prisma/client';
 
-export async function seedSubscriptionPlans(prisma: PrismaClient) {
+// syncExisting: whether plans that already exist are reset to these values.
+// The dev seed does (the file is the source of truth there); production does
+// not, or every bootstrap run would undo the prices an admin has set.
+export async function seedSubscriptionPlans(prisma: PrismaClient, { syncExisting = true } = {}) {
   const proFeatureLimits = {
     maxWorkspaces: 5,
     maxBusinessWorkspaces: 3,
@@ -61,9 +64,7 @@ export async function seedSubscriptionPlans(prisma: PrismaClient) {
   for (const plan of plans) {
     await prisma.subscriptionPlan.upsert({
       where: { slug: plan.slug },
-      // Re-running the seed keeps existing plans' fields in sync with this
-      // file rather than freezing whatever was there on first insert.
-      update: plan,
+      update: syncExisting ? plan : {},
       create: plan,
     });
   }

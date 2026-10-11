@@ -7,19 +7,30 @@ import { credentialAccountData } from '../auth/credential-account.js';
 import { hashPassword } from '../auth/password.js';
 import { seedReferenceData } from '../database/seed/reference-data.js';
 
-// One-time production setup, run inside the API container:
+// Production setup, run in the API image (deploy/install.sh does it through
+// the smartly-bootstrap compose service):
 //
-//   docker compose run --rm api node dist/scripts/bootstrap.js --email you@example.com --name "Your Name"
+//   node dist/scripts/bootstrap.js [--email you@example.com] [--name "Your Name"]
 //
 // Creates the first super admin and the reference data the product needs
 // (src/database/seed/reference-data.ts) -- never the demo accounts the dev
 // seed adds. Safe to re-run: an existing super admin with that email is kept
-// as it is, and reference data is upserted.
+// as it is, existing reference rows are left alone, and plans an admin has
+// edited are not reset.
+//
+// The email and name fall back to SUPER_ADMIN_EMAIL and SUPER_ADMIN_NAME. The
+// password is SUPER_ADMIN_PASSWORD when that is set -- then nothing secret is
+// printed -- and is otherwise generated and shown once.
 
 const { values } = parseArgs({ options: { email: { type: 'string' }, name: { type: 'string' } } });
-const email = values.email?.trim().toLowerCase();
+const email = (values.email ?? process.env.SUPER_ADMIN_EMAIL)?.trim().toLowerCase();
 if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-  console.error('Usage: node dist/scripts/bootstrap.js --email you@example.com [--name "Your Name"]');
+  console.error('Usage: node dist/scripts/bootstrap.js --email you@example.com [--name "Your Name"]  (or set SUPER_ADMIN_EMAIL)');
+  process.exit(2);
+}
+const presetPassword = process.env.SUPER_ADMIN_PASSWORD || undefined;
+if (presetPassword && presetPassword.length < 8) {
+  console.error('SUPER_ADMIN_PASSWORD must be at least 8 characters.');
   process.exit(2);
 }
 
@@ -36,7 +47,7 @@ async function ensureSuperAdmin(address: string, name: string): Promise<{ id: st
     return { id: existing.id };
   }
 
-  const temporaryPassword = randomBytes(12).toString('base64url');
+  const temporaryPassword = presetPassword ?? randomBytes(12).toString('base64url');
   const passwordHash = await hashPassword(temporaryPassword);
   const admin = await prisma.$transaction(async (tx) => {
     // emailVerified: an address the operator vouches for, like every admin
@@ -49,8 +60,8 @@ async function ensureSuperAdmin(address: string, name: string): Promise<{ id: st
 }
 
 async function main(address: string) {
-  const admin = await ensureSuperAdmin(address, values.name?.trim() || 'Super Admin');
-  await seedReferenceData(prisma, admin.id);
+  const admin = await ensureSuperAdmin(address, (values.name ?? process.env.SUPER_ADMIN_NAME)?.trim() || 'Super Admin');
+  await seedReferenceData(prisma, admin.id, { syncPlans: false });
 
   const [plans, templates, categories, flags, notificationTemplates] = await Promise.all([
     prisma.subscriptionPlan.count(),
@@ -63,7 +74,9 @@ async function main(address: string) {
   console.log(admin.temporaryPassword ? `Super admin created: ${address}` : `Super admin already exists: ${address} (unchanged)`);
   console.log(`Reference data: ${plans} plans, ${templates} account templates, ${categories} categories, ${flags} feature flags, ${notificationTemplates} notification templates.`);
   console.log('Legal documents are placeholders -- replace them in Content > Legal before launch.');
-  if (admin.temporaryPassword) {
+  if (admin.temporaryPassword && presetPassword) {
+    console.log('Its password is SUPER_ADMIN_PASSWORD from the environment.');
+  } else if (admin.temporaryPassword) {
     // Last, on its own line, so it is easy to copy -- and to leave out when
     // sharing the rest of the output.
     console.log(`\nTemporary password (shown once, keep it private): ${admin.temporaryPassword}`);
