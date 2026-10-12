@@ -130,9 +130,9 @@ case "$SUBJECT" in
   *) die "the proxy presents '$SUBJECT' for $DOMAIN -- the vhost is not being used" ;;
 esac
 
-SELF=$(http_code "https://$DOMAIN/admin/login")
+SELF=$(http_code "https://$DOMAIN/login")
 case "$SELF" in
-  200) ok "https://$DOMAIN/admin/login -> 200 -- live" ;;
+  200) ok "https://$DOMAIN/login -> 200 -- live" ;;
   502|503) info "https://$DOMAIN/ -> $SELF: expected until the stack is up (install.sh)" ;;
-  *)   info "https://$DOMAIN/admin/login -> $SELF; check: docker logs $WEB_CTR --tail 30" ;;
+  *)   info "https://$DOMAIN/login -> $SELF; check: docker logs $WEB_CTR --tail 30" ;;
 esac

@@ -118,7 +118,7 @@ to re-run.
 - It compares furnify, softech.agency and travance before and after, and
   withdraws its own block if any of them changed.
 
-**5. Sign in** at `https://smartly.softech.agency/admin/login` with
+**5. Sign in** at `https://smartly.softech.agency/login` with
 `SUPER_ADMIN_EMAIL` and its password -- or with Google, when that address is a
 Google account:
 
@@ -131,7 +131,7 @@ More super admins can be added from Security -> Admins.
 **6. Check from anywhere:**
 
 ```bash
-curl -sI https://smartly.softech.agency/admin/login | head -1
+curl -sI https://smartly.softech.agency/login | head -1
 echo | openssl s_client -connect smartly.softech.agency:443 \
   -servername smartly.softech.agency 2>/dev/null | openssl x509 -noout -subject
 for d in softech.agency furnify.softech.agency travance.softech.agency; do

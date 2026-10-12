@@ -60,4 +60,4 @@ nginx_reload >/dev/null || die "nginx -t failed with $TARGET -- not reloading"
 sleep 2
 AFTER=$(neighbour_codes)
 [ "$AFTER" = "$BEFORE" ] || die "a neighbour changed after the repair ($BEFORE -> $AFTER) -- investigate"
-loud "repaired: $DOMAIN -> $(http_code "https://$DOMAIN/admin/login"); neighbours unchanged"
+loud "repaired: $DOMAIN -> $(http_code "https://$DOMAIN/login"); neighbours unchanged"
