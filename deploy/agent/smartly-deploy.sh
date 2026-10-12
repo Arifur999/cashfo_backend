@@ -10,7 +10,7 @@
 #   docker compose up -d   recreates only what changed; a new API image runs
 #                          smartly-migrate to completion before the API starts
 #   waits for health       smartly-api (/health, which queries Postgres) and
-#                          smartly-web (/admin/login) must both report healthy
+#                          smartly-web (/login) must both report healthy
 #   rolls back otherwise   the previous images are re-tagged and started again
 #
 # A rollback restores the code, not the schema. Migrations must therefore stay
