@@ -33,6 +33,28 @@ describe('SessionTokensService', () => {
     expect(() => tokens.verifyAccess('user', accessToken)).toThrow(UnauthorizedException);
   });
 
+  it('names its side in aud', () => {
+    const { accessToken, refreshToken } = tokens.issue('user', { ...claims, role: 'USER' });
+    expect(jwt.decode<{ aud: string }>(accessToken).aud).toBe('user');
+    expect(jwt.decode<{ aud: string }>(refreshToken).aud).toBe('user');
+  });
+
+  it('keeps the audiences apart even when both sides share a secret', () => {
+    const shared = new SessionTokensService(jwt, {
+      get: () => undefined,
+      getOrThrow: () => 'one-secret-for-everything',
+    } as unknown as ConfigService);
+    const { accessToken, refreshToken } = shared.issue('admin', claims);
+    expect(() => shared.verifyAccess('user', accessToken)).toThrow(UnauthorizedException);
+    expect(() => shared.verifyRefresh('user', refreshToken)).toThrow(UnauthorizedException);
+    expect(shared.verifyAccess('admin', accessToken)).toMatchObject(claims);
+  });
+
+  it('rejects a token from before tokens named their side', () => {
+    const legacy = jwt.sign({ sub: 'user-1', sid: 'session-1', role: 'SUPER_ADMIN' }, { secret: env.JWT_SECRET });
+    expect(() => tokens.verifyAccess('admin', legacy)).toThrow(UnauthorizedException);
+  });
+
   it('never accepts a refresh token as an access token', () => {
     const { refreshToken } = tokens.issue('user', { ...claims, role: 'USER' });
     expect(() => tokens.verifyAccess('user', refreshToken)).toThrow(UnauthorizedException);
