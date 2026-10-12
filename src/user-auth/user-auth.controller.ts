@@ -62,6 +62,9 @@ export class UserAuthController {
     };
   }
 
+  // 10 new accounts per hour per IP: room for a family or an office behind
+  // one address, and a ceiling on scripted signups.
+  @Throttle({ default: { limit: 10, ttl: 60 * 60 * 1000 } })
   @Post('register')
   register(@Body() dto: RegisterDto, @Req() req: Request) {
     return this.userAuthService.register(dto, this.resolveClientInfo(req));

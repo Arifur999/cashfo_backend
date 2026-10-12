@@ -13,6 +13,7 @@ import { RolesGuard } from './guards/roles.guard.js';
   imports: [JwtModule.register({})],
   controllers: [AdminAuthController],
   providers: [AdminAuthService, AdminAuthGuard, RolesGuard, LoginRateLimitFilter],
-  exports: [JwtModule, AdminAuthGuard, RolesGuard],
+  // AdminAuthService: the unified sign-in (SignInModule) hands admins to it.
+  exports: [JwtModule, AdminAuthGuard, RolesGuard, AdminAuthService],
 })
 export class AdminAuthModule {}

@@ -16,6 +16,10 @@ const AUDIENCE_ENV = {
 // refresh() check that session is still alive, so ending it -- logout,
 // revoking a device, suspension, a password reset -- signs the device out
 // on its very next request, not when the access token happens to expire.
+//
+// They also name their side in `aud`. The frontend reads it to pick the
+// refresh endpoint, and verify() requires it, so the two sides stay apart
+// even if both were ever configured with the same secret.
 export interface SessionTokenClaims {
   sub: string;
   sid: string;
@@ -61,6 +65,7 @@ export class SessionTokensService {
     const fallbackTtl = kind === 'access' ? '15m' : '7d';
     return this.jwt.sign(payload, {
       secret: this.config.getOrThrow<string>(kind === 'access' ? env.secret : env.refreshSecret),
+      audience,
       // Env vars are plain strings; jsonwebtoken types expiresIn as the `ms`
       // package's branded StringValue. "15m"/"7d" parse fine at runtime.
       expiresIn: (this.config.get<string>(kind === 'access' ? env.ttl : env.refreshTtl) ?? fallbackTtl) as JwtSignOptions['expiresIn'],
@@ -71,7 +76,7 @@ export class SessionTokensService {
     const env = AUDIENCE_ENV[audience];
     let claims: TClaims;
     try {
-      claims = this.jwt.verify<TClaims>(token, { secret: this.config.getOrThrow<string>(kind === 'access' ? env.secret : env.refreshSecret) });
+      claims = this.jwt.verify<TClaims>(token, { secret: this.config.getOrThrow<string>(kind === 'access' ? env.secret : env.refreshSecret), audience });
     } catch {
       throw new UnauthorizedException(message);
     }

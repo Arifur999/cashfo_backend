@@ -26,6 +26,7 @@ import { UserAuthGuard } from './guards/user-auth.guard.js';
   imports: [AccountsModule, UploadsModule, SettingsModule, MailModule],
   controllers: [UserAuthController],
   providers: [UserAuthService, UserProfileService, UserSessionsService, UserProvisioningService, UserAuthGuard, LoginRateLimitFilter],
-  exports: [UserAuthGuard],
+  // UserAuthService: the unified sign-in (SignInModule) hands end users to it.
+  exports: [UserAuthGuard, UserAuthService],
 })
 export class UserAuthModule {}
