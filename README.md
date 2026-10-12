@@ -56,6 +56,10 @@ Sign-in goes through better-auth (so its hooks and the dashboard see it), then t
 
 The Google exchange is how a browser session becomes app tokens: Google returns to `<BETTER_AUTH_URL>/api/auth/callback/google`, better-auth sets its session cookie, and the frontend forwards that cookie to the matching exchange endpoint.
 
+### One sign-in for the whole site
+
+The site has one login page for everyone. `POST /api/auth/sign-in` (email and password) and `POST /api/auth/session/sign-in` (the Google landing page's cookie exchange) look the account's role up and hand it to the admin or the end-user side above, unchanged (`src/sign-in/`). The answer's `audience` -- `admin` or `user` -- says which kind of tokens came back, and so where the frontend sends the person next. The side-specific endpoints stay for clients that already use them.
+
 ### Client address
 
 `TRUST_PROXY` tells Express which proxies to believe (`src/common/trust-proxy.ts`); `req.ip` is then the real client for the login throttle, login history and audit log, and better-auth is handed the same address.
