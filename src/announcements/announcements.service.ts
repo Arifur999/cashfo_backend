@@ -27,6 +27,23 @@ export class AnnouncementsService {
     return this.list(true);
   }
 
+  // What a customer sees: active announcements meant for everyone or for a
+  // plan one of their workspaces is on, newest first, without the admin-only
+  // fields.
+  async forCustomer(planIds: string[]) {
+    const now = new Date();
+    const rows = await this.prisma.announcement.findMany({
+      where: {
+        isActive: true,
+        startAt: { lte: now },
+        AND: [{ OR: [{ endAt: null }, { endAt: { gt: now } }] }, { OR: [{ targetPlan: null }, { targetPlan: { in: planIds } }] }],
+      },
+      orderBy: { startAt: 'desc' },
+      select: { id: true, title: true, titleBn: true, body: true, bodyBn: true, type: true, startAt: true, endAt: true },
+    });
+    return rows;
+  }
+
   async create(dto: CreateAnnouncementDto, adminId: string) {
     if (dto.endAt && new Date(dto.endAt) <= new Date(dto.startAt)) {
       throw new BadRequestException('endAt must be after startAt');
