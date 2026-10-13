@@ -31,11 +31,15 @@ x-api-env: &api-env
   NODE_ENV: production
   PORT: "5000"
   DATABASE_URL: *database-url
-  # The visitor's address arrives in X-Forwarded-For through nginx and
-  # smartly-web. Every hop in between is on a private Docker network, so
-  # trusting those ranges makes req.ip the visitor (and nothing a visitor
-  # writes into the header can change that -- nginx appends the real one).
-  TRUST_PROXY: uniquelocal
+  # The visitor's address arrives in X-Forwarded-For: nginx appends the
+  # address it saw, and smartly-web forwards the header unchanged. Trusting
+  # exactly one hop (smartly-web) makes req.ip that last, nginx-written entry,
+  # so nothing a visitor writes into the header can become req.ip. Trusting
+  # every private range instead ("uniquelocal") also trusted Docker's own
+  # gateway, which is the address nginx sees for a connection relayed by
+  # docker-proxy (IPv6) -- and then a visitor-written entry became req.ip,
+  # a fresh login-throttle bucket per request.
+  TRUST_PROXY: "1"
   BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?set BETTER_AUTH_SECRET}
   BETTER_AUTH_URL: https://${DOMAIN:?set DOMAIN}
   ADMIN_FRONTEND_URL: https://${DOMAIN}
