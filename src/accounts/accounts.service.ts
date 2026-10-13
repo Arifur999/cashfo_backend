@@ -264,9 +264,9 @@ export class AccountsService {
       throw new BadRequestException("Archive this account's child accounts first.");
     }
 
-    // TODO (Prompt 5, once the Transaction Engine exists): also block
-    // archiving if this account has any transaction_entries. There are no
-    // transactions yet in Prompt 4, so nothing to check here.
+    // An account with transactions may be archived on purpose: that is how
+    // a wallet is marked inactive while its history stays in the books.
+    // Removing one is what has to keep the history -- see removeOrArchive().
 
     if (account.status === 'ARCHIVED') {
       return account;
