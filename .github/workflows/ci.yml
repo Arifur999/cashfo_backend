@@ -12,6 +12,9 @@ on:
         type: boolean
         default: false
 
+permissions:
+  contents: read
+
 concurrency:
   # github.workflow is the CALLER's name when Deploy runs this, so the two runs
   # of one push land in different groups and can't cancel each other.
