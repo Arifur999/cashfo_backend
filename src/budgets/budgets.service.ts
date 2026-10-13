@@ -50,7 +50,7 @@ export class BudgetsService {
           _sum: { amount: true },
           where: {
             categoryId: category.name,
-            transaction: { businessId, status: 'POSTED', transactionType: TRANSACTION_TYPE_FOR[type], transactionDate: { gte: monthStart, lt: monthEnd } },
+            transaction: { businessId, status: 'POSTED', reversalOfId: null, transactionType: TRANSACTION_TYPE_FOR[type], transactionDate: { gte: monthStart, lt: monthEnd } },
           },
         });
         const amount = result._sum.amount ?? new Prisma.Decimal(0);
@@ -119,7 +119,7 @@ export class BudgetsService {
           _sum: { amount: true },
           where: {
             categoryId: { not: null },
-            transaction: { businessId, status: 'POSTED', transactionType: 'INCOME', transactionDate: { gte: monthStart, lt: monthEnd } },
+            transaction: { businessId, status: 'POSTED', reversalOfId: null, transactionType: 'INCOME', transactionDate: { gte: monthStart, lt: monthEnd } },
           },
         });
         const earned = result._sum.amount ?? new Prisma.Decimal(0);
