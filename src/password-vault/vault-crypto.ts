@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
 
 // AES-256-GCM, one random IV per call. Output format is
 // "<iv-hex>:<authTag-hex>:<ciphertext-hex>" -- self-contained, no extra
@@ -24,6 +24,32 @@ export function encryptVaultSecret(plainText: string): string {
   const ciphertext = Buffer.concat([cipher.update(plainText, 'utf8'), cipher.final()]);
   const authTag = cipher.getAuthTag();
   return `${iv.toString('hex')}:${authTag.toString('hex')}:${ciphertext.toString('hex')}`;
+}
+
+// Optional text fields (login, holder name, notes) are stored sealed with a
+// prefix, so rows written before they were encrypted still read back as the
+// plain text they are.
+const SEALED_PREFIX = 'enc:v1:';
+
+export function sealVaultText(plainText: string | null | undefined): string | null | undefined {
+  if (plainText === null || plainText === undefined || plainText === '') return plainText;
+  return `${SEALED_PREFIX}${encryptVaultSecret(plainText)}`;
+}
+
+export function openVaultText(stored: string | null): string | null {
+  if (!stored?.startsWith(SEALED_PREFIX)) return stored;
+  return decryptVaultSecret(stored.slice(SEALED_PREFIX.length));
+}
+
+export function isSealedVaultText(stored: string | null): boolean {
+  return !stored || stored.startsWith(SEALED_PREFIX);
+}
+
+// A short, non-reversible fingerprint of the vault password hash. Unlock
+// tokens carry it, so changing or resetting the vault password ends every
+// unlock made with the old one.
+export function vaultPasswordFingerprint(vaultPasswordHash: string): string {
+  return createHash('sha256').update(vaultPasswordHash).digest('hex').slice(0, 16);
 }
 
 export function decryptVaultSecret(encoded: string): string {

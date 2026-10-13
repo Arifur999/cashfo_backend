@@ -19,6 +19,13 @@ export class CredentialsService {
     return account?.password ? verifyPassword(password, account.password) : false;
   }
 
+  // Whether the account has a password at all -- a Google-only account has
+  // none until it uses "Forgot password?".
+  async has(userId: string): Promise<boolean> {
+    const account = await this.prisma.authAccount.findUnique({ where: credentialAccountKey(userId), select: { password: true } });
+    return !!account?.password;
+  }
+
   // Sets or replaces the password. Pass a transaction client to make it part
   // of a larger write, e.g. creating the user it belongs to.
   async set(userId: string, password: string, db: Db = this.prisma): Promise<void> {

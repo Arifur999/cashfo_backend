@@ -4,6 +4,7 @@ import { CurrentUser } from '../user-auth/decorators/current-user.decorator.js';
 import { UserAuthGuard } from '../user-auth/guards/user-auth.guard.js';
 import type { RequestUser } from '../user-auth/interfaces/request-user.interface.js';
 import { CreateVaultEntryDto } from './dto/create-vault-entry.dto.js';
+import { ResetVaultDto } from './dto/reset-vault.dto.js';
 import { SetVaultPasswordDto } from './dto/set-vault-password.dto.js';
 import { UnlockVaultDto } from './dto/unlock-vault.dto.js';
 import { UpdateVaultEntryDto } from './dto/update-vault-entry.dto.js';
@@ -25,9 +26,18 @@ export class PasswordVaultController {
     return this.passwordVaultService.getStatus(user.id);
   }
 
+  // Both check the account password, so they share the login route's
+  // brute-force budget rather than the global 100/min.
+  @Throttle({ default: { limit: 5, ttl: 15 * 60 * 1000 } })
   @Post('password')
   setVaultPassword(@CurrentUser() user: RequestUser, @Body() dto: SetVaultPasswordDto) {
     return this.passwordVaultService.setVaultPassword(user.id, dto);
+  }
+
+  @Throttle({ default: { limit: 5, ttl: 15 * 60 * 1000 } })
+  @Post('reset')
+  resetVault(@CurrentUser() user: RequestUser, @Body() dto: ResetVaultDto) {
+    return this.passwordVaultService.resetVault(user.id, dto);
   }
 
   // Looser than the main login route's 5/15min -- login happens once a
