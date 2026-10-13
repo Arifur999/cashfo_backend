@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { AdminRole, END_USER_WHERE } from '../common/roles.js';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { computeMrr } from '../revenue/mrr.js';
 
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
 
@@ -22,7 +23,7 @@ export class DashboardService {
         where: { ...END_USER_WHERE, ownedBusinesses: { some: { deletedAt: null } }, createdAt: { gte: thirtyDaysAgo } },
       }),
       this.prisma.supportTicket.count({ where: { status: { in: ['OPEN', 'IN_PROGRESS'] } } }),
-      canSeeRevenue ? this.computeMrr() : Promise.resolve(null),
+      canSeeRevenue ? computeMrr(this.prisma) : Promise.resolve(null),
       isSuperAdmin ? this.prisma.suspiciousActivityFlag.count({ where: { status: 'OPEN' } }) : Promise.resolve(null),
       isSuperAdmin ? this.prisma.backupRecord.findFirst({ where: { status: 'SUCCESS' }, orderBy: { completedAt: 'desc' } }) : Promise.resolve(null),
       isSuperAdmin
@@ -50,21 +51,5 @@ export class DashboardService {
           createdAt: log.createdAt,
         })) ?? null,
     };
-  }
-
-  // Mirrors RevenueService.summary()'s MRR slice -- duplicated rather than
-  // injected across modules since RevenueService isn't exported from
-  // RevenueModule, and this is only ~10 lines.
-  private async computeMrr(): Promise<number> {
-    const activePaidUsers = await this.prisma.platformUser.findMany({
-      where: { status: 'ACTIVE', plan: { billingCycle: { not: 'FREE' } } },
-      select: { plan: { select: { price: true, billingCycle: true } } },
-    });
-    const mrr = activePaidUsers.reduce((sum, u) => {
-      if (!u.plan) return sum;
-      const price = Number(u.plan.price);
-      return sum + (u.plan.billingCycle === 'YEARLY' ? price / 12 : price);
-    }, 0);
-    return Math.round(mrr * 100) / 100;
   }
 }
