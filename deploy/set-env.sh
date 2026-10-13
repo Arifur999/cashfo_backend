@@ -71,5 +71,6 @@ if [ -z "$(docker ps -q --filter name='^smartly-api$')" ]; then
   exit 0
 fi
 # Recreates only the services whose settings changed (the API, usually).
-( cd "$APP_DIR" && docker compose up -d ) || die "docker compose up failed -- see the output above"
+# Under the deploy agent's lock, so this never races a release.
+( cd "$APP_DIR" && flock -w 900 /run/lock/smartly-deploy.lock docker compose up -d ) || die "docker compose up failed -- see the output above"
 ok "applied"

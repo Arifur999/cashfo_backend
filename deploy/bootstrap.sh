@@ -28,6 +28,9 @@ ok "docker, $PROXY_NET and $NGINX_CTR present"
 
 step "2. $APP_DIR"
 mkdir -p "$APP_DIR/nginx" "$APP_DIR/backups" "$APP_DIR/ops/backup"
+# Database dumps: root only (older ones were written 0644).
+chmod 0700 "$APP_DIR/backups"
+find "$APP_DIR/backups" -type f -name '*.dump' -exec chmod 0600 {} +
 
 if [ -f "$APP_DIR/docker-compose.yml" ] && ! cmp -s "$SRC/docker-compose.yml" "$APP_DIR/docker-compose.yml"; then
   cp "$APP_DIR/docker-compose.yml" "$APP_DIR/docker-compose.yml.bak-$(date +%Y%m%d-%H%M%S)"

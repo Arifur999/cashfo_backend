@@ -6,11 +6,18 @@
 # succeeds, so a half-written dump never looks like a good one -- and never
 # counts toward retention.
 #
-# Restore into the running stack (replaces the data -- stop the API first):
-#   docker stop smartly-api
+# Restore into the running stack (replaces the data). The maintenance flag
+# keeps the deploy timer from starting the API (and re-running migrations)
+# halfway through:
+#   touch /opt/smartly/.maintenance
+#   docker stop smartly-web smartly-api
 #   docker exec -i smartly-db pg_restore --clean --if-exists --no-owner -U smartly -d smartly < /opt/smartly/backups/<file>.dump
-#   docker start smartly-api
+#   docker start smartly-api smartly-web
+#   rm /opt/smartly/.maintenance
 set -eu
+
+# Dumps hold every customer's data: readable by root only.
+umask 077
 
 : "${PGHOST:?PGHOST is required}"
 : "${PGUSER:?PGUSER is required}"

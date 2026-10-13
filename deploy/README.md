@@ -161,6 +161,9 @@ journalctl -u smartly-deploy -u smartly-vhost --since '1 hour ago'
 # release now instead of waiting up to 2 minutes
 systemctl start smartly-deploy
 
+# pause releases during hands-on work (the deploy timer skips while it exists)
+touch /opt/smartly/.maintenance      # ... and rm /opt/smartly/.maintenance afterwards
+
 # roll back to a specific commit (pin, then release)
 systemctl stop smartly-deploy.timer
 sed -i 's|^WEB_IMAGE=.*|WEB_IMAGE=ghcr.io/arifur999/cashfo:<sha>|' /opt/smartly/.env
@@ -180,8 +183,16 @@ cd /opt/smartly && docker compose up -d
 cd /root/smartly-src && git pull
 bash deploy/bootstrap.sh && bash deploy/install.sh && bash deploy/attach-site.sh
 
-# backups: /opt/smartly/backups (copy them off the box); restore steps are in
-# deploy/ops/backup/backup.sh
+# backups: /opt/smartly/backups, root-only, 14 days. They sit on the same disk
+# as the database, so copy them off the box regularly (a VPS reinstall or disk
+# failure takes both). Restore steps are in deploy/ops/backup/backup.sh.
+
+# when a migration fails: the agent marks it rolled back and restarts the
+# previous release by itself (journalctl -u smartly-deploy shows it). If that
+# step failed, do it by hand with the NEW image, then release again:
+#   cd /opt/smartly && docker compose run --rm --no-deps smartly-migrate \
+#     node_modules/.bin/prisma migrate resolve --rolled-back <migration_name>
+#   docker compose up -d
 
 # smartly's certificate: smartly-cert.timer checks daily and renews inside 30
 # days of expiry. To run the check now:
