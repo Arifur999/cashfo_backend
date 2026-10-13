@@ -1,15 +1,34 @@
 import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { createHash } from 'crypto';
+import { FeatureFlag } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { CreateFeatureFlagDto } from './dto/create-feature-flag.dto.js';
 import { UpdateFeatureFlagDto } from './dto/update-feature-flag.dto.js';
+
+// Flags the customer app reads (see the frontend's lib/customer/platform.ts
+// and the places that check them). Any other key can be created and toggled
+// but changes nothing until code checks it -- the admin list says so.
+export const WIRED_FEATURE_FLAGS: Record<string, string> = {
+  loan_management: 'Shows the Loan Management section',
+  dark_mode: 'Shows the light/dark theme switch',
+  pdf_export: 'Shows Print / Save as PDF on reports',
+};
 
 @Injectable()
 export class FeatureFlagsService {
   constructor(private readonly prisma: PrismaService) {}
 
-  list() {
-    return this.prisma.featureFlag.findMany({ orderBy: { key: 'asc' } });
+  async list() {
+    const flags = await this.prisma.featureFlag.findMany({ orderBy: { key: 'asc' } });
+    return flags.map((flag) => ({ ...flag, usedFor: WIRED_FEATURE_FLAGS[flag.key] ?? null }));
+  }
+
+  // Every flag, evaluated for one customer: { key: enabled }. planIds are
+  // the plans of the workspaces they own -- a plan-targeted flag is on when
+  // any of them matches.
+  async evaluateAllFor(userId: string, planIds: string[]): Promise<Record<string, boolean>> {
+    const flags = await this.prisma.featureFlag.findMany();
+    return Object.fromEntries(flags.map((flag) => [flag.key, this.isOnFor(flag, userId, planIds)]));
   }
 
   async create(dto: CreateFeatureFlagDto, adminId: string) {
@@ -59,33 +78,26 @@ export class FeatureFlagsService {
     return result;
   }
 
-  // Public, unauthenticated by design -- see the controller for why this one
-  // route skips AdminAuthGuard: it's meant to be called by end-user devices,
-  // which have no admin session at all (same reasoning as the analytics
-  // /track endpoint from Prompt 7).
-  async evaluate(key: string, platformUserId: string) {
+  // One flag for the signed-in customer. It used to be public and keyed by
+  // a caller-supplied legacy PlatformUser id, so anyone could probe any flag
+  // for any id and plan targeting read a table nothing writes.
+  async evaluate(key: string, userId: string, planIds: string[]) {
     const flag = await this.prisma.featureFlag.findUnique({ where: { key } });
-    if (!flag || !flag.isEnabled) {
-      return { enabled: false };
-    }
+    return { enabled: !!flag && this.isOnFor(flag, userId, planIds) };
+  }
 
-    if (flag.targetPlanIds.length > 0) {
-      const user = await this.prisma.platformUser.findUnique({ where: { id: platformUserId }, select: { planId: true } });
-      if (!user?.planId || !flag.targetPlanIds.includes(user.planId)) {
-        return { enabled: false };
-      }
-    }
-
-    if (flag.rolloutPercent >= 100) return { enabled: true };
-    if (flag.rolloutPercent <= 0) return { enabled: false };
+  private isOnFor(flag: FeatureFlag, userId: string, planIds: string[]): boolean {
+    if (!flag.isEnabled) return false;
+    if (flag.targetPlanIds.length > 0 && !planIds.some((id) => flag.targetPlanIds.includes(id))) return false;
+    if (flag.rolloutPercent >= 100) return true;
+    if (flag.rolloutPercent <= 0) return false;
 
     // Deterministic bucket from a hash of (key, user) -- the same user
     // always gets the same answer for the same flag on every call, rather
     // than a fresh coin flip each time, while still landing ~uniformly
     // across many different users.
-    const hash = createHash('sha256').update(`${key}:${platformUserId}`).digest();
-    const bucket = hash.readUInt32BE(0) % 100;
-    return { enabled: bucket < flag.rolloutPercent };
+    const hash = createHash('sha256').update(`${flag.key}:${userId}`).digest();
+    return hash.readUInt32BE(0) % 100 < flag.rolloutPercent;
   }
 
   private async requireFlag(id: string) {

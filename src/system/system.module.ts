@@ -29,6 +29,6 @@ import { RateLimitsService } from './rate-limits.service.js';
   imports: [AdminAuthModule],
   controllers: [BackupsController, FeatureFlagsController, ErrorLogsController, RateLimitsController],
   providers: [BackupsService, FeatureFlagsService, ErrorLogsService, RateLimitsService],
-  exports: [ErrorLogsService],
+  exports: [ErrorLogsService, FeatureFlagsService],
 })
 export class SystemModule {}
