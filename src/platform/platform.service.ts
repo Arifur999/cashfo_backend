@@ -1,5 +1,7 @@
 import { Injectable } from '@nestjs/common';
+import { LegalDocType } from '@prisma/client';
 import { AnnouncementsService } from '../announcements/announcements.service.js';
+import { LegalDocumentsService } from '../legal-documents/legal-documents.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { SettingsService } from '../settings/settings.service.js';
 import { FeatureFlagsService } from '../system/feature-flags.service.js';
@@ -14,7 +16,15 @@ export class PlatformService {
     private readonly settingsService: SettingsService,
     private readonly featureFlagsService: FeatureFlagsService,
     private readonly announcementsService: AnnouncementsService,
+    private readonly legalDocumentsService: LegalDocumentsService,
   ) {}
+
+  // A legal page as the admin last saved it (Content > Legal), for the
+  // public Terms, Privacy, Refund policy and FAQ pages.
+  async legalDocument(type: LegalDocType) {
+    const doc = await this.legalDocumentsService.getByType(type);
+    return { type: doc.type, contentEn: doc.contentEn, contentBn: doc.contentBn, version: doc.version, updatedAt: doc.updatedAt };
+  }
 
   // For pages anyone can open (sign-in, sign-up): no flags or
   // announcements, which depend on who is asking.
