@@ -233,12 +233,10 @@ export class BusinessesService {
       throw new BadRequestException('Cannot delete your default Personal workspace -- every account must always have exactly one.');
     }
 
-    // TODO (Prompt 5, once the Transaction Engine exists): count real
-    // transactions in this workspace and block deletion if any exist. There
-    // are no transactions yet in Prompt 3, so this check currently always
-    // passes -- it's here as a placeholder so the real check has an obvious
-    // place to land later.
-    const transactionCount = 0;
+    // A workspace's books are its transactions (voided ones included -- they
+    // are part of the record). Deleting a workspace that has any would hide
+    // them, so the owner has to keep it instead.
+    const transactionCount = await this.prisma.transaction.count({ where: { businessId } });
     if (transactionCount > 0) {
       throw new BadRequestException('Cannot delete a workspace that still has transactions.');
     }
