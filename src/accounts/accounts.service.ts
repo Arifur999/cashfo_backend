@@ -13,6 +13,21 @@ const ACCOUNT_TYPE_ORDER: AccountType[] = ['ASSET', 'LIABILITY', 'EQUITY', 'INCO
 // to validate Transfer only moves money between real money accounts.
 export const MONEY_ACCOUNT_SUBTYPES = ['cash', 'bank', 'mfs'];
 
+// Hidden or feature-owned accounts other modules post through: assets' pooled
+// cost account and the referral payout income account.
+export const FIXED_ASSETS_ACCOUNT_SUBTYPE = 'fixed-assets';
+export const REFERRAL_BONUS_INCOME_SUBTYPE = 'referral-bonus';
+
+// Subtypes the app looks accounts up by and posts through on its own: the
+// seeded Accounts Receivable/Payable (Dena-Pawna, Loan Management) and the
+// two above. Only the system creates them; a user-made account with one of
+// these subtypes would be picked up in their place, and changing or
+// removing the real one breaks every feature that posts through it.
+export const RESERVED_ACCOUNT_SUBTYPES = ['receivable', 'payable', FIXED_ASSETS_ACCOUNT_SUBTYPE, REFERRAL_BONUS_INCOME_SUBTYPE];
+
+const isReservedSystemAccount = (account: { isSystemAccount: boolean; accountSubtype: string | null }) =>
+  account.isSystemAccount && !!account.accountSubtype && RESERVED_ACCOUNT_SUBTYPES.includes(account.accountSubtype);
+
 @Injectable()
 export class AccountsService {
   constructor(private readonly prisma: PrismaService) {}
@@ -186,6 +201,7 @@ export class AccountsService {
   }
 
   async create(businessId: string, dto: CreateAccountDto) {
+    this.refuseReservedSubtype(dto.accountSubtype);
     if (dto.parentId) {
       await this.requireCompatibleParent(businessId, dto.parentId, dto.accountType);
     }
@@ -220,11 +236,19 @@ export class AccountsService {
   async update(businessId: string, id: string, dto: UpdateAccountDto) {
     const account = await this.requireAccount(businessId, id);
 
+    if (dto.accountSubtype !== undefined && dto.accountSubtype !== account.accountSubtype) {
+      if (isReservedSystemAccount(account)) {
+        throw new BadRequestException("This account's subtype is used by the app and cannot be changed.");
+      }
+      this.refuseReservedSubtype(dto.accountSubtype);
+    }
+
     if (dto.parentId !== undefined && dto.parentId !== null) {
       if (dto.parentId === id) {
         throw new BadRequestException('An account cannot be its own parent');
       }
       await this.requireCompatibleParent(businessId, dto.parentId, account.accountType);
+      await this.refuseParentCycle(id, dto.parentId);
     }
 
     return this.prisma.account.update({
@@ -255,6 +279,9 @@ export class AccountsService {
     // to freely archive; only the savings pool is special.
     if (account.isSystemAccount && account.accountType === 'ASSET' && account.accountSubtype === 'savings') {
       throw new BadRequestException('This is an internal system account and cannot be archived.');
+    }
+    if (isReservedSystemAccount(account)) {
+      throw new BadRequestException('The app posts through this account, so it cannot be archived.');
     }
 
     const activeChildCount = await this.prisma.account.count({
@@ -306,6 +333,9 @@ export class AccountsService {
     if (account.isSystemAccount && account.accountType === 'ASSET' && account.accountSubtype === 'savings') {
       throw new BadRequestException('This is an internal system account and cannot be removed.');
     }
+    if (isReservedSystemAccount(account)) {
+      throw new BadRequestException('The app posts through this account, so it cannot be removed.');
+    }
 
     // Any child at all (archived or active) would be orphaned by a hard
     // delete (Account.parentId is a real FK) -- stricter than archive()'s
@@ -326,6 +356,28 @@ export class AccountsService {
       await this.prisma.account.update({ where: { id }, data: { status: 'ARCHIVED' } });
     }
     return { deleted: false };
+  }
+
+  private refuseReservedSubtype(accountSubtype: string | null | undefined) {
+    if (accountSubtype && RESERVED_ACCOUNT_SUBTYPES.includes(accountSubtype)) {
+      throw new BadRequestException(`"${accountSubtype}" is reserved for an account the app manages itself.`);
+    }
+  }
+
+  // Walks up from the new parent: if the account itself is among its
+  // ancestors, the move would make a loop (A under B under A) that drops
+  // both from the tree and can never be archived or removed.
+  private async refuseParentCycle(id: string, parentId: string) {
+    const seen = new Set<string>();
+    let current: string | null = parentId;
+    while (current && !seen.has(current)) {
+      if (current === id) {
+        throw new BadRequestException('An account cannot be moved under one of its own sub-accounts');
+      }
+      seen.add(current);
+      const next: { parentId: string | null } | null = await this.prisma.account.findUnique({ where: { id: current }, select: { parentId: true } });
+      current = next?.parentId ?? null;
+    }
   }
 
   private async requireCompatibleParent(businessId: string, parentId: string, accountType: AccountType) {
