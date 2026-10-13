@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { Account, Prisma, SavingsGoal, SavingsGoalStatus } from '@prisma/client';
 import { MONEY_ACCOUNT_SUBTYPES } from '../accounts/accounts.service.js';
+import { dhakaMonthRange } from '../common/dhaka.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { TransactionsService } from '../transactions/transactions.service.js';
 import { AddContributionDto } from './dto/add-contribution.dto.js';
@@ -42,9 +43,9 @@ export class SavingsGoalsService {
       }
     }
 
-    const now = new Date();
-    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-    const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+    // This month on the Dhaka calendar -- the server clock is UTC, which is
+    // still last month for the first six hours of every month here.
+    const { start: monthStart, end: monthEnd } = dhakaMonthRange();
 
     const savedThisMonthAgg = await this.prisma.savingsGoalEntry.aggregate({
       _sum: { amount: true },
@@ -58,7 +59,7 @@ export class SavingsGoalsService {
       _sum: { amount: true },
       where: {
         categoryId: { not: null },
-        transaction: { businessId, status: 'POSTED', transactionType: 'INCOME', transactionDate: { gte: monthStart, lt: monthEnd } },
+        transaction: { businessId, status: 'POSTED', reversalOfId: null, transactionType: 'INCOME', transactionDate: { gte: monthStart, lt: monthEnd } },
       },
     });
     const incomeThisMonth = incomeThisMonthAgg._sum.amount ?? new Prisma.Decimal(0);
@@ -111,7 +112,9 @@ export class SavingsGoalsService {
         ? []
         : await this.prisma.transactionEntry.groupBy({
             by: ['accountId', 'entryType'],
-            where: { accountId: { in: walletIds } },
+            // Voided transactions and their reversals net to zero; counted
+            // gross they read as money that both came in and went out.
+            where: { accountId: { in: walletIds }, transaction: { status: 'POSTED', reversalOfId: null } },
             _sum: { amount: true },
           });
 
@@ -262,32 +265,37 @@ export class SavingsGoalsService {
     const fromAccount = await this.requireMoneyAccount(businessId, dto.moneyAccountId);
     const savingsAccount = await this.requireSavingsAccount(businessId, dto.toAccountId);
 
-    const transaction = await this.transactionsService.createTransaction(
-      businessId,
-      {
-        transactionType: 'TRANSFER',
-        transactionDate: dto.date,
-        description: dto.notes ? `Savings contribution: ${goal.name} -- ${dto.notes}` : `Savings contribution: ${goal.name}`,
-        entries: [
-          { accountId: savingsAccount.id, entryType: 'DEBIT', amount: dto.amount },
-          { accountId: fromAccount.id, entryType: 'CREDIT', amount: dto.amount },
-        ],
-      },
-      userId,
-    );
-
-    const entry = await this.prisma.savingsGoalEntry.create({
-      data: {
-        savingsGoalId: goalId,
+    // The posting and the goal's entry commit together -- a failure between
+    // them can no longer move the money without crediting the goal.
+    const entry = await this.transactionsService.withLocks([`savings-goal:${goalId}`], async (tx) => {
+      const transaction = await this.transactionsService.createTransaction(
         businessId,
-        type: 'CONTRIBUTION',
-        amount: dto.amount,
-        date: new Date(dto.date),
-        moneyAccountId: fromAccount.id,
-        savingsAccountId: savingsAccount.id,
-        transactionId: transaction.id,
-        notes: dto.notes,
-      },
+        {
+          transactionType: 'TRANSFER',
+          transactionDate: dto.date,
+          description: dto.notes ? `Savings contribution: ${goal.name} -- ${dto.notes}` : `Savings contribution: ${goal.name}`,
+          entries: [
+            { accountId: savingsAccount.id, entryType: 'DEBIT', amount: dto.amount },
+            { accountId: fromAccount.id, entryType: 'CREDIT', amount: dto.amount },
+          ],
+        },
+        userId,
+        tx,
+      );
+
+      return tx.savingsGoalEntry.create({
+        data: {
+          savingsGoalId: goalId,
+          businessId,
+          type: 'CONTRIBUTION',
+          amount: dto.amount,
+          date: new Date(dto.date),
+          moneyAccountId: fromAccount.id,
+          savingsAccountId: savingsAccount.id,
+          transactionId: transaction.id,
+          notes: dto.notes,
+        },
+      });
     });
     await this.maybeMarkCompleted(goal);
     return entry;
@@ -318,28 +326,34 @@ export class SavingsGoalsService {
 
   // Internal reallocation between two goals -- the cash never leaves the
   // pooled Savings account, so no real Transaction is created, just a
-  // matched TRANSFER_OUT/TRANSFER_IN pair.
+  // matched TRANSFER_OUT/TRANSFER_IN pair. Both goals are locked (the same
+  // keys withdraw() and addContribution() take), so two transfers out of one
+  // goal can't both pass the balance check on the same money.
   async transfer(businessId: string, dto: CreateSavingsTransferDto) {
     if (dto.fromGoalId === dto.toGoalId) {
       throw new BadRequestException('Cannot transfer a goal to itself');
     }
-    const fromGoal = await this.requireGoal(businessId, dto.fromGoalId);
-    const toGoal = await this.requireGoal(businessId, dto.toGoalId);
 
-    const fromCurrent = await this.computeCurrentAmount(fromGoal.id);
-    if (fromCurrent.lessThan(dto.amount)) {
-      throw new BadRequestException(`"${fromGoal.name}" only has ${fromCurrent.toFixed(2)} saved -- cannot transfer ${dto.amount.toFixed(2)}`);
-    }
+    const { result, toGoal } = await this.transactionsService.withLocks([`savings-goal:${dto.fromGoalId}`, `savings-goal:${dto.toGoalId}`], async (tx) => {
+      const fromGoal = await this.requireGoal(businessId, dto.fromGoalId, tx);
+      const toGoal = await this.requireGoal(businessId, dto.toGoalId, tx);
 
-    const date = new Date(dto.date);
-    const result = await this.prisma.$transaction([
-      this.prisma.savingsGoalEntry.create({
-        data: { savingsGoalId: fromGoal.id, businessId, type: 'TRANSFER_OUT', amount: dto.amount, date, relatedGoalId: toGoal.id, notes: dto.notes },
-      }),
-      this.prisma.savingsGoalEntry.create({
-        data: { savingsGoalId: toGoal.id, businessId, type: 'TRANSFER_IN', amount: dto.amount, date, relatedGoalId: fromGoal.id, notes: dto.notes },
-      }),
-    ]);
+      const fromCurrent = await this.computeCurrentAmount(fromGoal.id, tx);
+      if (fromCurrent.lessThan(dto.amount)) {
+        throw new BadRequestException(`"${fromGoal.name}" only has ${fromCurrent.toFixed(2)} saved -- cannot transfer ${dto.amount.toFixed(2)}`);
+      }
+
+      const date = new Date(dto.date);
+      const result = [
+        await tx.savingsGoalEntry.create({
+          data: { savingsGoalId: fromGoal.id, businessId, type: 'TRANSFER_OUT', amount: dto.amount, date, relatedGoalId: toGoal.id, notes: dto.notes },
+        }),
+        await tx.savingsGoalEntry.create({
+          data: { savingsGoalId: toGoal.id, businessId, type: 'TRANSFER_IN', amount: dto.amount, date, relatedGoalId: fromGoal.id, notes: dto.notes },
+        }),
+      ];
+      return { result, toGoal };
+    });
     // Only the receiving side can newly reach its target from a transfer.
     await this.maybeMarkCompleted(toGoal);
     return result;
@@ -353,40 +367,44 @@ export class SavingsGoalsService {
   // misleading 100%-saved progress bar for money that's actually been
   // spent. No partial withdrawal yet -- see WithdrawSavingsGoalDto's
   // comment.
+  // Runs under the goal's (and the wallet's) lock, in one database
+  // transaction: a second click waits for the first withdrawal to commit,
+  // then sees WITHDRAWN and stops -- the savings are paid out once.
   async withdraw(businessId: string, goalId: string, dto: WithdrawSavingsGoalDto, userId: string) {
-    const goal = await this.requireGoal(businessId, goalId);
-    if (goal.status === 'WITHDRAWN') {
-      throw new BadRequestException('This goal has already been withdrawn.');
-    }
-    const currentAmount = await this.computeCurrentAmount(goal.id);
-    if (currentAmount.lessThanOrEqualTo(0)) {
-      throw new BadRequestException('This goal has no saved balance to withdraw.');
-    }
+    return this.transactionsService.withLocks([`savings-goal:${goalId}`, `account:${dto.savingsAccountId}`], async (tx) => {
+      const goal = await this.requireGoal(businessId, goalId, tx);
+      if (goal.status === 'WITHDRAWN') {
+        throw new BadRequestException('This goal has already been withdrawn.');
+      }
+      const currentAmount = await this.computeCurrentAmount(goal.id, tx);
+      if (currentAmount.lessThanOrEqualTo(0)) {
+        throw new BadRequestException('This goal has no saved balance to withdraw.');
+      }
 
-    const savingsAccount = await this.requireSavingsAccount(businessId, dto.savingsAccountId);
-    if (new Prisma.Decimal(savingsAccount.currentBalance).lessThan(currentAmount)) {
-      throw new BadRequestException(
-        `"${savingsAccount.name}" only has ${new Prisma.Decimal(savingsAccount.currentBalance).toFixed(2)} -- cannot withdraw ${currentAmount.toFixed(2)} from it. Pick a different Savings Wallet.`,
+      const savingsAccount = await this.requireSavingsAccount(businessId, dto.savingsAccountId, tx);
+      if (new Prisma.Decimal(savingsAccount.currentBalance).lessThan(currentAmount)) {
+        throw new BadRequestException(
+          `"${savingsAccount.name}" only has ${new Prisma.Decimal(savingsAccount.currentBalance).toFixed(2)} -- cannot withdraw ${currentAmount.toFixed(2)} from it. Pick a different Savings Wallet.`,
+        );
+      }
+      const expenseAccount = await this.requireExpenseAccount(businessId, dto.expenseAccountId, tx);
+
+      const transaction = await this.transactionsService.createTransaction(
+        businessId,
+        {
+          transactionType: 'EXPENSE',
+          transactionDate: dto.date,
+          description: dto.notes ? `Savings withdrawal: ${goal.name} -- ${dto.notes}` : `Savings withdrawal: ${goal.name}`,
+          entries: [
+            { accountId: expenseAccount.id, entryType: 'DEBIT', amount: currentAmount.toNumber(), categoryId: dto.categoryId, note: dto.notes },
+            { accountId: savingsAccount.id, entryType: 'CREDIT', amount: currentAmount.toNumber() },
+          ],
+        },
+        userId,
+        tx,
       );
-    }
-    const expenseAccount = await this.requireExpenseAccount(businessId, dto.expenseAccountId);
 
-    const transaction = await this.transactionsService.createTransaction(
-      businessId,
-      {
-        transactionType: 'EXPENSE',
-        transactionDate: dto.date,
-        description: dto.notes ? `Savings withdrawal: ${goal.name} -- ${dto.notes}` : `Savings withdrawal: ${goal.name}`,
-        entries: [
-          { accountId: expenseAccount.id, entryType: 'DEBIT', amount: currentAmount.toNumber(), categoryId: dto.categoryId, note: dto.notes },
-          { accountId: savingsAccount.id, entryType: 'CREDIT', amount: currentAmount.toNumber() },
-        ],
-      },
-      userId,
-    );
-
-    const [entry] = await this.prisma.$transaction([
-      this.prisma.savingsGoalEntry.create({
+      const entry = await tx.savingsGoalEntry.create({
         data: {
           savingsGoalId: goalId,
           businessId,
@@ -397,11 +415,10 @@ export class SavingsGoalsService {
           transactionId: transaction.id,
           notes: dto.notes,
         },
-      }),
-      this.prisma.savingsGoal.update({ where: { id: goalId }, data: { status: 'WITHDRAWN' } }),
-    ]);
-
-    return entry;
+      });
+      await tx.savingsGoal.update({ where: { id: goalId }, data: { status: 'WITHDRAWN' } });
+      return entry;
+    });
   }
 
   private async toSummary(goal: SavingsGoal) {
@@ -473,9 +490,8 @@ export class SavingsGoalsService {
   private async computeTrend(goal: SavingsGoal): Promise<'INCREASING' | 'DECREASING' | 'STABLE' | null> {
     if (goal.status !== 'ACTIVE') return null;
 
-    const now = new Date();
-    const thisMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-    const lastMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    const { start: thisMonthStart } = dhakaMonthRange();
+    const { start: lastMonthStart } = dhakaMonthRange(-1);
     const [thisMonthAgg, lastMonthAgg] = await Promise.all([
       this.prisma.savingsGoalEntry.aggregate({
         where: { savingsGoalId: goal.id, type: 'CONTRIBUTION', date: { gte: thisMonthStart } },
@@ -496,8 +512,8 @@ export class SavingsGoalsService {
     return 'STABLE';
   }
 
-  private async computeCurrentAmount(goalId: string): Promise<Prisma.Decimal> {
-    const grouped = await this.prisma.savingsGoalEntry.groupBy({ by: ['type'], where: { savingsGoalId: goalId }, _sum: { amount: true } });
+  private async computeCurrentAmount(goalId: string, client: Prisma.TransactionClient = this.prisma): Promise<Prisma.Decimal> {
+    const grouped = await client.savingsGoalEntry.groupBy({ by: ['type'], where: { savingsGoalId: goalId }, _sum: { amount: true } });
     let total = new Prisma.Decimal(0);
     for (const row of grouped) {
       const amount = new Prisma.Decimal(row._sum.amount ?? 0);
@@ -512,8 +528,8 @@ export class SavingsGoalsService {
     return Math.min(999, Math.round(new Prisma.Decimal(part).dividedBy(wholeDecimal).times(100).toNumber()));
   }
 
-  private async requireSavingsAccount(businessId: string, accountId: string): Promise<Account> {
-    const account = await this.prisma.account.findUnique({ where: { id: accountId } });
+  private async requireSavingsAccount(businessId: string, accountId: string, client: Prisma.TransactionClient = this.prisma): Promise<Account> {
+    const account = await client.account.findUnique({ where: { id: accountId } });
     if (!account || account.businessId !== businessId) {
       throw new BadRequestException('Savings Wallet not found in this workspace');
     }
@@ -523,8 +539,8 @@ export class SavingsGoalsService {
     return account;
   }
 
-  private async requireExpenseAccount(businessId: string, accountId: string): Promise<Account> {
-    const account = await this.prisma.account.findUnique({ where: { id: accountId } });
+  private async requireExpenseAccount(businessId: string, accountId: string, client: Prisma.TransactionClient = this.prisma): Promise<Account> {
+    const account = await client.account.findUnique({ where: { id: accountId } });
     if (!account || account.businessId !== businessId) {
       throw new BadRequestException('expenseAccountId: account not found in this workspace');
     }
@@ -534,8 +550,8 @@ export class SavingsGoalsService {
     return account;
   }
 
-  private async requireMoneyAccount(businessId: string, accountId: string): Promise<Account> {
-    const account = await this.prisma.account.findUnique({ where: { id: accountId } });
+  private async requireMoneyAccount(businessId: string, accountId: string, client: Prisma.TransactionClient = this.prisma): Promise<Account> {
+    const account = await client.account.findUnique({ where: { id: accountId } });
     if (!account || account.businessId !== businessId) {
       throw new BadRequestException('moneyAccountId: account not found in this workspace');
     }
@@ -545,8 +561,8 @@ export class SavingsGoalsService {
     return account;
   }
 
-  private async requireGoal(businessId: string, id: string) {
-    const goal = await this.prisma.savingsGoal.findUnique({ where: { id } });
+  private async requireGoal(businessId: string, id: string, client: Prisma.TransactionClient = this.prisma) {
+    const goal = await client.savingsGoal.findUnique({ where: { id } });
     if (!goal || goal.businessId !== businessId) {
       throw new NotFoundException('Savings goal not found');
     }

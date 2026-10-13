@@ -22,6 +22,15 @@ export function dhakaDateKey(date: Date): string {
   return new Date(date.getTime() + DHAKA_OFFSET_MS).toISOString().slice(0, 10);
 }
 
+// The first day of the Dhaka calendar month `offset` months from now, and
+// of the month after it, as Dates at UTC midnight -- the bounds of "this
+// month" (offset 0) for a `@db.Date` column or a date stored as
+// `new Date('YYYY-MM-DD')`.
+export function dhakaMonthRange(offset = 0): { start: Date; end: Date } {
+  const { year, month } = dhakaToday();
+  return { start: new Date(Date.UTC(year, month - 1 + offset, 1)), end: new Date(Date.UTC(year, month + offset, 1)) };
+}
+
 // The Dhaka calendar date as a Date at UTC midnight -- the shape a
 // `@db.Date` column stores and returns.
 export function dhakaDateOnly(date: Date): Date {
