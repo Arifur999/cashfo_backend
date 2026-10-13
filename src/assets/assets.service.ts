@@ -1,6 +1,6 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { Account, Asset, Prisma } from '@prisma/client';
-import { MONEY_ACCOUNT_SUBTYPES } from '../accounts/accounts.service.js';
+import { FIXED_ASSETS_ACCOUNT_SUBTYPE, MONEY_ACCOUNT_SUBTYPES } from '../accounts/accounts.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { TransactionsService } from '../transactions/transactions.service.js';
 import { CreateAssetCategoryDto } from './dto/create-asset-category.dto.js';
@@ -9,7 +9,6 @@ import { SellAssetDto } from './dto/sell-asset.dto.js';
 import { UpdateAssetCategoryDto } from './dto/update-asset-category.dto.js';
 import { UpdateAssetValueDto } from './dto/update-asset-value.dto.js';
 
-const FIXED_ASSETS_ACCOUNT_SUBTYPE = 'fixed-assets';
 const VALUE_HISTORY_ORDER = { recordedAt: 'desc' as const };
 
 @Injectable()
@@ -122,42 +121,49 @@ export class AssetsService {
       });
     }
 
-    const paymentAccount = await this.requirePaymentAccount(businessId, dto.purchaseAccountId);
-    if (new Prisma.Decimal(paymentAccount.currentBalance).lessThan(dto.purchasePrice)) {
-      throw new BadRequestException(
-        `"${paymentAccount.name}" only has ${new Prisma.Decimal(paymentAccount.currentBalance).toFixed(2)} -- cannot spend ${dto.purchasePrice.toFixed(2)} from it.`,
-      );
-    }
-    const fixedAssetsAccount = await this.requireOrCreateFixedAssetsAccount(businessId);
+    const purchaseAccountId = dto.purchaseAccountId;
+    // One database transaction under the paying account's lock: the balance
+    // check, the posting and the asset row commit together, and two
+    // purchases from one account can't both pass the check on the same money.
+    return this.transactionsService.withLocks([`account:${purchaseAccountId}`, `fixed-assets:${businessId}`], async (tx) => {
+      const paymentAccount = await this.requirePaymentAccount(businessId, purchaseAccountId, tx);
+      if (new Prisma.Decimal(paymentAccount.currentBalance).lessThan(dto.purchasePrice)) {
+        throw new BadRequestException(
+          `"${paymentAccount.name}" only has ${new Prisma.Decimal(paymentAccount.currentBalance).toFixed(2)} -- cannot spend ${dto.purchasePrice.toFixed(2)} from it.`,
+        );
+      }
+      const fixedAssetsAccount = await this.requireOrCreateFixedAssetsAccount(businessId, tx);
 
-    const transaction = await this.transactionsService.createTransaction(
-      businessId,
-      {
-        transactionType: 'PURCHASE',
-        transactionDate: dto.purchaseDate,
-        description: dto.notes ? `Asset purchase: ${dto.name} -- ${dto.notes}` : `Asset purchase: ${dto.name}`,
-        entries: [
-          { accountId: fixedAssetsAccount.id, entryType: 'DEBIT', amount: dto.purchasePrice },
-          { accountId: paymentAccount.id, entryType: 'CREDIT', amount: dto.purchasePrice, note: dto.notes },
-        ],
-      },
-      userId,
-    );
-
-    return this.prisma.asset.create({
-      data: {
+      const transaction = await this.transactionsService.createTransaction(
         businessId,
-        name: dto.name,
-        category: dto.category,
-        purchaseDate: new Date(dto.purchaseDate),
-        purchasePrice: dto.purchasePrice,
-        currentValue: dto.purchasePrice,
-        purchaseAccountId: paymentAccount.id,
-        purchaseTransactionId: transaction.id,
-        notes: dto.notes,
-        valueHistory: { create: { value: dto.purchasePrice, note: 'Initial purchase value', recordedAt: new Date(dto.purchaseDate) } },
-      },
-      include: { valueHistory: { orderBy: VALUE_HISTORY_ORDER } },
+        {
+          transactionType: 'PURCHASE',
+          transactionDate: dto.purchaseDate,
+          description: dto.notes ? `Asset purchase: ${dto.name} -- ${dto.notes}` : `Asset purchase: ${dto.name}`,
+          entries: [
+            { accountId: fixedAssetsAccount.id, entryType: 'DEBIT', amount: dto.purchasePrice },
+            { accountId: paymentAccount.id, entryType: 'CREDIT', amount: dto.purchasePrice, note: dto.notes },
+          ],
+        },
+        userId,
+        tx,
+      );
+
+      return tx.asset.create({
+        data: {
+          businessId,
+          name: dto.name,
+          category: dto.category,
+          purchaseDate: new Date(dto.purchaseDate),
+          purchasePrice: dto.purchasePrice,
+          currentValue: dto.purchasePrice,
+          purchaseAccountId: paymentAccount.id,
+          purchaseTransactionId: transaction.id,
+          notes: dto.notes,
+          valueHistory: { create: { value: dto.purchasePrice, note: 'Initial purchase value', recordedAt: new Date(dto.purchaseDate) } },
+        },
+        include: { valueHistory: { orderBy: VALUE_HISTORY_ORDER } },
+      });
     });
   }
 
@@ -166,38 +172,44 @@ export class AssetsService {
   // has no real FK (see its own schema comment), ReportsService.getCategoryBreakdown()
   // groups by this string directly and falls back to a generated color when no
   // BudgetCategory of that name exists, so this needs no BudgetCategory row at all.
+  // Runs under the asset's lock: a double click or a second tab waits for
+  // the first sale to commit, then sees SOLD and stops -- one sale, one
+  // income posting.
   async sell(businessId: string, id: string, dto: SellAssetDto, userId: string) {
-    const asset = await this.requireAsset(businessId, id);
-    if (asset.status === 'SOLD') {
-      throw new BadRequestException('This asset has already been sold.');
-    }
-    const depositAccount = await this.requirePaymentAccount(businessId, dto.soldAccountId);
-    const fixedAssetsAccount = await this.requireOrCreateFixedAssetsAccount(businessId);
+    return this.transactionsService.withLocks([`asset:${id}`, `fixed-assets:${businessId}`], async (tx) => {
+      const asset = await this.requireAsset(businessId, id, tx);
+      if (asset.status === 'SOLD') {
+        throw new BadRequestException('This asset has already been sold.');
+      }
+      const depositAccount = await this.requirePaymentAccount(businessId, dto.soldAccountId, tx);
+      const fixedAssetsAccount = await this.requireOrCreateFixedAssetsAccount(businessId, tx);
 
-    const transaction = await this.transactionsService.createTransaction(
-      businessId,
-      {
-        transactionType: 'INCOME',
-        transactionDate: dto.date,
-        description: dto.notes ? `Asset sale: ${asset.name} -- ${dto.notes}` : `Asset sale: ${asset.name}`,
-        entries: [
-          { accountId: depositAccount.id, entryType: 'DEBIT', amount: dto.soldPrice, categoryId: 'Asset Sale', note: dto.notes },
-          { accountId: fixedAssetsAccount.id, entryType: 'CREDIT', amount: dto.soldPrice },
-        ],
-      },
-      userId,
-    );
+      const transaction = await this.transactionsService.createTransaction(
+        businessId,
+        {
+          transactionType: 'INCOME',
+          transactionDate: dto.date,
+          description: dto.notes ? `Asset sale: ${asset.name} -- ${dto.notes}` : `Asset sale: ${asset.name}`,
+          entries: [
+            { accountId: depositAccount.id, entryType: 'DEBIT', amount: dto.soldPrice, categoryId: 'Asset Sale', note: dto.notes },
+            { accountId: fixedAssetsAccount.id, entryType: 'CREDIT', amount: dto.soldPrice },
+          ],
+        },
+        userId,
+        tx,
+      );
 
-    return this.prisma.asset.update({
-      where: { id },
-      data: {
-        status: 'SOLD',
-        soldAt: new Date(dto.date),
-        soldPrice: dto.soldPrice,
-        soldAccountId: depositAccount.id,
-        soldTransactionId: transaction.id,
-      },
-      include: { valueHistory: { orderBy: VALUE_HISTORY_ORDER } },
+      return tx.asset.update({
+        where: { id },
+        data: {
+          status: 'SOLD',
+          soldAt: new Date(dto.date),
+          soldPrice: dto.soldPrice,
+          soldAccountId: depositAccount.id,
+          soldTransactionId: transaction.id,
+        },
+        include: { valueHistory: { orderBy: VALUE_HISTORY_ORDER } },
+      });
     });
   }
 
@@ -218,8 +230,8 @@ export class AssetsService {
     });
   }
 
-  private async requireAsset(businessId: string, id: string): Promise<Asset> {
-    const asset = await this.prisma.asset.findUnique({ where: { id } });
+  private async requireAsset(businessId: string, id: string, client: Prisma.TransactionClient = this.prisma): Promise<Asset> {
+    const asset = await client.asset.findUnique({ where: { id } });
     if (!asset || asset.businessId !== businessId) {
       throw new NotFoundException('Asset not found');
     }
@@ -229,8 +241,8 @@ export class AssetsService {
   // Accepts EITHER a regular money account (cash/bank/mfs) OR a Savings
   // Wallet -- matches the product spec's "General Account or Savings
   // Account" dropdown.
-  private async requirePaymentAccount(businessId: string, accountId: string): Promise<Account> {
-    const account = await this.prisma.account.findUnique({ where: { id: accountId } });
+  private async requirePaymentAccount(businessId: string, accountId: string, client: Prisma.TransactionClient = this.prisma): Promise<Account> {
+    const account = await client.account.findUnique({ where: { id: accountId } });
     if (!account || account.businessId !== businessId) {
       throw new BadRequestException('Account not found in this workspace');
     }
@@ -249,12 +261,14 @@ export class AssetsService {
   // so it's automatically excluded from every existing money-account/
   // savings-wallet listing and total (Balance, Savings Goals) with no
   // special-casing needed -- never shown or pickable directly by a user.
-  private async requireOrCreateFixedAssetsAccount(businessId: string): Promise<Account> {
-    const existing = await this.prisma.account.findFirst({
+  // Callers hold the `fixed-assets:<businessId>` lock, so two first-ever
+  // purchases can't each create one.
+  private async requireOrCreateFixedAssetsAccount(businessId: string, client: Prisma.TransactionClient = this.prisma): Promise<Account> {
+    const existing = await client.account.findFirst({
       where: { businessId, accountSubtype: FIXED_ASSETS_ACCOUNT_SUBTYPE, isSystemAccount: true },
     });
     if (existing) return existing;
-    return this.prisma.account.create({
+    return client.account.create({
       data: {
         businessId,
         name: 'Fixed Assets (Internal)',
