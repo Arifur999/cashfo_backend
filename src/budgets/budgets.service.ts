@@ -1,5 +1,6 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { BudgetCategoryType, Prisma, TransactionType } from '@prisma/client';
+import { dhakaToday } from '../common/dhaka.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { BudgetQueryDto } from './dto/budget-query.dto.js';
 import { CreateBudgetCategoryDto } from './dto/create-budget-category.dto.js';
@@ -25,11 +26,13 @@ export class BudgetsService {
   // limits themselves aren't month-specific, only this figure is.
   async getOverview(businessId: string, query: BudgetQueryDto) {
     const type = query.type ?? BudgetCategoryType.EXPENSE;
-    const now = new Date();
-    const year = query.year ?? now.getFullYear();
-    const month = query.month ?? now.getMonth() + 1;
-    const monthStart = new Date(year, month - 1, 1);
-    const monthEnd = new Date(year, month, 1);
+    // This month on the Dhaka calendar unless one is asked for; bounds at
+    // UTC midnight, the way @db.Date transaction dates are stored.
+    const today = dhakaToday();
+    const year = query.year ?? today.year;
+    const month = query.month ?? today.month;
+    const monthStart = new Date(Date.UTC(year, month - 1, 1));
+    const monthEnd = new Date(Date.UTC(year, month, 1));
 
     const [business, categories] = await Promise.all([
       this.prisma.business.findUniqueOrThrow({
@@ -50,7 +53,13 @@ export class BudgetsService {
           _sum: { amount: true },
           where: {
             categoryId: category.name,
-            transaction: { businessId, status: 'POSTED', reversalOfId: null, transactionType: TRANSACTION_TYPE_FOR[type], transactionDate: { gte: monthStart, lt: monthEnd } },
+            transaction: {
+              businessId,
+              status: 'POSTED',
+              reversalOfId: null,
+              transactionType: TRANSACTION_TYPE_FOR[type],
+              transactionDate: { gte: monthStart, lt: monthEnd },
+            },
           },
         });
         const amount = result._sum.amount ?? new Prisma.Decimal(0);
@@ -113,8 +122,8 @@ export class BudgetsService {
 
     return Promise.all(
       goals.map(async (goal) => {
-        const monthStart = new Date(goal.year, goal.month - 1, 1);
-        const monthEnd = new Date(goal.year, goal.month, 1);
+        const monthStart = new Date(Date.UTC(goal.year, goal.month - 1, 1));
+        const monthEnd = new Date(Date.UTC(goal.year, goal.month, 1));
         const result = await this.prisma.transactionEntry.aggregate({
           _sum: { amount: true },
           where: {
@@ -222,17 +231,29 @@ export class BudgetsService {
       }
     }
 
-    return this.prisma.budgetCategory.update({
-      where: { id },
-      data: {
-        ...(dto.name !== undefined && { name: dto.name }),
-        ...(dto.icon !== undefined && { icon: dto.icon }),
-        ...(dto.color !== undefined && { color: dto.color }),
-        // INCOME categories never get a limit -- see createCategory's
-        // comment. Silently ignored here rather than rejected: a stray
-        // limit on an update body is harmless to just drop.
-        ...(dto.monthlyLimit !== undefined && category.type === BudgetCategoryType.EXPENSE && { monthlyLimit: dto.monthlyLimit }),
-      },
+    // Entries name their category by its name (TransactionEntry.categoryId
+    // is a plain string), so a rename carries this workspace's entries of
+    // the category's type along -- otherwise its spent/earned history read
+    // as 0 and reports showed the old name as a separate category.
+    return this.prisma.$transaction(async (tx) => {
+      if (dto.name !== undefined && dto.name !== category.name) {
+        await tx.transactionEntry.updateMany({
+          where: { categoryId: category.name, transaction: { businessId, transactionType: TRANSACTION_TYPE_FOR[category.type] } },
+          data: { categoryId: dto.name },
+        });
+      }
+      return tx.budgetCategory.update({
+        where: { id },
+        data: {
+          ...(dto.name !== undefined && { name: dto.name }),
+          ...(dto.icon !== undefined && { icon: dto.icon }),
+          ...(dto.color !== undefined && { color: dto.color }),
+          // INCOME categories never get a limit -- see createCategory's
+          // comment. Silently ignored here rather than rejected: a stray
+          // limit on an update body is harmless to just drop.
+          ...(dto.monthlyLimit !== undefined && category.type === BudgetCategoryType.EXPENSE && { monthlyLimit: dto.monthlyLimit }),
+        },
+      });
     });
   }
 

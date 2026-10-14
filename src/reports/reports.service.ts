@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { AccountType, Prisma } from '@prisma/client';
 import { isDebitPositive } from '../accounts/account-balance.service.js';
+import { dhakaMonthRange } from '../common/dhaka.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { CategoryBreakdownQueryDto } from './dto/category-breakdown-query.dto.js';
 import { GeneralLedgerQueryDto } from './dto/general-ledger-query.dto.js';
@@ -192,12 +193,12 @@ export class ReportsService {
   // to get a fixed month bucket per point without a raw SQL date_trunc,
   // and negligible cost at `months` <= ~24.
   async getIncomeVsSavingsTrend(businessId: string, months: number) {
-    const now = new Date();
-    const points: { month: string; income: string; savings: string }[] = [];
+    const points: { month: string; monthKey: string; income: string; savings: string }[] = [];
 
+    // Months on the Dhaka calendar (the server clock is UTC, still last
+    // month for the first six hours of each one here).
     for (let i = months - 1; i >= 0; i--) {
-      const monthStart = new Date(now.getFullYear(), now.getMonth() - i, 1);
-      const monthEnd = new Date(now.getFullYear(), now.getMonth() - i + 1, 1);
+      const { start: monthStart, end: monthEnd } = dhakaMonthRange(-i);
 
       const [incomeAgg, savingsAgg] = await Promise.all([
         this.prisma.transactionEntry.aggregate({
@@ -214,7 +215,10 @@ export class ReportsService {
       ]);
 
       points.push({
-        month: monthStart.toLocaleDateString(undefined, { month: 'short', year: 'numeric' }),
+        // A fixed English label (the server's own locale used to decide
+        // it), plus YYYY-MM for a client that labels months itself.
+        month: monthStart.toLocaleDateString('en-US', { month: 'short', year: 'numeric', timeZone: 'UTC' }),
+        monthKey: monthStart.toISOString().slice(0, 7),
         income: new Prisma.Decimal(incomeAgg._sum.amount ?? 0).toFixed(2),
         savings: new Prisma.Decimal(savingsAgg._sum.amount ?? 0).toFixed(2),
       });
