@@ -1,5 +1,6 @@
 import { Body, Controller, Post, Req, UseFilters } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
+import { LOGIN_THROTTLE } from '../common/login-throttle.js';
 import type { Request } from 'express';
 import type { ClientInfo } from '../auth/auth-sessions.service.js';
 import { LoginDto } from '../user-auth/dto/login.dto.js';
@@ -14,8 +15,9 @@ const clientOf = (req: Request): ClientInfo => ({ ipAddress: req.ip, userAgent: 
 export class SignInController {
   constructor(private readonly signIn: SignInService) {}
 
-  // Same policy as both side-specific logins: 5 attempts per 15 minutes per IP.
-  @Throttle({ default: { limit: 5, ttl: 15 * 60 * 1000 } })
+  // Same policy as both side-specific logins: 5 attempts per 15 minutes
+  // per IP and account, 30 per IP.
+  @Throttle(LOGIN_THROTTLE)
   @UseFilters(LoginRateLimitFilter)
   @Post('sign-in')
   withPassword(@Body() dto: LoginDto, @Req() req: Request) {

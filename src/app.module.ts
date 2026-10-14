@@ -60,7 +60,12 @@ import { UserAuthModule } from './user-auth/user-auth.module.js';
     // Generous global default -- the login route overrides this with a
     // stricter limit via @Throttle() rather than every route sharing one
     // tight budget.
-    ThrottlerModule.forRoot([{ name: 'default', ttl: 60_000, limit: 100 }]),
+    // "perIp" mirrors "default" everywhere except the sign-in routes, which
+    // count per IP and account on "default" (see common/login-throttle.ts).
+    ThrottlerModule.forRoot([
+      { name: 'default', ttl: 60_000, limit: 100 },
+      { name: 'perIp', ttl: 60_000, limit: 100 },
+    ]),
     PrismaModule,
     AuthModule,
     BusinessAccessModule,

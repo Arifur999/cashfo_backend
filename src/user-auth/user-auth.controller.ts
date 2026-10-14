@@ -15,6 +15,7 @@ import {
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { Throttle } from '@nestjs/throttler';
+import { LOGIN_THROTTLE } from '../common/login-throttle.js';
 import type { Request } from 'express';
 import type { ClientInfo } from '../auth/auth-sessions.service.js';
 import { ChangePasswordDto } from './dto/change-password.dto.js';
@@ -61,8 +62,8 @@ export class UserAuthController {
     return this.userAuthService.register(dto, this.resolveClientInfo(req));
   }
 
-  // Max 5 attempts per 15 minutes per IP, same policy as admin login.
-  @Throttle({ default: { limit: 5, ttl: 15 * 60 * 1000 } })
+  // Same policy as admin login: 5 per IP and account, 30 per IP.
+  @Throttle(LOGIN_THROTTLE)
   @UseFilters(LoginRateLimitFilter)
   @Post('login')
   login(@Body() dto: LoginDto, @Req() req: Request) {
