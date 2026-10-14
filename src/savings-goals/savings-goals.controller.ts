@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, ParseEnumPipe, Patch, Post, Query } from '@nestjs/common';
 import { MemberRole, SavingsGoalStatus } from '@prisma/client';
 import { AddContributionDto } from './dto/add-contribution.dto.js';
 import { CreateSavingsGoalDto } from './dto/create-savings-goal.dto.js';
@@ -29,7 +29,7 @@ export class SavingsGoalsController {
   constructor(private readonly savingsGoalsService: SavingsGoalsService) {}
 
   @Get()
-  list(@Param('businessId') businessId: string, @Query('status') status?: SavingsGoalStatus) {
+  list(@Param('businessId') businessId: string, @Query('status', new ParseEnumPipe(SavingsGoalStatus, { optional: true })) status?: SavingsGoalStatus) {
     return this.savingsGoalsService.list(businessId, status);
   }
 

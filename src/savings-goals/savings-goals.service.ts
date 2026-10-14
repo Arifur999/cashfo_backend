@@ -230,7 +230,7 @@ export class SavingsGoalsService {
         ...(dto.targetAmount !== undefined && { targetAmount: dto.targetAmount }),
         ...(dto.targetDate !== undefined && { targetDate: new Date(dto.targetDate) }),
         ...(dto.durationMonths !== undefined && { durationMonths: dto.durationMonths }),
-        ...(dto.reminderDate !== undefined && { reminderDate: new Date(dto.reminderDate) }),
+        ...(dto.reminderDate !== undefined && { reminderDate: dto.reminderDate ? new Date(dto.reminderDate) : null }),
         ...(dto.reminderChannel !== undefined && { reminderChannel: dto.reminderChannel }),
         ...(dto.description !== undefined && { description: dto.description }),
       },
