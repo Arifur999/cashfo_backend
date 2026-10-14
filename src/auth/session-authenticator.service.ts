@@ -7,6 +7,8 @@ import { SessionTokensService, type TokenAudience } from './session-tokens.servi
 export interface AuthenticatedSession {
   user: User;
   sessionId: string;
+  // The admin behind a "View as customer" session, null for a real sign-in.
+  impersonatedBy: string | null;
 }
 
 // Prefer the Authorization header (both frontends forward their
@@ -36,6 +38,6 @@ export class SessionAuthenticator {
     if (!session || session.userId !== sub) {
       throw new UnauthorizedException('This session has been signed out');
     }
-    return { user: session.user, sessionId: session.id };
+    return { user: session.user, sessionId: session.id, impersonatedBy: session.impersonatedBy };
   }
 }

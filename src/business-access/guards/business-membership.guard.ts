@@ -23,7 +23,8 @@ import { RequestUser } from '../../user-auth/interfaces/request-user.interface.j
 // A workspace with a PIN also needs the unlock POST :id/verify-pin hands
 // out, in the x-workspace-unlock header; without it the answer is 423
 // WORKSPACE_LOCKED (after the membership check, so only members learn a
-// workspace is locked).
+// workspace is locked). A super admin's read-only support view isn't asked:
+// the PIN guards a device, and support works from the admin panel.
 @Injectable()
 export class BusinessMembershipGuard implements CanActivate {
   constructor(
@@ -53,7 +54,7 @@ export class BusinessMembershipGuard implements CanActivate {
     }
 
     const { pinHash } = membership.business;
-    if (pinHash && !this.reflector.getAllAndOverride<boolean>(ALLOW_LOCKED_WORKSPACE, [context.getHandler(), context.getClass()])) {
+    if (pinHash && !user.impersonatedBy && !this.reflector.getAllAndOverride<boolean>(ALLOW_LOCKED_WORKSPACE, [context.getHandler(), context.getClass()])) {
       const header = request.headers[WORKSPACE_UNLOCK_HEADER];
       const token = Array.isArray(header) ? header[0] : header;
       if (!this.unlocks.opens(token, user.id, user.sessionId, businessId, pinHash)) {

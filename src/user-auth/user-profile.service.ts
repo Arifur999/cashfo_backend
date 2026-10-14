@@ -9,8 +9,13 @@ import { UpdateProfileDto } from './dto/update-profile.dto.js';
 export class UserProfileService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async me(userId: string) {
-    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+  // impersonatedBy: the admin behind a read-only "View as customer"
+  // session, named so the app can say whose view it is.
+  async me(userId: string, impersonatedBy?: string) {
+    const [user, admin] = await Promise.all([
+      this.prisma.user.findUnique({ where: { id: userId } }),
+      impersonatedBy ? this.prisma.user.findUnique({ where: { id: impersonatedBy }, select: { name: true, email: true } }) : null,
+    ]);
     if (!user) {
       throw new UnauthorizedException('Account no longer exists');
     }
@@ -47,6 +52,7 @@ export class UserProfileService {
         hasPinLock: m.business.pinHash !== null,
         trialEndsAt: m.business.trialEndsAt,
       })),
+      impersonatedBy: impersonatedBy ? { name: admin?.name ?? 'An admin', email: admin?.email ?? null } : null,
     };
   }
 

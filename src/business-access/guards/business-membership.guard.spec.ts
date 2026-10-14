@@ -9,7 +9,7 @@ class Routes {
   verifyPin() {}
 }
 
-const setup = ({ pinHash = null as string | null, status = 'ACTIVE', opens = false } = {}) => {
+const setup = ({ pinHash = null as string | null, status = 'ACTIVE', opens = false, impersonatedBy = undefined as string | undefined } = {}) => {
   const prisma = {
     businessMember: {
       findUnique: vi.fn().mockResolvedValue({ businessId: 'biz-1', userId: 'user-1', role: 'OWNER', status, business: { deletedAt: null, pinHash } }),
@@ -20,7 +20,7 @@ const setup = ({ pinHash = null as string | null, status = 'ACTIVE', opens = fal
   const request = {
     params: { businessId: 'biz-1' },
     headers: { 'x-workspace-unlock': 'unlock-token' },
-    user: { id: 'user-1', email: 'owner@example.com', sessionId: 'session-1' },
+    user: { id: 'user-1', email: 'owner@example.com', sessionId: 'session-1', impersonatedBy },
   };
   const context = (handler: keyof Routes = 'open') =>
     ({
@@ -62,6 +62,12 @@ describe('BusinessMembershipGuard', () => {
   it('lets the PIN itself be entered while locked', async () => {
     const { guard, unlocks, context } = setup({ pinHash: 'pin-hash' });
     await expect(guard.canActivate(context('verifyPin'))).resolves.toBe(true);
+    expect(unlocks.opens).not.toHaveBeenCalled();
+  });
+
+  it("doesn't ask a super admin's read-only view for the PIN", async () => {
+    const { guard, unlocks, context } = setup({ pinHash: 'pin-hash', impersonatedBy: 'admin-1' });
+    await expect(guard.canActivate(context())).resolves.toBe(true);
     expect(unlocks.opens).not.toHaveBeenCalled();
   });
 
