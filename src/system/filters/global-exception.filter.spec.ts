@@ -32,11 +32,11 @@ describe('toClientError', () => {
 });
 
 describe('isMoney', () => {
-  it.each([0.01, 1, 12.5, 1500.75, 999_999_999_999.99, 0.1 + 0.2])('accepts %s', (value) => {
+  it.each([0.01, 1, 12.5, 1500.75, 134_941_381.7, 987_654_321_098.76, 999_999_999_999.99])('accepts %s', (value) => {
     expect(isMoney(value)).toBe(true);
   });
 
-  it.each([0, -5, 0.001, 1e-7, 1e13, 12.345, Number.NaN, Number.POSITIVE_INFINITY, '12', null])('refuses %s', (value) => {
+  it.each([0, -5, 0.001, 1e-7, 1e13, 12.345, 0.1 + 0.2, Number.NaN, Number.POSITIVE_INFINITY, '12', null])('refuses %s', (value) => {
     expect(isMoney(value)).toBe(false);
   });
 });

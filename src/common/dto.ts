@@ -15,8 +15,11 @@ export const whenSent = (_: unknown, value: unknown) => value !== undefined;
 // The largest amount a Decimal(14,2) money column holds.
 export const MAX_MONEY = 999_999_999_999.99;
 
+// toFixed(2) round-trips exactly for any amount with at most two decimals
+// up to MAX_MONEY (a tolerance on value * 100 doesn't: past about 1.3e8 its
+// float error exceeds any fixed epsilon), and never for 1e-7 or 12.345.
 export const isMoney = (value: unknown): boolean =>
-  typeof value === 'number' && Number.isFinite(value) && value >= 0.01 && value <= MAX_MONEY && Math.abs(value * 100 - Math.round(value * 100)) < 1e-6;
+  typeof value === 'number' && Number.isFinite(value) && value >= 0.01 && value <= MAX_MONEY && Number(value.toFixed(2)) === value;
 
 // A money amount sent as a JSON number: from 0.01 to MAX_MONEY, at most two
 // decimals. Replaces IsNumber({ maxDecimalPlaces: 2 }) + IsPositive: that
@@ -28,7 +31,10 @@ export function IsMoney(validationOptions?: ValidationOptions): PropertyDecorato
       name: 'isMoney',
       validator: {
         validate: isMoney,
-        defaultMessage: buildMessage((each) => `${each}$property must be an amount from 0.01 to 999,999,999,999.99 with at most two decimals`, validationOptions),
+        defaultMessage: buildMessage(
+          (each) => `${each}$property must be an amount from 0.01 to 999,999,999,999.99 with at most two decimals`,
+          validationOptions,
+        ),
       },
     },
     validationOptions,
