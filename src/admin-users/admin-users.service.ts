@@ -131,6 +131,30 @@ export class AdminUsersService {
     return result;
   }
 
+  // The way back from suspend(): until now a suspended admin's email was
+  // lost to the team for good (it can't be created again) short of a manual
+  // database edit.
+  async activate(id: string, currentAdminId: string, ipAddress?: string) {
+    const admin = await this.requireAdmin(id);
+    if (admin.status === 'ACTIVE') {
+      return this.prisma.user.findUniqueOrThrow({ where: { id }, select: ADMIN_ACCOUNT_SELECT });
+    }
+
+    const result = await this.prisma.user.update({ where: { id }, data: { status: 'ACTIVE' }, select: ADMIN_ACCOUNT_SELECT });
+    await this.prisma.auditLog.create({
+      data: {
+        adminUserId: currentAdminId,
+        action: 'ADMIN_ACCOUNT_ACTIVATED',
+        entityType: 'AdminUser',
+        entityId: id,
+        oldValue: { status: admin.status },
+        newValue: { status: result.status },
+        ipAddress,
+      },
+    });
+    return result;
+  }
+
   async resetPassword(id: string, currentAdminId: string, ipAddress?: string) {
     await this.requireAdmin(id);
 

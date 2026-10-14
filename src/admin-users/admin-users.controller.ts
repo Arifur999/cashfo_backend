@@ -47,6 +47,12 @@ export class AdminUsersController {
   }
 
   @Roles(AdminRole.SUPER_ADMIN)
+  @Patch(':id/activate')
+  activate(@Param('id') id: string, @CurrentAdmin() admin: RequestAdminUser, @Req() req: Request) {
+    return this.adminUsersService.activate(id, admin.id, req.ip);
+  }
+
+  @Roles(AdminRole.SUPER_ADMIN)
   @Post(':id/reset-password')
   resetPassword(@Param('id') id: string, @CurrentAdmin() admin: RequestAdminUser, @Req() req: Request) {
     return this.adminUsersService.resetPassword(id, admin.id, req.ip);
