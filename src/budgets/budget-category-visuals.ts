@@ -190,6 +190,12 @@ export const BUDGET_CATEGORY_ICONS = [
   'clock',
   'timer',
   'flag',
+  // Income-category icons the frontend suggests for "Business Income",
+  // "Freelancing" and "Other Income" -- missing here, so creating those
+  // categories failed validation.
+  'business-income',
+  'freelancing',
+  'other-income',
 ] as const;
 
 // Original 8 plus a few more distinct Tailwind hues -- still small enough
