@@ -12,6 +12,9 @@ export function isDebitPositive(accountType: AccountType): boolean {
   return accountType === 'ASSET' || accountType === 'EXPENSE';
 }
 
+// A transaction that still stands: neither voided nor the reversal of a void.
+const LIVE_TRANSACTION = { status: 'POSTED', reversalOfId: null } satisfies Prisma.TransactionWhereInput;
+
 export interface LedgerFilters {
   dateFrom?: string;
   dateTo?: string;
@@ -199,8 +202,17 @@ export class AccountBalanceService {
     const hasDateFilter = Object.keys(dateFilter).length > 0;
     const transactionDateFilter: Prisma.TransactionWhereInput = hasDateFilter ? { transactionDate: dateFilter } : {};
     const baseWhere: Prisma.TransactionEntryWhereInput = { accountId, ...(hasDateFilter && { transaction: transactionDateFilter }) };
-    const nonTransferWhere: Prisma.TransactionEntryWhereInput = { accountId, transaction: { ...transactionDateFilter, transactionType: { not: 'TRANSFER' } } };
-    const transferWhere: Prisma.TransactionEntryWhereInput = { accountId, transaction: { ...transactionDateFilter, transactionType: 'TRANSFER' } };
+    // In/Out/Adjustment leave out voided transactions and their reversals:
+    // the pair nets to zero, but counted gross it reads as money that both
+    // came in and went out.
+    const nonTransferWhere: Prisma.TransactionEntryWhereInput = {
+      accountId,
+      transaction: { ...transactionDateFilter, ...LIVE_TRANSACTION, transactionType: { not: 'TRANSFER' } },
+    };
+    const transferWhere: Prisma.TransactionEntryWhereInput = {
+      accountId,
+      transaction: { ...transactionDateFilter, ...LIVE_TRANSACTION, transactionType: 'TRANSFER' },
+    };
 
     const [debitAgg, creditAgg, transferDebitAgg, transferCreditAgg, transactionCount] = await Promise.all([
       this.prisma.transactionEntry.aggregate({ where: { ...nonTransferWhere, entryType: 'DEBIT' }, _sum: { amount: true } }),
@@ -239,14 +251,14 @@ export class AccountBalanceService {
   // into two columns: "Savings" (this account funding a Savings Goal
   // contribution -- see SavingsGoalsService.addContribution()) vs
   // "Adjustment" (an actual Balance Transfer between two money accounts).
-  // A transfer is classified as "Savings" purely by whether one of its two
-  // entries touches the business's system Savings account (accountSubtype
-  // "savings") -- that account is deliberately excluded from
-  // MONEY_ACCOUNT_SUBTYPES, so it never appears as a pickable "to/from"
-  // account in the regular Balance Transfer form, making this the only way
-  // money ever moves in or out of it. Savings is always an outflow (no
-  // withdraw-from-goal flow exists yet), so it's shown as a plain
-  // magnitude, unlike Adjustment's signed +/-.
+  // A transfer is classified as "Savings" when its other side is a Savings
+  // Wallet (accountSubtype "savings") -- savings wallets are deliberately
+  // excluded from MONEY_ACCOUNT_SUBTYPES, so they never appear as a
+  // pickable "to/from" account in the regular Balance Transfer form, and a
+  // goal contribution is the only transfer that reaches one. Savings is
+  // shown as money sent out (positive), Adjustment as a signed +/-. Voided
+  // transactions and their reversals are left out of every column; the
+  // pair nets to zero in the current balance.
   async getWalletsOverview(businessId: string) {
     const accounts = await this.prisma.account.findMany({
       where: { businessId, accountType: 'ASSET', accountSubtype: { in: MONEY_ACCOUNT_SUBTYPES } },
@@ -254,20 +266,19 @@ export class AccountBalanceService {
     });
     const accountIds = accounts.map((a) => a.id);
 
-    const [nonTransferGrouped, transferEntries, savingsAccount] =
+    const [nonTransferGrouped, transferEntries] =
       accountIds.length === 0
-        ? [[], [], null]
+        ? [[], []]
         : await Promise.all([
             this.prisma.transactionEntry.groupBy({
               by: ['accountId', 'entryType'],
-              where: { accountId: { in: accountIds }, transaction: { transactionType: { not: 'TRANSFER' } } },
+              where: { accountId: { in: accountIds }, transaction: { ...LIVE_TRANSACTION, transactionType: { not: 'TRANSFER' } } },
               _sum: { amount: true },
             }),
             this.prisma.transactionEntry.findMany({
-              where: { accountId: { in: accountIds }, transaction: { transactionType: 'TRANSFER' } },
-              include: { transaction: { include: { entries: true } } },
+              where: { accountId: { in: accountIds }, transaction: { ...LIVE_TRANSACTION, transactionType: 'TRANSFER' } },
+              include: { transaction: { include: { entries: { include: { account: { select: { accountSubtype: true } } } } } } },
             }),
-            this.prisma.account.findFirst({ where: { businessId, accountSubtype: 'savings', isSystemAccount: true } }),
           ]);
 
     const inByAccount = new Map<string, Prisma.Decimal>();
@@ -282,9 +293,10 @@ export class AccountBalanceService {
     const savingsByAccount = new Map<string, Prisma.Decimal>();
     for (const entry of transferEntries) {
       const amount = new Prisma.Decimal(entry.amount);
-      const isSavingsContribution = !!savingsAccount && entry.transaction.entries.some((e) => e.accountId === savingsAccount.id);
+      const isSavingsContribution = entry.transaction.entries.some((e) => e.accountId !== entry.accountId && e.account.accountSubtype === 'savings');
       if (isSavingsContribution) {
-        savingsByAccount.set(entry.accountId, (savingsByAccount.get(entry.accountId) ?? new Prisma.Decimal(0)).plus(amount));
+        const sentOut = entry.entryType === 'CREDIT' ? amount : amount.negated();
+        savingsByAccount.set(entry.accountId, (savingsByAccount.get(entry.accountId) ?? new Prisma.Decimal(0)).plus(sentOut));
       } else {
         const signed = entry.entryType === 'DEBIT' ? amount : amount.negated();
         adjustmentByAccount.set(entry.accountId, (adjustmentByAccount.get(entry.accountId) ?? new Prisma.Decimal(0)).plus(signed));

@@ -7,5 +7,6 @@ import { AnnouncementsService } from './announcements.service.js';
   imports: [AdminAuthModule],
   controllers: [AnnouncementsController],
   providers: [AnnouncementsService],
+  exports: [AnnouncementsService],
 })
 export class AnnouncementsModule {}

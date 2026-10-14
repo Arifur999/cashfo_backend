@@ -2,11 +2,14 @@ import { CanActivate, ExecutionContext, Injectable, UnauthorizedException } from
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { Request } from 'express';
+import { PrismaService } from '../../prisma/prisma.service.js';
 import { RequestUser } from '../../user-auth/interfaces/request-user.interface.js';
+import { vaultPasswordFingerprint } from '../vault-crypto.js';
 
 interface VaultTokenPayload {
   sub: string;
   scope: string;
+  ver?: string;
 }
 
 // Guards every /api/vault/entries* route on top of UserAuthGuard (which must
@@ -19,9 +22,10 @@ export class VaultAccessGuard implements CanActivate {
   constructor(
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
+    private readonly prisma: PrismaService,
   ) {}
 
-  canActivate(context: ExecutionContext): boolean {
+  async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest<Request & { user?: RequestUser }>();
     const header = request.headers['x-vault-token'];
     const token = Array.isArray(header) ? header[0] : header;
@@ -40,6 +44,12 @@ export class VaultAccessGuard implements CanActivate {
 
     if (payload.scope !== 'vault' || payload.sub !== request.user?.id) {
       throw new UnauthorizedException('Vault is locked');
+    }
+    // An unlock made with a vault password that has since been changed or
+    // reset no longer opens the vault.
+    const user = await this.prisma.user.findUnique({ where: { id: payload.sub }, select: { vaultPasswordHash: true } });
+    if (!user?.vaultPasswordHash || payload.ver !== vaultPasswordFingerprint(user.vaultPasswordHash)) {
+      throw new UnauthorizedException('Vault session expired -- please unlock again');
     }
     return true;
   }

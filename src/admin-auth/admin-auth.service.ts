@@ -1,9 +1,11 @@
-import { ForbiddenException, Injectable, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, UnauthorizedException } from '@nestjs/common';
 import type { User } from '@prisma/client';
 import { AuthSessionsService, type ClientInfo } from '../auth/auth-sessions.service.js';
+import { CredentialsService } from '../auth/credentials.service.js';
 import { SessionTokensService } from '../auth/session-tokens.service.js';
 import { isAdminRole } from '../common/roles.js';
 import { PrismaService } from '../prisma/prisma.service.js';
+import type { ChangePasswordDto } from '../user-auth/dto/change-password.dto.js';
 import { LoginDto } from './dto/login.dto.js';
 
 @Injectable()
@@ -12,6 +14,7 @@ export class AdminAuthService {
     private readonly prisma: PrismaService,
     private readonly sessions: AuthSessionsService,
     private readonly tokens: SessionTokensService,
+    private readonly credentials: CredentialsService,
   ) {}
 
   async login(dto: LoginDto, client: ClientInfo) {
@@ -116,6 +119,25 @@ export class AdminAuthService {
     } catch {
       // ignore
     }
+    return { success: true };
+  }
+
+  // An admin's own password change. Until now only a super admin could set
+  // one (and saw it), so an admin could never rotate a password that had
+  // been shared or leaked. Every other session of the account is signed out.
+  async changePassword(adminId: string, sessionId: string, dto: ChangePasswordDto, ipAddress?: string) {
+    const admin = await this.prisma.user.findUnique({ where: { id: adminId } });
+    if (!admin || !isAdminRole(admin.role)) {
+      throw new UnauthorizedException('Admin no longer exists');
+    }
+    if (!(await this.credentials.verify(adminId, dto.currentPassword))) {
+      throw new BadRequestException('Current password is incorrect');
+    }
+    await this.credentials.set(adminId, dto.newPassword);
+    await this.sessions.revokeOthersForUser(adminId, sessionId);
+    await this.prisma.auditLog.create({
+      data: { adminUserId: adminId, action: 'ADMIN_PASSWORD_CHANGED', entityType: 'AdminUser', entityId: adminId, ipAddress },
+    });
     return { success: true };
   }
 

@@ -28,8 +28,8 @@ export class TranslationsController {
 
   @Roles(AdminRole.SUPER_ADMIN, AdminRole.CONTENT_ADMIN)
   @Post()
-  create(@Body() dto: CreateTranslationDto) {
-    return this.translationsService.create(dto);
+  create(@Body() dto: CreateTranslationDto, @CurrentAdmin() admin: RequestAdminUser, @Req() req: Request) {
+    return this.translationsService.create(dto, admin.id, req.ip);
   }
 
   @Roles(AdminRole.SUPER_ADMIN, AdminRole.CONTENT_ADMIN)

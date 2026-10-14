@@ -1,5 +1,6 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { GroupMemberStatus, Prisma } from '@prisma/client';
+import { dhakaMonthRange } from '../common/dhaka.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { CloseSettlementDto } from './dto/close-settlement.dto.js';
 import { CreateGroupContributionDto } from './dto/create-group-contribution.dto.js';
@@ -36,6 +37,8 @@ export interface SettlementResult {
   perMemberShare: string;
   members: SettlementMemberRow[];
 }
+
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 @Injectable()
 export class GroupExpensesService {
@@ -348,34 +351,56 @@ export class GroupExpensesService {
     });
   }
 
+  // A period can be closed once: closing it again (a double click, a second
+  // tab, or a range overlapping one already closed) would split or count the
+  // same expenses twice in the history. Runs under a per-group lock so two
+  // closes can't both pass the overlap check.
   async closeSettlement(businessId: string, dto: CloseSettlementDto, userId: string) {
     const periodStart = new Date(dto.periodStart);
     const periodEnd = new Date(dto.periodEnd);
-    const result = await this.computeSettlement(businessId, periodStart, periodEnd);
-
-    if (result.memberCount === 0) {
-      throw new BadRequestException('Add at least one active member before closing a settlement');
+    if (periodEnd.getTime() < periodStart.getTime()) {
+      throw new BadRequestException('The period ends before it starts');
     }
 
-    return this.prisma.groupSettlement.create({
-      data: {
-        businessId,
-        periodStart,
-        periodEnd,
-        totalExpense: result.totalExpense,
-        memberCount: result.memberCount,
-        perMemberShare: result.perMemberShare,
-        closedBy: userId,
-        members: {
-          create: result.members.map((m) => ({
-            groupMemberId: m.groupMemberId,
-            contributed: m.contributed,
-            share: m.share,
-            balance: m.balance,
-          })),
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`group-settlement:${businessId}`}))`;
+
+      const overlapping = await tx.groupSettlement.findFirst({
+        where: { businessId, periodStart: { lte: periodEnd }, periodEnd: { gte: periodStart } },
+        orderBy: { periodStart: 'asc' },
+      });
+      if (overlapping) {
+        const day = (d: Date) => d.toISOString().slice(0, 10);
+        throw new ConflictException(
+          `A settlement for ${day(overlapping.periodStart)} to ${day(overlapping.periodEnd)} is already closed and overlaps this period`,
+        );
+      }
+
+      const result = await this.computeSettlement(businessId, periodStart, periodEnd, tx);
+      if (result.memberCount === 0) {
+        throw new BadRequestException('Add at least one active member before closing a settlement');
+      }
+
+      return tx.groupSettlement.create({
+        data: {
+          businessId,
+          periodStart,
+          periodEnd,
+          totalExpense: result.totalExpense,
+          memberCount: result.memberCount,
+          perMemberShare: result.perMemberShare,
+          closedBy: userId,
+          members: {
+            create: result.members.map((m) => ({
+              groupMemberId: m.groupMemberId,
+              contributed: m.contributed,
+              share: m.share,
+              balance: m.balance,
+            })),
+          },
         },
-      },
-      include: { members: { include: { groupMember: true } } },
+        include: { members: { include: { groupMember: true } } },
+      });
     });
   }
 
@@ -383,10 +408,19 @@ export class GroupExpensesService {
   // any requested period) and closeSettlement() (same computation, then
   // persisted as a locked snapshot) -- one source of truth for the split
   // math so the two never drift apart.
-  private async computeSettlement(businessId: string, periodStart: Date, periodEnd: Date): Promise<SettlementResult> {
-    const [members, expenseAgg, contributions] = await Promise.all([
-      this.prisma.groupMember.findMany({ where: { businessId, status: 'ACTIVE' }, orderBy: { createdAt: 'asc' } }),
-      this.prisma.groupExpense.aggregate({
+  //
+  // Archived members don't share the period's expenses, but money they put
+  // in during it still counts: they're listed with a zero share, so their
+  // balance shows what the group owes them back.
+  private async computeSettlement(
+    businessId: string,
+    periodStart: Date,
+    periodEnd: Date,
+    client: Prisma.TransactionClient = this.prisma,
+  ): Promise<SettlementResult> {
+    const [allMembers, expenseAgg, contributions] = await Promise.all([
+      client.groupMember.findMany({ where: { businessId }, orderBy: { createdAt: 'asc' } }),
+      client.groupExpense.aggregate({
         where: { businessId, date: { gte: periodStart, lte: periodEnd } },
         _sum: { amount: true },
       }),
@@ -394,11 +428,14 @@ export class GroupExpensesService {
       // deposits and returns (negative amounts, see AddContributionModal's
       // Deposit/Return toggle) into one figure, losing the gross/returned
       // breakdown the settlement view shows separately.
-      this.prisma.groupContribution.findMany({
+      client.groupContribution.findMany({
         where: { businessId, date: { gte: periodStart, lte: periodEnd } },
         select: { groupMemberId: true, amount: true },
       }),
     ]);
+    const contributorIds = new Set(contributions.map((c) => c.groupMemberId));
+    const members = allMembers.filter((m) => m.status === 'ACTIVE');
+    const formerMembers = allMembers.filter((m) => m.status !== 'ACTIVE' && contributorIds.has(m.id));
 
     const totalsByMember = new Map<string, { deposited: Prisma.Decimal; returned: Prisma.Decimal }>();
     for (const c of contributions) {
@@ -428,10 +465,11 @@ export class GroupExpensesService {
     const baseShare = baseCents.dividedBy(100);
     const lastShare = baseCents.plus(remainderCents).dividedBy(100);
 
-    const rows: SettlementMemberRow[] = members.map((member, index) => {
+    const zero = new Prisma.Decimal(0);
+    const rows: SettlementMemberRow[] = [...members, ...formerMembers].map((member, index) => {
       const totals = totalsByMember.get(member.id) ?? { deposited: new Prisma.Decimal(0), returned: new Prisma.Decimal(0) };
       const contributed = totals.deposited.minus(totals.returned);
-      const share = index === memberCount - 1 ? lastShare : baseShare;
+      const share = index >= memberCount ? zero : index === memberCount - 1 ? lastShare : baseShare;
       const balance = contributed.minus(share);
       return {
         groupMemberId: member.id,
@@ -454,16 +492,15 @@ export class GroupExpensesService {
     };
   }
 
-  // No from/to given -- defaults to the current calendar month (UTC), same
-  // "whole month" framing as the rest of the app's reports.
+  // No from/to given -- defaults to the current Dhaka calendar month (UTC's
+  // is still last month for the first six hours of every month here), as
+  // date-only values like the stored expense and contribution dates.
   private resolvePeriod(from?: string, to?: string): { periodStart: Date; periodEnd: Date } {
     if (from && to) {
       return { periodStart: new Date(from), periodEnd: new Date(to) };
     }
-    const now = new Date();
-    const periodStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
-    const periodEnd = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 0));
-    return { periodStart, periodEnd };
+    const { start, end } = dhakaMonthRange();
+    return { periodStart: start, periodEnd: new Date(end.getTime() - DAY_MS) };
   }
 
   private async requireMember(businessId: string, id: string) {

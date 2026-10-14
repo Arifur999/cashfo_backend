@@ -20,6 +20,16 @@ const DEFAULTS = {
   referral_reward_amount: 100,
 } as const;
 
+const KEY_TO_FIELD: Record<string, keyof PlatformSettings> = {
+  platform_name: 'platformName',
+  support_email: 'supportEmail',
+  default_currency: 'defaultCurrency',
+  default_timezone: 'defaultTimezone',
+  maintenance_mode: 'maintenanceMode',
+  maintenance_message: 'maintenanceMessage',
+  referral_reward_amount: 'referralRewardAmount',
+};
+
 export interface PlatformSettings {
   platformName: string;
   supportEmail: string;
@@ -30,9 +40,27 @@ export interface PlatformSettings {
   referralRewardAmount: number;
 }
 
+// How long getCached() may serve a copy. The maintenance switch reads
+// settings on every customer request; a few seconds of delay after an admin
+// flips it is fine, a database round trip per request is not.
+const CACHE_TTL_MS = 5_000;
+
 @Injectable()
 export class SettingsService {
+  private cached: { value: PlatformSettings; at: number } | null = null;
+
   constructor(private readonly prisma: PrismaService) {}
+
+  // For per-request readers. update() clears it, so this process sees its
+  // own changes at once.
+  async getCached(): Promise<PlatformSettings> {
+    if (this.cached && Date.now() - this.cached.at < CACHE_TTL_MS) {
+      return this.cached.value;
+    }
+    const value = await this.get();
+    this.cached = { value, at: Date.now() };
+    return value;
+  }
 
   async get(): Promise<PlatformSettings> {
     const rows = await this.prisma.platformSetting.findMany();
@@ -61,29 +89,32 @@ export class SettingsService {
     if (dto.maintenanceMessage !== undefined) updates.push(['maintenance_message', dto.maintenanceMessage]);
     if (dto.referralRewardAmount !== undefined) updates.push(['referral_reward_amount', dto.referralRewardAmount]);
 
-    for (const [key, value] of updates) {
-      await this.prisma.platformSetting.upsert({
-        where: { key },
-        update: { value: value as unknown as Prisma.InputJsonValue, updatedBy: adminId },
-        create: { key, value: value as unknown as Prisma.InputJsonValue, updatedBy: adminId },
-      });
-    }
+    // Every field and its audit entry together: a failure half-way used to
+    // leave some settings changed with no record of who changed them.
+    await this.prisma.$transaction(async (tx) => {
+      for (const [key, value] of updates) {
+        await tx.platformSetting.upsert({
+          where: { key },
+          update: { value: value as unknown as Prisma.InputJsonValue, updatedBy: adminId },
+          create: { key, value: value as unknown as Prisma.InputJsonValue, updatedBy: adminId },
+        });
+      }
+      if (updates.length > 0) {
+        const after = { ...before, ...Object.fromEntries(updates.map(([key, value]) => [KEY_TO_FIELD[key], value])) };
+        await tx.auditLog.create({
+          data: {
+            adminUserId: adminId,
+            action: 'PLATFORM_SETTINGS_UPDATED',
+            entityType: 'PlatformSetting',
+            oldValue: before as unknown as Prisma.InputJsonValue,
+            newValue: after as unknown as Prisma.InputJsonValue,
+            ipAddress,
+          },
+        });
+      }
+    });
 
-    const after = await this.get();
-
-    if (updates.length > 0) {
-      await this.prisma.auditLog.create({
-        data: {
-          adminUserId: adminId,
-          action: 'PLATFORM_SETTINGS_UPDATED',
-          entityType: 'PlatformSetting',
-          oldValue: before as unknown as Prisma.InputJsonValue,
-          newValue: after as unknown as Prisma.InputJsonValue,
-          ipAddress,
-        },
-      });
-    }
-
-    return after;
+    this.cached = null;
+    return this.get();
   }
 }

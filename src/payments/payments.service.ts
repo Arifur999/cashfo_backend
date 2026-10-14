@@ -1,4 +1,4 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { PaymentStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { ListPaymentsQueryDto } from './dto/list-payments-query.dto.js';
@@ -105,6 +105,14 @@ export class PaymentsService {
     }
 
     return this.prisma.$transaction(async (tx) => {
+      // Claimed with a condition: of two refunds sent at once, only one moves
+      // the payment off SUCCESS; the other stops here instead of failing on
+      // the one-refund-per-payment unique index with a 500.
+      const claimed = await tx.payment.updateMany({ where: { id, status: PaymentStatus.SUCCESS }, data: { status: PaymentStatus.REFUNDED } });
+      if (claimed.count === 0) {
+        throw new ConflictException('This payment has already been refunded');
+      }
+
       const refund = await tx.refund.create({
         data: {
           paymentId: id,
@@ -115,7 +123,7 @@ export class PaymentsService {
         },
       });
 
-      const updatedPayment = await tx.payment.update({ where: { id }, data: { status: PaymentStatus.REFUNDED } });
+      const updatedPayment = await tx.payment.findUniqueOrThrow({ where: { id } });
 
       await tx.auditLog.create({
         data: {

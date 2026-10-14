@@ -59,7 +59,7 @@ if [ "$pulled" != 1 ]; then
          -> this server's connection to GitHub's package storage is failing; try again later"
 fi
 # The agent does the rest: start, wait for health, report.
-bash "$LIB_DIR/agent/smartly-deploy.sh" || die "the stack did not become healthy -- see the logs above"
+SMARTLY_LOCK_WAIT=1 bash "$LIB_DIR/agent/smartly-deploy.sh" || die "the stack did not become healthy -- see the logs above"
 docker ps --filter name=smartly- --format '     {{.Names}}  {{.Status}}'
 
 step "3. Super admin and reference data"

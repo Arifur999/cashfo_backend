@@ -163,7 +163,10 @@ export class UserAuthService {
     return { success: true };
   }
 
-  async changePassword(userId: string, dto: ChangePasswordDto) {
+  // Signs every other device out: changing the password is what someone
+  // does when they think the account was taken over, and the old sessions
+  // would otherwise keep working until they expire.
+  async changePassword(userId: string, sessionId: string, dto: ChangePasswordDto) {
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
     if (!user) {
       throw new UnauthorizedException('Account no longer exists');
@@ -175,6 +178,7 @@ export class UserAuthService {
     }
 
     await this.credentials.set(userId, dto.newPassword);
+    await this.devices.endAllExcept(userId, sessionId);
     return { success: true };
   }
 

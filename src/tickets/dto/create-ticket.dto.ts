@@ -2,9 +2,10 @@ import { IsEnum, IsNotEmpty, IsOptional, IsString } from 'class-validator';
 import { TicketCategory, TicketPriority } from '@prisma/client';
 
 export class CreateTicketDto {
+  // The customer (User id) the ticket is for.
   @IsString()
   @IsNotEmpty()
-  platformUserId: string;
+  userId: string;
 
   @IsString()
   @IsNotEmpty()

@@ -1,13 +1,24 @@
 import { Injectable } from '@nestjs/common';
-import { BillingCycle, PaymentStatus, PlatformUserStatus } from '@prisma/client';
+import { BillingCycle, PaymentStatus } from '@prisma/client';
+import { dhakaDateKey, dhakaToday } from '../common/dhaka.js';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { computeMrr, PAYING_WORKSPACE_WHERE } from './mrr.js';
 
-function startOfMonth(date: Date): Date {
-  return new Date(date.getFullYear(), date.getMonth(), 1);
+// Payments that brought money in: refunds are subtracted separately.
+const REVENUE_STATUSES: PaymentStatus[] = [PaymentStatus.SUCCESS, PaymentStatus.REFUNDED];
+
+const DHAKA_OFFSET_MS = 6 * 60 * 60 * 1000;
+
+// The instant a Dhaka calendar month begins -- payments carry real
+// timestamps, so "this month" starts at Dhaka midnight (18:00 UTC the day
+// before), not at the server's own midnight. `month` may run past 1-12.
+function dhakaMonthStart(year: number, month: number): Date {
+  return new Date(Date.UTC(year, month - 1, 1) - DHAKA_OFFSET_MS);
 }
 
+// 'YYYY-MM' of the Dhaka month an instant falls in.
 function monthKey(date: Date): string {
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+  return dhakaDateKey(date).slice(0, 7);
 }
 
 @Injectable()
@@ -15,30 +26,36 @@ export class RevenueService {
   constructor(private readonly prisma: PrismaService) {}
 
   async summary() {
-    const now = new Date();
-    const thisMonthStart = startOfMonth(now);
-    const lastMonthStart = new Date(thisMonthStart.getFullYear(), thisMonthStart.getMonth() - 1, 1);
-    const twelveMonthsAgo = new Date(thisMonthStart.getFullYear(), thisMonthStart.getMonth() - 11, 1);
+    const { year, month } = dhakaToday();
+    const thisMonthStart = dhakaMonthStart(year, month);
+    const lastMonthStart = dhakaMonthStart(year, month - 1);
+    const twelveMonthsAgo = dhakaMonthStart(year, month - 11);
 
-    const successfulPayments = await this.prisma.payment.findMany({
-      where: { status: PaymentStatus.SUCCESS, createdAt: { gte: twelveMonthsAgo } },
-      select: { amount: true, createdAt: true, planId: true, plan: { select: { name: true } } },
+    // Revenue is net of refunds: a refunded payment (status REFUNDED, whether
+    // the refund was the whole amount or part of it) still counts, minus what
+    // was actually given back. Counting only SUCCESS dropped the whole
+    // payment for a partial refund.
+    const keptPayments = await this.prisma.payment.findMany({
+      where: { status: { in: REVENUE_STATUSES }, createdAt: { gte: twelveMonthsAgo } },
+      select: { amount: true, createdAt: true, planId: true, plan: { select: { name: true } }, refund: { select: { amount: true, status: true } } },
     });
 
-    // All-time total needs its own query -- successfulPayments above is
-    // scoped to the last 12 months for the trend chart.
-    const allTimeAgg = await this.prisma.payment.aggregate({
-      where: { status: PaymentStatus.SUCCESS },
-      _sum: { amount: true },
-    });
+    // All-time total needs its own queries -- keptPayments above is scoped
+    // to the last 12 months for the trend chart.
+    const [allTimeAgg, allTimeRefundAgg, mrr] = await Promise.all([
+      this.prisma.payment.aggregate({ where: { status: { in: REVENUE_STATUSES } }, _sum: { amount: true } }),
+      this.prisma.refund.aggregate({ where: { status: 'COMPLETED', payment: { status: { in: REVENUE_STATUSES } } }, _sum: { amount: true } }),
+      computeMrr(this.prisma),
+    ]);
 
     let thisMonthRevenue = 0;
     let lastMonthRevenue = 0;
     const revenueByPlan = new Map<string, { planName: string; amount: number }>();
     const trendByMonth = new Map<string, number>();
 
-    for (const payment of successfulPayments) {
-      const amount = Number(payment.amount);
+    for (const payment of keptPayments) {
+      const refunded = payment.refund?.status === 'COMPLETED' ? Number(payment.refund.amount) : 0;
+      const amount = Number(payment.amount) - refunded;
       if (payment.createdAt >= thisMonthStart) thisMonthRevenue += amount;
       else if (payment.createdAt >= lastMonthStart && payment.createdAt < thisMonthStart) lastMonthRevenue += amount;
 
@@ -54,57 +71,47 @@ export class RevenueService {
     // up in the chart instead of being skipped.
     const trend: { month: string; amount: number }[] = [];
     for (let i = 11; i >= 0; i--) {
-      const d = new Date(thisMonthStart.getFullYear(), thisMonthStart.getMonth() - i, 1);
-      const key = monthKey(d);
-      trend.push({ month: key, amount: trendByMonth.get(key) ?? 0 });
+      const key = new Date(Date.UTC(year, month - 1 - i, 1)).toISOString().slice(0, 7);
+      trend.push({ month: key, amount: Math.round((trendByMonth.get(key) ?? 0) * 100) / 100 });
     }
 
-    // MRR: currently-ACTIVE platform users on a paid plan, monthly-normalized
-    // (yearly plan price / 12).
-    const activePaidUsers = await this.prisma.platformUser.findMany({
-      where: { status: PlatformUserStatus.ACTIVE, plan: { billingCycle: { not: BillingCycle.FREE } } },
-      select: { plan: { select: { price: true, billingCycle: true } } },
-    });
-    const mrr = activePaidUsers.reduce((sum, u) => {
-      if (!u.plan) return sum;
-      const price = Number(u.plan.price);
-      return sum + (u.plan.billingCycle === BillingCycle.YEARLY ? price / 12 : price);
-    }, 0);
-
     return {
-      totalRevenue: Number(allTimeAgg._sum.amount ?? 0),
-      thisMonthRevenue,
-      lastMonthRevenue,
-      mrr: Math.round(mrr * 100) / 100,
-      revenueByPlan: [...revenueByPlan.entries()].map(([planId, v]) => ({ planId, ...v })),
+      totalRevenue: Math.round((Number(allTimeAgg._sum.amount ?? 0) - Number(allTimeRefundAgg._sum.amount ?? 0)) * 100) / 100,
+      thisMonthRevenue: Math.round(thisMonthRevenue * 100) / 100,
+      lastMonthRevenue: Math.round(lastMonthRevenue * 100) / 100,
+      mrr,
+      revenueByPlan: [...revenueByPlan.entries()].map(([planId, v]) => ({ planId, ...v, amount: Math.round(v.amount * 100) / 100 })),
       revenueTrend: trend,
     };
   }
 
+  // Churn from the workspaces themselves: today's paying workspaces, and
+  // those an admin moved from a paid plan to the free one this (Dhaka)
+  // month -- AdminOwnersService.changePlan() writes BUSINESS_PLAN_CHANGED
+  // with the old and new plan ids. The legacy PlanChangeLog/PlatformUser
+  // tables this used to read are written by nothing.
   async churn() {
-    const now = new Date();
-    const thisMonthStart = startOfMonth(now);
+    const { year, month } = dhakaToday();
+    const thisMonthStart = dhakaMonthStart(year, month);
 
     const freePlan = await this.prisma.subscriptionPlan.findFirst({ where: { billingCycle: BillingCycle.FREE } });
-
-    const currentPaidCount = await this.prisma.platformUser.count({
-      where: { plan: { billingCycle: { not: BillingCycle.FREE } } },
-    });
+    const currentPaidCount = await this.prisma.business.count({ where: PAYING_WORKSPACE_WHERE });
 
     let churnedThisMonth = 0;
     if (freePlan) {
-      churnedThisMonth = await this.prisma.planChangeLog.count({
-        where: {
-          toPlanId: freePlan.id,
-          fromPlanId: { not: freePlan.id },
-          createdAt: { gte: thisMonthStart },
-        },
+      const downgrades = await this.prisma.auditLog.findMany({
+        where: { action: 'BUSINESS_PLAN_CHANGED', createdAt: { gte: thisMonthStart }, newValue: { path: ['planId'], equals: freePlan.id } },
+        select: { entityId: true, oldValue: true },
       });
+      const churned = new Set(
+        downgrades.filter((log) => (log.oldValue as { planId?: string | null } | null)?.planId !== freePlan.id).map((log) => log.entityId),
+      );
+      churnedThisMonth = churned.size;
     }
 
-    // Approximation: since we don't keep a historical daily snapshot, "paid
-    // subscribers at the start of the month" is estimated as today's paid
-    // count plus everyone who churned away from a paid plan this month.
+    // Approximation: there is no historical snapshot, so "paid workspaces at
+    // the start of the month" is today's paid count plus every workspace
+    // that churned away from a paid plan this month.
     const startOfMonthPaidCount = currentPaidCount + churnedThisMonth;
     const churnRate = startOfMonthPaidCount > 0 ? churnedThisMonth / startOfMonthPaidCount : 0;
 

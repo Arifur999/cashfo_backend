@@ -1,12 +1,13 @@
 import { BadRequestException, Body, Controller, Delete, Get, Param, Patch, Post, Query, UploadedFile, UseInterceptors } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
-import { GroupMemberStatus, MemberRole } from '@prisma/client';
+import { MemberRole } from '@prisma/client';
 import { CloseSettlementDto } from './dto/close-settlement.dto.js';
 import { CreateGroupContributionDto } from './dto/create-group-contribution.dto.js';
 import { CreateGroupExpenseCategoryDto } from './dto/create-group-expense-category.dto.js';
 import { CreateGroupExpenseDto } from './dto/create-group-expense.dto.js';
 import { CreateGroupMemberDto } from './dto/create-group-member.dto.js';
 import { CreateGroupMonthBudgetDto } from './dto/create-group-month-budget.dto.js';
+import { ListGroupContributionsQueryDto, ListGroupExpensesQueryDto, ListGroupMembersQueryDto, SettlementQueryDto } from './dto/group-query.dto.js';
 import { UpdateGroupContributionDto } from './dto/update-group-contribution.dto.js';
 import { UpdateGroupExpenseCategoryDto } from './dto/update-group-expense-category.dto.js';
 import { UpdateGroupExpenseDto } from './dto/update-group-expense.dto.js';
@@ -42,8 +43,8 @@ export class GroupExpensesController {
   // ---- Members ----
 
   @Get('members')
-  listMembers(@Param('businessId') businessId: string, @Query('status') status?: GroupMemberStatus) {
-    return this.groupExpensesService.listMembers(businessId, status);
+  listMembers(@Param('businessId') businessId: string, @Query() query: ListGroupMembersQueryDto) {
+    return this.groupExpensesService.listMembers(businessId, query.status);
   }
 
   @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
@@ -81,13 +82,8 @@ export class GroupExpensesController {
   // ---- Contributions ----
 
   @Get('contributions')
-  listContributions(
-    @Param('businessId') businessId: string,
-    @Query('groupMemberId') groupMemberId?: string,
-    @Query('from') from?: string,
-    @Query('to') to?: string,
-  ) {
-    return this.groupExpensesService.listContributions(businessId, { groupMemberId, from, to });
+  listContributions(@Param('businessId') businessId: string, @Query() query: ListGroupContributionsQueryDto) {
+    return this.groupExpensesService.listContributions(businessId, query);
   }
 
   @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
@@ -139,8 +135,8 @@ export class GroupExpensesController {
   // ---- Expenses ----
 
   @Get('expenses')
-  listExpenses(@Param('businessId') businessId: string, @Query('from') from?: string, @Query('to') to?: string, @Query('category') category?: string) {
-    return this.groupExpensesService.listExpenses(businessId, { from, to, category });
+  listExpenses(@Param('businessId') businessId: string, @Query() query: ListGroupExpensesQueryDto) {
+    return this.groupExpensesService.listExpenses(businessId, query);
   }
 
   @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
@@ -193,8 +189,8 @@ export class GroupExpensesController {
   // ---- Settlement ----
 
   @Get('settlement')
-  getSettlement(@Param('businessId') businessId: string, @Query('from') from?: string, @Query('to') to?: string) {
-    return this.groupExpensesService.getSettlement(businessId, from, to);
+  getSettlement(@Param('businessId') businessId: string, @Query() query: SettlementQueryDto) {
+    return this.groupExpensesService.getSettlement(businessId, query.from, query.to);
   }
 
   @Get('settlement/history')

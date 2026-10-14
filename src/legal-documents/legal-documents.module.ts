@@ -7,5 +7,6 @@ import { LegalDocumentsService } from './legal-documents.service.js';
   imports: [AdminAuthModule],
   controllers: [LegalDocumentsController],
   providers: [LegalDocumentsService],
+  exports: [LegalDocumentsService],
 })
 export class LegalDocumentsModule {}

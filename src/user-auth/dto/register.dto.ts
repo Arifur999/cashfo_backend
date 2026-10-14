@@ -1,6 +1,6 @@
 import { LanguagePreference } from '@prisma/client';
 import { Transform } from 'class-transformer';
-import { IsEmail, IsEnum, IsNotEmpty, IsOptional, IsString, Matches, MinLength } from 'class-validator';
+import { IsEmail, IsEnum, IsNotEmpty, IsOptional, IsString, Matches, MaxLength, MinLength } from 'class-validator';
 import { normalizeEmail } from '../../common/dto.js';
 
 // Permissive international phone check -- optional leading "+", digits,
@@ -8,15 +8,23 @@ import { normalizeEmail } from '../../common/dto.js';
 // numbers so a signup from any country can use their own local format.
 const PHONE_REGEX = /^\+?[0-9\s-]{6,20}$/;
 
+// The name goes into the welcome email sent to the address given -- which
+// nobody has verified yet -- so it can't carry a link or run long.
+const NO_LINK_REGEX = /^(?!.*(?:https?:\/\/|www\.|:\/\/)).*$/is;
+
 export class RegisterDto {
   @IsString()
   @IsNotEmpty()
+  @MaxLength(80)
+  @Matches(NO_LINK_REGEX, { message: 'Name cannot contain a web address' })
   name: string;
 
   @Transform(normalizeEmail)
   @IsEmail()
   email: string;
 
+  // better-auth refuses passwords over 128 characters.
+  @MaxLength(128)
   @MinLength(8)
   @Matches(/(?=.*[A-Za-z])(?=.*\d)/, { message: 'Password must contain at least one letter and one number' })
   password: string;

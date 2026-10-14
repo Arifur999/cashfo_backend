@@ -1,5 +1,6 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { dhakaDateKey } from '../common/dhaka.js';
 import { END_USER_WHERE } from '../common/roles.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { DateRangeQueryDto } from './dto/date-range-query.dto.js';
@@ -17,11 +18,23 @@ function classifyDeviceType(userAgent: string | null): 'MOBILE' | 'DESKTOP' | 'T
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+const DHAKA_OFFSET_MS = 6 * 60 * 60 * 1000;
 const DEFAULT_RANGE_DAYS = 30;
+// A custom range is capped at a year: every day in it is a row in the
+// response and a pass over the sessions, so an unbounded one could hang the
+// request.
+const MAX_RANGE_DAYS = 366;
 const COHORT_MONTHS = 6;
 
+// 'YYYY-MM' of the Dhaka calendar month an instant falls in.
 function monthKey(date: Date): string {
-  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`;
+  return dhakaDateKey(date).slice(0, 7);
+}
+
+// The instant a Dhaka calendar day ('YYYY-MM-DD') begins: 18:00 UTC the day
+// before.
+function dhakaDayStart(day: string): Date {
+  return new Date(new Date(`${day}T00:00:00.000Z`).getTime() - DHAKA_OFFSET_MS);
 }
 
 interface ResolvedRange {
@@ -77,36 +90,46 @@ export class AnalyticsService {
   // cron job would maintain", but no such job exists), so with that table's
   // seed data cleared this honestly reads 0 until real daily-aggregation
   // infrastructure is built; that's new-feature work, not a data-source
-  // swap. WAU is rewired onto real UserSession rows (one per real login) --
-  // for each day, distinct userId over the trailing 7-day window. The full
+  // swap. Both DAU and WAU come from real UserSession rows: a customer is
+  // active on a (Dhaka) day when one of their sessions started (a sign-in)
+  // or was last used (a token refresh) that day. DailyActiveSnapshot, which
+  // DAU used to read, is written by nothing, so DAU was always 0. The full
   // session set for the range (plus a 7-day lookback) is small enough to
   // pull once and compute in memory rather than issuing one query per day.
   async engagement(query: DateRangeQueryDto) {
     const { from, toExclusive, days } = this.resolveRange(query);
     const windowStart = new Date(from.getTime() - 6 * DAY_MS);
 
-    const [snapshots, sessions] = await Promise.all([
-      this.prisma.dailyActiveSnapshot.findMany({
-        where: { date: { gte: from, lt: toExclusive } },
-        select: { date: true, dailyActive: true },
-      }),
-      this.prisma.userSession.findMany({
-        where: { createdAt: { gte: windowStart, lt: toExclusive } },
-        select: { userId: true, createdAt: true },
-      }),
-    ]);
+    const sessions = await this.prisma.userSession.findMany({
+      where: {
+        OR: [{ createdAt: { gte: windowStart, lt: toExclusive } }, { lastUsedAt: { gte: windowStart, lt: toExclusive } }],
+      },
+      select: { userId: true, createdAt: true, lastUsedAt: true },
+    });
 
-    const dauByDate = new Map(snapshots.map((s) => [s.date.toISOString().slice(0, 10), s.dailyActive]));
+    // Every (Dhaka day, user) pair with activity.
+    const activeByDay = new Map<string, Set<string>>();
+    for (const session of sessions) {
+      for (const at of [session.createdAt, session.lastUsedAt]) {
+        const day = dhakaDateKey(at);
+        let users = activeByDay.get(day);
+        if (!users) {
+          users = new Set();
+          activeByDay.set(day, users);
+        }
+        users.add(session.userId);
+      }
+    }
 
     return days.map((day) => {
-      const dayEndMs = new Date(`${day}T00:00:00.000Z`).getTime() + DAY_MS;
-      const windowStartMs = dayEndMs - 7 * DAY_MS;
-      const activeUsers = new Set<string>();
-      for (const session of sessions) {
-        const t = session.createdAt.getTime();
-        if (t >= windowStartMs && t < dayEndMs) activeUsers.add(session.userId);
+      const weekUsers = new Set<string>();
+      // The day itself and the six before it.
+      const dayMs = new Date(`${day}T00:00:00.000Z`).getTime();
+      for (let back = 0; back < 7; back++) {
+        const key = new Date(dayMs - back * DAY_MS).toISOString().slice(0, 10);
+        for (const userId of activeByDay.get(key) ?? []) weekUsers.add(userId);
       }
-      return { date: day, dau: dauByDate.get(day) ?? 0, wau: activeUsers.size };
+      return { date: day, dau: activeByDay.get(day)?.size ?? 0, wau: weekUsers.size };
     });
   }
 
@@ -220,19 +243,26 @@ export class AnalyticsService {
       .sort((a, b) => b.count - a.count);
   }
 
+  // Days are Dhaka calendar days ('YYYY-MM-DD'); from/to are the
+  // instants the first day begins and the day after the last one begins.
   private resolveRange(query: DateRangeQueryDto): ResolvedRange {
-    const toDate = query.to ? new Date(query.to) : new Date();
-    toDate.setUTCHours(0, 0, 0, 0);
-    const toExclusive = new Date(toDate.getTime() + DAY_MS);
+    const toDay = query.to ?? dhakaDateKey(new Date());
+    const toMidnightUtc = new Date(`${toDay}T00:00:00.000Z`).getTime();
+    const fromDay = query.from ?? new Date(toMidnightUtc - (DEFAULT_RANGE_DAYS - 1) * DAY_MS).toISOString().slice(0, 10);
+    const fromMidnightUtc = new Date(`${fromDay}T00:00:00.000Z`).getTime();
 
-    const fromDate = query.from ? new Date(query.from) : new Date(toDate.getTime() - (DEFAULT_RANGE_DAYS - 1) * DAY_MS);
-    fromDate.setUTCHours(0, 0, 0, 0);
+    if (fromMidnightUtc > toMidnightUtc) {
+      throw new BadRequestException('"from" must be on or before "to"');
+    }
+    if ((toMidnightUtc - fromMidnightUtc) / DAY_MS + 1 > MAX_RANGE_DAYS) {
+      throw new BadRequestException(`Pick a range of at most ${MAX_RANGE_DAYS} days`);
+    }
 
     const days: string[] = [];
-    for (let t = fromDate.getTime(); t < toExclusive.getTime(); t += DAY_MS) {
+    for (let t = fromMidnightUtc; t <= toMidnightUtc; t += DAY_MS) {
       days.push(new Date(t).toISOString().slice(0, 10));
     }
 
-    return { from: fromDate, toExclusive, days };
+    return { from: dhakaDayStart(fromDay), toExclusive: new Date(dhakaDayStart(toDay).getTime() + DAY_MS), days };
   }
 }

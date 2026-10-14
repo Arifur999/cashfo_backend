@@ -19,6 +19,11 @@ on:
       - "deploy/**"
   workflow_dispatch:
 
+# Nothing here needs more than to read the code; the publish job asks for
+# packages: write itself.
+permissions:
+  contents: read
+
 concurrency:
   # Queue releases rather than cancel them: a cancelled push step could leave
   # :latest pointing at an older build than the one that was tested last.
@@ -35,6 +40,9 @@ jobs:
   publish:
     name: Publish cashfo_backend
     needs: quality
+    # "Run workflow" can be started on any branch; only main may become
+    # :latest, which the server releases within two minutes.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:

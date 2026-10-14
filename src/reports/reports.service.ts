@@ -149,7 +149,7 @@ export class ReportsService {
       by: ['categoryId'],
       where: {
         categoryId: { not: null },
-        transaction: { businessId, status: 'POSTED', transactionType: query.type, ...(hasDateFilter && { transactionDate: dateFilter }) },
+        transaction: { businessId, status: 'POSTED', reversalOfId: null, transactionType: query.type, ...(hasDateFilter && { transactionDate: dateFilter }) },
       },
       _sum: { amount: true },
     });
@@ -204,7 +204,7 @@ export class ReportsService {
           _sum: { amount: true },
           where: {
             categoryId: { not: null },
-            transaction: { businessId, status: 'POSTED', transactionType: 'INCOME', transactionDate: { gte: monthStart, lt: monthEnd } },
+            transaction: { businessId, status: 'POSTED', reversalOfId: null, transactionType: 'INCOME', transactionDate: { gte: monthStart, lt: monthEnd } },
           },
         }),
         this.prisma.savingsGoalEntry.aggregate({

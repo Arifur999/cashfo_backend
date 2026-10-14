@@ -1,12 +1,11 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { Account, Prisma } from '@prisma/client';
 import { randomBytes } from 'node:crypto';
-import { MONEY_ACCOUNT_SUBTYPES } from '../accounts/accounts.service.js';
+import { MONEY_ACCOUNT_SUBTYPES, REFERRAL_BONUS_INCOME_SUBTYPE } from '../accounts/accounts.service.js';
+import { dhakaDateKey } from '../common/dhaka.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { SettingsService } from '../settings/settings.service.js';
 import { TransactionsService } from '../transactions/transactions.service.js';
-
-const REFERRAL_BONUS_INCOME_SUBTYPE = 'referral-bonus';
 
 @Injectable()
 export class ReferralsService {
@@ -91,44 +90,52 @@ export class ReferralsService {
     };
   }
 
+  // One database transaction under the referrer's lock: a double click or a
+  // second tab waits for the first payout to commit, then finds nothing left
+  // CONFIRMED -- the earnings are paid once, and a failed posting leaves them
+  // CONFIRMED instead of paid-but-unmarked.
   async withdraw(userId: string, businessId: string, accountId: string, actorUserId: string) {
-    const confirmed = await this.prisma.referral.findMany({ where: { referrerId: userId, status: 'CONFIRMED' } });
-    const total = confirmed.reduce((sum, r) => sum.plus(new Prisma.Decimal(r.rewardAmount)), new Prisma.Decimal(0));
-    if (total.lessThanOrEqualTo(0)) {
-      throw new BadRequestException('No available balance to withdraw.');
-    }
+    return this.transactionsService.withLocks([`referrals:${userId}`, `referral-bonus:${businessId}`], async (tx) => {
+      const confirmed = await tx.referral.findMany({ where: { referrerId: userId, status: 'CONFIRMED' } });
+      const total = confirmed.reduce((sum, r) => sum.plus(new Prisma.Decimal(r.rewardAmount)), new Prisma.Decimal(0));
+      if (total.lessThanOrEqualTo(0)) {
+        throw new BadRequestException('No available balance to withdraw.');
+      }
 
-    const depositAccount = await this.requirePaymentAccount(businessId, accountId);
-    const incomeAccount = await this.requireOrCreateReferralBonusAccount(businessId);
+      const depositAccount = await this.requirePaymentAccount(businessId, accountId, tx);
+      const incomeAccount = await this.requireOrCreateReferralBonusAccount(businessId, tx);
 
-    await this.transactionsService.createTransaction(
-      businessId,
-      {
-        transactionType: 'INCOME',
-        transactionDate: new Date().toISOString().slice(0, 10),
-        description: 'Referral Program withdrawal',
-        entries: [
-          { accountId: depositAccount.id, entryType: 'DEBIT', amount: total.toNumber(), categoryId: 'Referral Bonus' },
-          { accountId: incomeAccount.id, entryType: 'CREDIT', amount: total.toNumber() },
-        ],
-      },
-      actorUserId,
-    );
+      await this.transactionsService.createTransaction(
+        businessId,
+        {
+          transactionType: 'INCOME',
+          // Today in Dhaka -- UTC's date is still yesterday before 6am here.
+          transactionDate: dhakaDateKey(new Date()),
+          description: 'Referral Program withdrawal',
+          entries: [
+            { accountId: depositAccount.id, entryType: 'DEBIT', amount: total.toNumber(), categoryId: 'Referral Bonus' },
+            { accountId: incomeAccount.id, entryType: 'CREDIT', amount: total.toNumber() },
+          ],
+        },
+        actorUserId,
+        tx,
+      );
 
-    await this.prisma.referral.updateMany({
-      where: { id: { in: confirmed.map((r) => r.id) } },
-      data: { status: 'WITHDRAWN', withdrawnAt: new Date() },
+      await tx.referral.updateMany({
+        where: { id: { in: confirmed.map((r) => r.id) } },
+        data: { status: 'WITHDRAWN', withdrawnAt: new Date() },
+      });
+
+      return { withdrawnAmount: total.toFixed(2) };
     });
-
-    return { withdrawnAmount: total.toFixed(2) };
   }
 
   // Same "accepts EITHER a regular money account OR a Savings Wallet"
   // convention as AssetsService.requirePaymentAccount() -- copied rather
   // than shared, matching this codebase's existing per-module private
   // helper style (see that method's own comment).
-  private async requirePaymentAccount(businessId: string, accountId: string): Promise<Account> {
-    const account = await this.prisma.account.findUnique({ where: { id: accountId } });
+  private async requirePaymentAccount(businessId: string, accountId: string, client: Prisma.TransactionClient = this.prisma): Promise<Account> {
+    const account = await client.account.findUnique({ where: { id: accountId } });
     if (!account || account.businessId !== businessId) {
       throw new BadRequestException('Account not found in this workspace');
     }
@@ -148,12 +155,13 @@ export class ReferralsService {
   // from accidental archiving -- every originally-seeded default account
   // already carries that same flag (see AccountsService's seeding), it
   // does not hide an account from listings/reports.
-  private async requireOrCreateReferralBonusAccount(businessId: string): Promise<Account> {
-    const existing = await this.prisma.account.findFirst({
-      where: { businessId, accountType: 'INCOME', accountSubtype: REFERRAL_BONUS_INCOME_SUBTYPE },
+  private async requireOrCreateReferralBonusAccount(businessId: string, client: Prisma.TransactionClient = this.prisma): Promise<Account> {
+    const existing = await client.account.findFirst({
+      where: { businessId, accountType: 'INCOME', accountSubtype: REFERRAL_BONUS_INCOME_SUBTYPE, isSystemAccount: true },
+      orderBy: { createdAt: 'asc' },
     });
     if (existing) return existing;
-    return this.prisma.account.create({
+    return client.account.create({
       data: {
         businessId,
         name: 'Referral Bonus',

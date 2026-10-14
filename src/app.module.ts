@@ -37,6 +37,7 @@ import { PasswordVaultModule } from './password-vault/password-vault.module.js';
 import { PaymentsModule } from './payments/payments.module.js';
 import { PlatformUsersModule } from './platform-users/platform-users.module.js';
 import { PrismaModule } from './prisma/prisma.module.js';
+import { PlatformModule } from './platform/platform.module.js';
 import { QuickEntriesModule } from './quick-entries/quick-entries.module.js';
 import { ReceivablesPayablesModule } from './receivables-payables/receivables-payables.module.js';
 import { ReferralsModule } from './referrals/referrals.module.js';
@@ -93,6 +94,8 @@ import { UserAuthModule } from './user-auth/user-auth.module.js';
     NotificationsModule,
     DashboardModule,
     SettingsModule,
+    // Customer-facing platform info + the maintenance-mode switch for /api/*.
+    PlatformModule,
     UserAuthModule,
     SignInModule,
     BusinessesModule,

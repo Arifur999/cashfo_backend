@@ -1,6 +1,6 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma, TicketStatus } from '@prisma/client';
-import { ADMIN_USER_WHERE } from '../common/roles.js';
+import { ADMIN_USER_WHERE, END_USER_WHERE } from '../common/roles.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { AddMessageDto } from './dto/add-message.dto.js';
 import { AssignTicketDto } from './dto/assign-ticket.dto.js';
@@ -9,6 +9,17 @@ import { ListTicketsQueryDto } from './dto/list-tickets-query.dto.js';
 import { UpdateTicketDto } from './dto/update-ticket.dto.js';
 
 const RESOLVED_STATUSES: TicketStatus[] = [TicketStatus.RESOLVED, TicketStatus.CLOSED];
+
+// Who a ticket is from. SupportTicket.platformUserId holds a customer's User
+// id; tickets from before that may still hold an id from the legacy
+// PlatformUser sandbox, which is looked up as a fallback. (The column keeps
+// its old name to avoid a migration over live rows.)
+export interface Requester {
+  id: string;
+  name: string;
+  email: string;
+  plan: { id: string; name: string } | null;
+}
 
 @Injectable()
 export class TicketsService {
@@ -25,13 +36,15 @@ export class TicketsService {
     if (query.assignedToAdminId) where.assignedToAdminId = query.assignedToAdminId;
 
     if (query.search) {
-      const matchingUsers = await this.prisma.platformUser.findMany({
-        where: {
-          OR: [{ name: { contains: query.search, mode: 'insensitive' } }, { email: { contains: query.search, mode: 'insensitive' } }],
-        },
-        select: { id: true },
-      });
-      where.OR = [{ subject: { contains: query.search, mode: 'insensitive' } }, { platformUserId: { in: matchingUsers.map((u) => u.id) } }];
+      const nameOrEmail = {
+        OR: [{ name: { contains: query.search, mode: 'insensitive' as const } }, { email: { contains: query.search, mode: 'insensitive' as const } }],
+      };
+      const [customers, legacyUsers] = await Promise.all([
+        this.prisma.user.findMany({ where: { ...END_USER_WHERE, ...nameOrEmail }, select: { id: true } }),
+        this.prisma.platformUser.findMany({ where: nameOrEmail, select: { id: true } }),
+      ]);
+      const requesterIds = [...customers, ...legacyUsers].map((u) => u.id);
+      where.OR = [{ subject: { contains: query.search, mode: 'insensitive' } }, { platformUserId: { in: requesterIds } }];
     }
 
     // Default sort: unassigned tickets surface first, then by priority
@@ -47,7 +60,7 @@ export class TicketsService {
       this.prisma.supportTicket.count({ where }),
     ]);
 
-    const withUsers = await this.attachPlatformUsers(tickets);
+    const withUsers = await this.attachRequesters(tickets);
     const data = await this.attachAssignedAdmins(withUsers);
     return { data, meta: { page, limit, total, totalPage: Math.ceil(total / limit) } };
   }
@@ -61,35 +74,35 @@ export class TicketsService {
       throw new NotFoundException('Ticket not found');
     }
 
-    const [platformUser, assignedAdmin] = await Promise.all([
-      this.prisma.platformUser.findUnique({
-        where: { id: ticket.platformUserId },
-        select: { id: true, name: true, email: true, plan: { select: { id: true, name: true } } },
-      }),
+    const [requesters, assignedAdmin] = await Promise.all([
+      this.findRequesters([ticket.platformUserId]),
       ticket.assignedToAdminId
         ? this.prisma.user.findUnique({ where: { id: ticket.assignedToAdminId, ...ADMIN_USER_WHERE }, select: { id: true, name: true } })
         : Promise.resolve(null),
     ]);
 
-    return { ...ticket, platformUser, assignedAdmin };
+    return { ...ticket, platformUser: requesters.get(ticket.platformUserId) ?? null, assignedAdmin };
   }
 
+  // Opened by an admin on a customer's behalf (phone, email). The customer
+  // used to be picked from the legacy PlatformUser table, which nothing
+  // fills, so no ticket could be opened for a real customer.
   async create(dto: CreateTicketDto) {
-    const user = await this.prisma.platformUser.findUnique({ where: { id: dto.platformUserId } });
+    const user = await this.prisma.user.findFirst({ where: { id: dto.userId, ...END_USER_WHERE }, select: { id: true } });
     if (!user) {
-      throw new NotFoundException('Platform user not found');
+      throw new NotFoundException('Customer not found');
     }
 
     return this.prisma.supportTicket.create({
       data: {
-        platformUserId: dto.platformUserId,
+        platformUserId: user.id,
         subject: dto.subject,
         category: dto.category,
         priority: dto.priority ?? 'MEDIUM',
         messages: {
           // Logged as the user's own message -- an admin is just relaying it
           // (e.g. phone support), the ticket still represents the user's report.
-          create: { senderType: 'USER', senderId: dto.platformUserId, message: dto.initialMessage },
+          create: { senderType: 'USER', senderId: user.id, message: dto.initialMessage },
         },
       },
       include: { messages: true },
@@ -98,6 +111,9 @@ export class TicketsService {
 
   async update(id: string, dto: UpdateTicketDto, adminId: string, ipAddress?: string) {
     const existing = await this.requireTicket(id);
+    if (dto.assignedToAdminId) {
+      await this.requireAssignableAdmin(dto.assignedToAdminId);
+    }
     const statusChanged = dto.status !== undefined && dto.status !== existing.status;
 
     const resolvedAt = statusChanged ? (RESOLVED_STATUSES.includes(dto.status!) ? new Date() : null) : undefined;
@@ -145,7 +161,20 @@ export class TicketsService {
 
   async assign(id: string, dto: AssignTicketDto) {
     await this.requireTicket(id);
+    if (dto.adminId) {
+      await this.requireAssignableAdmin(dto.adminId);
+    }
     return this.prisma.supportTicket.update({ where: { id }, data: { assignedToAdminId: dto.adminId ?? null } });
+  }
+
+  // Any id used to be accepted, so a ticket could be "assigned" to a
+  // customer, a suspended admin or nobody at all and drop out of every
+  // admin's queue.
+  private async requireAssignableAdmin(adminId: string) {
+    const admin = await this.prisma.user.findFirst({ where: { id: adminId, ...ADMIN_USER_WHERE, status: 'ACTIVE' }, select: { id: true } });
+    if (!admin) {
+      throw new BadRequestException('Tickets can only be assigned to an active admin');
+    }
   }
 
   async stats() {
@@ -184,14 +213,37 @@ export class TicketsService {
     return ticket;
   }
 
-  private async attachPlatformUsers<T extends { platformUserId: string }>(tickets: T[]) {
-    const userIds = [...new Set(tickets.map((t) => t.platformUserId))];
-    const users = await this.prisma.platformUser.findMany({
-      where: { id: { in: userIds } },
-      select: { id: true, name: true, email: true },
+  private async attachRequesters<T extends { platformUserId: string }>(tickets: T[]) {
+    const requesters = await this.findRequesters(tickets.map((t) => t.platformUserId));
+    return tickets.map((t) => ({ ...t, platformUser: requesters.get(t.platformUserId) ?? null }));
+  }
+
+  // Customers first; ids not found there are looked up in the legacy
+  // PlatformUser table. A customer's plan is their default workspace's.
+  private async findRequesters(ids: string[]): Promise<Map<string, Requester>> {
+    const unique = [...new Set(ids)];
+    const customers = await this.prisma.user.findMany({
+      where: { id: { in: unique }, ...END_USER_WHERE },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        ownedBusinesses: { where: { isDefault: true, deletedAt: null }, select: { plan: { select: { id: true, name: true } } }, take: 1 },
+      },
     });
-    const userById = new Map(users.map((u) => [u.id, u]));
-    return tickets.map((t) => ({ ...t, platformUser: userById.get(t.platformUserId) ?? null }));
+    const found = new Map<string, Requester>(
+      customers.map((u) => [u.id, { id: u.id, name: u.name, email: u.email, plan: u.ownedBusinesses[0]?.plan ?? null }]),
+    );
+
+    const missing = unique.filter((id) => !found.has(id));
+    if (missing.length > 0) {
+      const legacy = await this.prisma.platformUser.findMany({
+        where: { id: { in: missing } },
+        select: { id: true, name: true, email: true, plan: { select: { id: true, name: true } } },
+      });
+      for (const u of legacy) found.set(u.id, u);
+    }
+    return found;
   }
 
   private async attachAssignedAdmins<T extends { assignedToAdminId: string | null }>(tickets: T[]) {
