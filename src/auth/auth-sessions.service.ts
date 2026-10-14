@@ -104,6 +104,12 @@ export class AuthSessionsService {
   }
 
   // Signs a user out on every device: suspension, an admin password reset.
+  // Every session of the user except one -- after a password change, the
+  // device that made it stays signed in and every other one is signed out.
+  async revokeOthersForUser(userId: string, keepSessionId: string): Promise<void> {
+    await this.prisma.authSession.deleteMany({ where: { userId, id: { not: keepSessionId } } });
+  }
+
   async revokeAllForUser(userId: string): Promise<void> {
     const { internalAdapter } = await this.auth.$context;
     await internalAdapter.deleteUserSessions(userId);

@@ -44,22 +44,13 @@ export class UserAuthController {
     private readonly imgbbService: ImgbbService,
   ) {}
 
-  // Both frontends only ever call this backend server-side (Server
-  // Actions/Route Handlers, never the browser directly -- see CLAUDE.md),
-  // so req.ip/req.headers['user-agent'] normally reflect axios's own
-  // request from the Node process, not the real end user's device. The two
-  // login/register Server Actions that create a UserSession (see
-  // clientContext.ts's comment) forward the REAL browser's info in these
-  // two custom headers; every other caller (curl, a script, anything that
-  // doesn't set them) still falls back to the raw request exactly as
-  // before this existed.
+  // req.ip already honours TRUST_PROXY, and the frontend forwards the
+  // visitor's X-Forwarded-For and User-Agent with every call. (Custom
+  // x-client-ip / x-client-user-agent headers used to win over both, so
+  // anything able to reach the API could write any IP into login history,
+  // devices and sessions.)
   private resolveClientInfo(req: Request): ClientInfo {
-    const forwardedUserAgent = req.headers['x-client-user-agent'];
-    const forwardedIp = req.headers['x-client-ip'];
-    return {
-      ipAddress: (Array.isArray(forwardedIp) ? forwardedIp[0] : forwardedIp) ?? req.ip,
-      userAgent: (Array.isArray(forwardedUserAgent) ? forwardedUserAgent[0] : forwardedUserAgent) ?? req.headers['user-agent'],
-    };
+    return { ipAddress: req.ip, userAgent: req.headers['user-agent'] };
   }
 
   // 10 new accounts per hour per IP: room for a family or an office behind
@@ -140,10 +131,13 @@ export class UserAuthController {
     return this.userProfileService.updateAvatar(user.id, avatarUrl);
   }
 
+  // Checks the current password, so it gets the login's brute-force budget
+  // rather than the global 100 a minute.
+  @Throttle({ default: { limit: 5, ttl: 15 * 60 * 1000 } })
   @UseGuards(UserAuthGuard)
   @Post('change-password')
   changePassword(@CurrentUser() user: RequestUser, @Body() dto: ChangePasswordDto) {
-    return this.userAuthService.changePassword(user.id, dto);
+    return this.userAuthService.changePassword(user.id, user.sessionId, dto);
   }
 
   @UseGuards(UserAuthGuard)

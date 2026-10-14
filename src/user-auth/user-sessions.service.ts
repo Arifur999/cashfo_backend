@@ -38,6 +38,11 @@ export class UserSessionsService {
     await this.prisma.userSession.updateMany({ where: { jti: sessionId, revokedAt: null }, data: { revokedAt: new Date() } });
   }
 
+  async endAllExcept(userId: string, keepSessionId: string): Promise<void> {
+    await this.sessions.revokeOthersForUser(userId, keepSessionId);
+    await this.prisma.userSession.updateMany({ where: { userId, revokedAt: null, jti: { not: keepSessionId } }, data: { revokedAt: new Date() } });
+  }
+
   async endAll(userId: string): Promise<void> {
     await this.sessions.revokeAllForUser(userId);
     await this.prisma.userSession.updateMany({ where: { userId, revokedAt: null }, data: { revokedAt: new Date() } });
