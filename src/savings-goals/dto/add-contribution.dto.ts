@@ -1,4 +1,5 @@
-import { IsDateString, IsNotEmpty, IsNumber, IsOptional, IsPositive, IsString } from 'class-validator';
+import { IsDateString, IsNotEmpty, IsOptional, IsString } from 'class-validator';
+import { IsMoney } from '../../common/dto.js';
 
 export class AddContributionDto {
   @IsString()
@@ -11,8 +12,7 @@ export class AddContributionDto {
   @IsNotEmpty()
   toAccountId: string;
 
-  @IsNumber({ maxDecimalPlaces: 2 })
-  @IsPositive()
+  @IsMoney()
   amount: number;
 
   @IsDateString()

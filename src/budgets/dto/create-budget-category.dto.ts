@@ -1,6 +1,7 @@
 import { BudgetCategoryType } from '@prisma/client';
-import { IsEnum, IsIn, IsNotEmpty, IsNumber, IsOptional, IsPositive, IsString } from 'class-validator';
+import { IsEnum, IsIn, IsNotEmpty, IsOptional, IsString } from 'class-validator';
 import { BUDGET_CATEGORY_COLORS, BUDGET_CATEGORY_ICONS } from '../budget-category-visuals.js';
+import { IsMoney } from '../../common/dto.js';
 
 export class CreateBudgetCategoryDto {
   // EXPENSE (Budget Planning) vs INCOME (Income Planning) -- defaults to
@@ -27,7 +28,6 @@ export class CreateBudgetCategoryDto {
   // BudgetsService.createCategory, which knows the resolved type -- see
   // BudgetCategory.monthlyLimit's schema comment for why).
   @IsOptional()
-  @IsNumber({ maxDecimalPlaces: 2 })
-  @IsPositive()
+  @IsMoney()
   monthlyLimit?: number;
 }

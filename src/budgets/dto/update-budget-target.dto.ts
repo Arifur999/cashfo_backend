@@ -1,7 +1,6 @@
-import { IsNumber, IsPositive } from 'class-validator';
+import { IsMoney } from '../../common/dto.js';
 
 export class UpdateBudgetTargetDto {
-  @IsNumber({ maxDecimalPlaces: 2 })
-  @IsPositive()
+  @IsMoney()
   monthlyBudgetTarget: number;
 }

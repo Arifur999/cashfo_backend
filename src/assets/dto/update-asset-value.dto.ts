@@ -1,8 +1,8 @@
-import { IsDateString, IsNumber, IsOptional, IsPositive, IsString } from 'class-validator';
+import { IsDateString, IsOptional, IsString } from 'class-validator';
+import { IsMoney } from '../../common/dto.js';
 
 export class UpdateAssetValueDto {
-  @IsNumber({ maxDecimalPlaces: 2 })
-  @IsPositive()
+  @IsMoney()
   value: number;
 
   // The date this value became true (e.g. "I checked the market rate on

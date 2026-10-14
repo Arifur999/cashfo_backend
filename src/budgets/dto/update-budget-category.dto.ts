@@ -1,5 +1,6 @@
-import { IsIn, IsNotEmpty, IsNumber, IsOptional, IsPositive, IsString } from 'class-validator';
+import { IsIn, IsNotEmpty, IsOptional, IsString } from 'class-validator';
 import { BUDGET_CATEGORY_COLORS, BUDGET_CATEGORY_ICONS } from '../budget-category-visuals.js';
+import { IsMoney } from '../../common/dto.js';
 
 export class UpdateBudgetCategoryDto {
   @IsOptional()
@@ -17,7 +18,6 @@ export class UpdateBudgetCategoryDto {
   color?: string;
 
   @IsOptional()
-  @IsNumber({ maxDecimalPlaces: 2 })
-  @IsPositive()
+  @IsMoney()
   monthlyLimit?: number;
 }
