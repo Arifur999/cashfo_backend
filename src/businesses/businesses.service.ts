@@ -195,8 +195,11 @@ export class BusinessesService {
     this.requireOwner(member);
     await this.requireBusiness(businessId);
 
-    let pinHash: string | undefined;
-    if (dto.pin !== undefined) {
+    // null removes the lock; a new PIN replaces it.
+    let pinHash: string | null | undefined;
+    if (dto.pin === null) {
+      pinHash = null;
+    } else if (dto.pin !== undefined) {
       pinHash = await bcrypt.hash(dto.pin, 10);
     }
 
