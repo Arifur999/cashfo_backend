@@ -27,9 +27,6 @@ import { GroupExpensesModule } from './group-expenses/group-expenses.module.js';
 import { BooksModule } from './books/books.module.js';
 import { HabitsModule } from './habits/habits.module.js';
 import { HealthModule } from './health/health.module.js';
-// TEMPORARY -- see src/internal/internal.controller.ts. Remove this import
-// and its entry in the imports array below once production has been seeded.
-import { InternalModule } from './internal/internal.module.js';
 import { InvoicesModule } from './invoices/invoices.module.js';
 import { LegalDocumentsModule } from './legal-documents/legal-documents.module.js';
 import { NotificationsModule } from './notifications/notifications.module.js';
@@ -63,13 +60,16 @@ import { UserAuthModule } from './user-auth/user-auth.module.js';
     // Generous global default -- the login route overrides this with a
     // stricter limit via @Throttle() rather than every route sharing one
     // tight budget.
-    ThrottlerModule.forRoot([{ name: 'default', ttl: 60_000, limit: 100 }]),
+    // "perIp" mirrors "default" everywhere except the sign-in routes, which
+    // count per IP and account on "default" (see common/login-throttle.ts).
+    ThrottlerModule.forRoot([
+      { name: 'default', ttl: 60_000, limit: 100 },
+      { name: 'perIp', ttl: 60_000, limit: 100 },
+    ]),
     PrismaModule,
     AuthModule,
     BusinessAccessModule,
     HealthModule,
-    // TEMPORARY -- remove once production has been seeded, see internal.controller.ts
-    InternalModule,
     AdminAuthModule,
     AdminUsersModule,
     AdminWorkspacesModule,

@@ -230,7 +230,7 @@ export class SavingsGoalsService {
         ...(dto.targetAmount !== undefined && { targetAmount: dto.targetAmount }),
         ...(dto.targetDate !== undefined && { targetDate: new Date(dto.targetDate) }),
         ...(dto.durationMonths !== undefined && { durationMonths: dto.durationMonths }),
-        ...(dto.reminderDate !== undefined && { reminderDate: new Date(dto.reminderDate) }),
+        ...(dto.reminderDate !== undefined && { reminderDate: dto.reminderDate ? new Date(dto.reminderDate) : null }),
         ...(dto.reminderChannel !== undefined && { reminderChannel: dto.reminderChannel }),
         ...(dto.description !== undefined && { description: dto.description }),
       },
@@ -261,13 +261,19 @@ export class SavingsGoalsService {
   // Transaction engine every other money movement in this app uses (see
   // QuickEntriesService.createTransfer(), which this mirrors exactly).
   async addContribution(businessId: string, goalId: string, dto: AddContributionDto, userId: string) {
-    const goal = await this.requireGoal(businessId, goalId);
+    await this.requireGoal(businessId, goalId);
     const fromAccount = await this.requireMoneyAccount(businessId, dto.moneyAccountId);
     const savingsAccount = await this.requireSavingsAccount(businessId, dto.toAccountId);
 
     // The posting and the goal's entry commit together -- a failure between
-    // them can no longer move the money without crediting the goal.
+    // them can no longer move the money without crediting the goal. The goal
+    // is read under its lock: a withdrawal that finished while this waited
+    // has closed it.
     const entry = await this.transactionsService.withLocks([`savings-goal:${goalId}`], async (tx) => {
+      const goal = await this.requireGoal(businessId, goalId, tx);
+      if (goal.status === 'WITHDRAWN') {
+        throw new BadRequestException('This goal has been withdrawn -- add funds to another goal.');
+      }
       const transaction = await this.transactionsService.createTransaction(
         businessId,
         {
@@ -297,7 +303,7 @@ export class SavingsGoalsService {
         },
       });
     });
-    await this.maybeMarkCompleted(goal);
+    await this.maybeMarkCompleted(await this.requireGoal(businessId, goalId));
     return entry;
   }
 
@@ -319,7 +325,10 @@ export class SavingsGoalsService {
     if (goal.status === 'COMPLETED' || goal.status === 'WITHDRAWN') return goal;
     const amount = currentAmount ?? (await this.computeCurrentAmount(goal.id));
     if (amount.greaterThanOrEqualTo(goal.targetAmount)) {
-      return this.prisma.savingsGoal.update({ where: { id: goal.id }, data: { status: 'COMPLETED' } });
+      // Conditional: a withdrawal that committed after `goal` was read
+      // must never be turned back into COMPLETED.
+      await this.prisma.savingsGoal.updateMany({ where: { id: goal.id, status: { in: ['ACTIVE', 'PAUSED'] } }, data: { status: 'COMPLETED' } });
+      return this.prisma.savingsGoal.findUniqueOrThrow({ where: { id: goal.id } });
     }
     return goal;
   }
@@ -337,6 +346,9 @@ export class SavingsGoalsService {
     const { result, toGoal } = await this.transactionsService.withLocks([`savings-goal:${dto.fromGoalId}`, `savings-goal:${dto.toGoalId}`], async (tx) => {
       const fromGoal = await this.requireGoal(businessId, dto.fromGoalId, tx);
       const toGoal = await this.requireGoal(businessId, dto.toGoalId, tx);
+      if (toGoal.status === 'WITHDRAWN') {
+        throw new BadRequestException(`"${toGoal.name}" has been withdrawn -- pick another goal to move the money to.`);
+      }
 
       const fromCurrent = await this.computeCurrentAmount(fromGoal.id, tx);
       if (fromCurrent.lessThan(dto.amount)) {

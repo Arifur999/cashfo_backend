@@ -115,7 +115,7 @@ resolve_failed_migrations() {
   for name in $failed; do
     log "migration $name failed -- marking it rolled back so the previous release can start"
     docker compose run --rm --no-deps smartly-migrate node_modules/.bin/prisma migrate resolve --rolled-back "$name" \
-      || log "ERROR: could not mark $name rolled back -- see 'When a migration fails' in deploy/README.md"
+      || log "ERROR: could not mark $name rolled back -- see 'when a migration fails' under Operations in deploy/README.md"
   done
 }
 

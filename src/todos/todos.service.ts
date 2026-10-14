@@ -1,6 +1,7 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma, type TodoItem, type TodoList } from '@prisma/client';
 import { cleanText, INVISIBLE_ONLY } from '../common/text.js';
+import { createWithinCap } from '../common/user-cap.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { CreateTodoItemDto } from './dto/create-todo-item.dto.js';
 import { CreateTodoListDto } from './dto/create-todo-list.dto.js';
@@ -11,6 +12,10 @@ const MAX_ITEM_TEXT_LENGTH = 200;
 // parallel requests can overshoot it slightly. It only guards against runaway
 // data on one list, not against a determined client.
 const MAX_ITEMS_PER_LIST = 200;
+// Lists one user may keep -- about three years of daily lists. Every list
+// comes back in GET /api/todos, and nothing else bounded how many a
+// scripted client could create.
+const MAX_LISTS_PER_USER = 1000;
 
 // Same shape as books.service.ts's cleanTitle()/skills.service.ts's
 // cleanName(): cleanText() alone doesn't reject whitespace-only or
@@ -77,7 +82,15 @@ export class TodosService {
       throw new ConflictException('A to-do list for this date already exists');
     }
     try {
-      const created = await this.prisma.todoList.create({ data: { userId, date }, include: { items: true } });
+      const created = await createWithinCap(
+        this.prisma,
+        userId,
+        'todo-list',
+        MAX_LISTS_PER_USER,
+        `You can keep at most ${MAX_LISTS_PER_USER} to-do lists. Delete some old ones first.`,
+        (tx) => tx.todoList.count({ where: { userId } }),
+        (tx) => tx.todoList.create({ data: { userId, date }, include: { items: true } }),
+      );
       return toListView(created);
     } catch (error) {
       // Two simultaneous identical creates (double-click, second tab) both
@@ -149,7 +162,15 @@ export class TodosService {
     const existing = await this.prisma.todoList.findUnique({ where: { userId_date: { userId, date } } });
     if (existing) return existing;
     try {
-      return await this.prisma.todoList.create({ data: { userId, date } });
+      return await createWithinCap(
+        this.prisma,
+        userId,
+        'todo-list',
+        MAX_LISTS_PER_USER,
+        `You can keep at most ${MAX_LISTS_PER_USER} to-do lists. Delete some old ones first.`,
+        (tx) => tx.todoList.count({ where: { userId } }),
+        (tx) => tx.todoList.create({ data: { userId, date } }),
+      );
     } catch (error) {
       // Lost a race against another request creating the same date's list.
       if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {

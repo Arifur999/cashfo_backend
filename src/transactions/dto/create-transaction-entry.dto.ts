@@ -1,5 +1,6 @@
-import { IsEnum, IsNotEmpty, IsNumber, IsOptional, IsPositive, IsString } from 'class-validator';
+import { IsEnum, IsNotEmpty, IsOptional, IsString } from 'class-validator';
 import { EntryType } from '@prisma/client';
+import { IsMoney } from '../../common/dto.js';
 
 export class CreateTransactionEntryDto {
   @IsString()
@@ -13,8 +14,7 @@ export class CreateTransactionEntryDto {
   // service layer still re-derives exact totals via Prisma.Decimal rather
   // than trusting this float, per Prompt 5's explicit "never use plain JS
   // floats for money math" instruction.
-  @IsNumber({ maxDecimalPlaces: 2 })
-  @IsPositive()
+  @IsMoney()
   amount: number;
 
   @IsOptional()

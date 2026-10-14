@@ -123,7 +123,7 @@ export class ContactsService {
   async delete(businessId: string, id: string): Promise<{ id: string; action: 'deleted' | 'archived' }> {
     await this.requireContact(businessId, id);
 
-    const transactionCount = await this.prisma.transaction.count({ where: { contactId: id } });
+    const transactionCount = await this.prisma.transaction.count({ where: { businessId, contactId: id } });
     if (transactionCount === 0) {
       await this.prisma.contact.delete({ where: { id } });
       return { id, action: 'deleted' };

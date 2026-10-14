@@ -1,4 +1,5 @@
-import { IsDateString, IsNotEmpty, IsNumber, IsOptional, IsPositive, IsString } from 'class-validator';
+import { IsDateString, IsNotEmpty, IsOptional, IsString } from 'class-validator';
+import { IsMoney } from '../../common/dto.js';
 
 export class CreateAssetPurchaseDto {
   @IsString()
@@ -12,8 +13,7 @@ export class CreateAssetPurchaseDto {
   @IsDateString()
   purchaseDate: string;
 
-  @IsNumber({ maxDecimalPlaces: 2 })
-  @IsPositive()
+  @IsMoney()
   purchasePrice: number;
 
   // Either a regular money account (cash/bank/mfs) or a Savings Wallet --

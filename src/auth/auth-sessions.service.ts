@@ -107,7 +107,11 @@ export class AuthSessionsService {
   // Every session of the user except one -- after a password change, the
   // device that made it stays signed in and every other one is signed out.
   async revokeOthersForUser(userId: string, keepSessionId: string): Promise<void> {
-    await this.prisma.authSession.deleteMany({ where: { userId, id: { not: keepSessionId } } });
+    const others = await this.prisma.authSession.findMany({ where: { userId, id: { not: keepSessionId } }, select: { token: true } });
+    const { internalAdapter } = await this.auth.$context;
+    for (const { token } of others) {
+      await internalAdapter.deleteSession(token);
+    }
   }
 
   async revokeAllForUser(userId: string): Promise<void> {

@@ -1,6 +1,7 @@
 import { Body, Controller, Get, Post, Req, UseFilters, UseGuards } from '@nestjs/common';
 import { ChangePasswordDto } from '../user-auth/dto/change-password.dto.js';
 import { Throttle } from '@nestjs/throttler';
+import { LOGIN_THROTTLE } from '../common/login-throttle.js';
 import type { Request } from 'express';
 import { AdminAuthService } from './admin-auth.service.js';
 import { CurrentAdmin } from './decorators/current-admin.decorator.js';
@@ -14,9 +15,8 @@ import type { RequestAdminUser } from './interfaces/request-admin-user.interface
 export class AdminAuthController {
   constructor(private readonly adminAuthService: AdminAuthService) {}
 
-  // Overrides the app-wide default throttler limit with a stricter one:
-  // max 5 attempts per 15 minutes per IP.
-  @Throttle({ default: { limit: 5, ttl: 15 * 60 * 1000 } })
+  // 5 attempts per 15 minutes per IP and account, 30 per IP.
+  @Throttle(LOGIN_THROTTLE)
   @UseFilters(LoginRateLimitFilter)
   @Post('login')
   login(@Body() dto: LoginDto, @Req() req: Request) {

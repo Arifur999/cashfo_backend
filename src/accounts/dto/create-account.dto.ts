@@ -1,5 +1,6 @@
-import { IsEnum, IsNotEmpty, IsNumberString, IsOptional, IsString } from 'class-validator';
+import { IsEnum, IsNotEmpty, IsOptional, IsString, Matches } from 'class-validator';
 import { AccountType } from '@prisma/client';
+import { MONEY_STRING_MESSAGE, MONEY_STRING_REGEX } from '../../common/dto.js';
 
 export class CreateAccountDto {
   @IsString()
@@ -29,6 +30,6 @@ export class CreateAccountDto {
   // Contact.openingBalance (Prompt 8) -- see UpdateAccountDto for why it's
   // not editable afterward.
   @IsOptional()
-  @IsNumberString()
+  @Matches(MONEY_STRING_REGEX, { message: `openingBalance ${MONEY_STRING_MESSAGE}` })
   openingBalance?: string;
 }

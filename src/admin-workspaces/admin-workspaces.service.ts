@@ -11,11 +11,11 @@ export class AdminWorkspacesService {
     const page = query.page ?? 1;
     const limit = query.limit ?? 20;
 
-    // Only users who own at least one (non-soft-deleted) Business are
-    // relevant here -- a real signup always gets a default PERSONAL
-    // Business, so in practice this is "every registered user", but the
-    // filter guards against a user whose only workspace(s) were all deleted.
-    const where = { ...END_USER_WHERE, ownedBusinesses: { some: { deletedAt: null } } };
+    // Owners with at least one workspace besides their personal one -- what
+    // the page lists and counts as "users with extra workspaces". (Every
+    // signup owns a personal workspace, so without isDefault: false this was
+    // simply every registered user.)
+    const where = { ...END_USER_WHERE, ownedBusinesses: { some: { deletedAt: null, isDefault: false } } };
 
     const [owners, totalCount] = await Promise.all([
       this.prisma.user.findMany({
@@ -77,13 +77,19 @@ export class AdminWorkspacesService {
     email: string;
     ownedBusinesses: Array<{
       isDefault: boolean;
-      plan: { name: string; price: unknown } | null;
+      type: string;
+      plan: { name: string; price: unknown; billingCycle: string } | null;
     }>;
   }) {
     const defaultBusiness = user.ownedBusinesses.find((b) => b.isDefault);
     const additional = user.ownedBusinesses.filter((b) => !b.isDefault);
     const planPrice = defaultBusiness?.plan ? Number(defaultBusiness.plan.price) : null;
-    const estimatedMonthlyAddOnRevenue = planPrice !== null ? additional.length * planPrice * 0.5 : 0;
+    // The add-on fee is half the owner's plan per month, charged for extra
+    // BUSINESS workspaces only (group workspaces are free); a yearly plan's
+    // price covers twelve months.
+    const monthlyPlanPrice = planPrice !== null && defaultBusiness?.plan?.billingCycle === 'YEARLY' ? planPrice / 12 : planPrice;
+    const billable = additional.filter((b) => b.type === 'BUSINESS').length;
+    const estimatedMonthlyAddOnRevenue = monthlyPlanPrice !== null ? billable * monthlyPlanPrice * 0.5 : 0;
 
     return {
       userId: user.id,

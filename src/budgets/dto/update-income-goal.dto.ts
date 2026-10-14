@@ -1,5 +1,6 @@
 import { Type } from 'class-transformer';
-import { IsInt, IsNumber, IsOptional, IsPositive, IsString, Max, Min } from 'class-validator';
+import { IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
+import { IsMoney } from '../../common/dto.js';
 
 export class UpdateIncomeGoalDto {
   @IsOptional()
@@ -17,8 +18,7 @@ export class UpdateIncomeGoalDto {
   year?: number;
 
   @IsOptional()
-  @IsNumber({ maxDecimalPlaces: 2 })
-  @IsPositive()
+  @IsMoney()
   amount?: number;
 
   @IsOptional()

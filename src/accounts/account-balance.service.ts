@@ -344,8 +344,13 @@ export class AccountBalanceService {
 
     const discrepancies: { accountId: string; name: string; cachedBalance: string; recalculatedBalance: string }[] = [];
     for (const account of accounts) {
-      const cached = new Prisma.Decimal(account.currentBalance);
-      const recalculated = await this.recalculateBalance(account.id);
+      // Read and rewritten under the row lock every posting takes, so a
+      // posting that commits mid-way can't be overwritten by a stale sum.
+      const { cached, recalculated } = await this.prisma.$transaction(async (tx) => {
+        await tx.$queryRaw`SELECT id FROM "Account" WHERE id = ${account.id} FOR UPDATE`;
+        const current = await tx.account.findUniqueOrThrow({ where: { id: account.id }, select: { currentBalance: true } });
+        return { cached: new Prisma.Decimal(current.currentBalance), recalculated: await this.recalculateBalance(account.id, tx) };
+      });
       if (!cached.equals(recalculated)) {
         discrepancies.push({
           accountId: account.id,

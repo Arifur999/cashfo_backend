@@ -1,4 +1,5 @@
-import { IsDateString, IsNotEmpty, IsNumber, IsOptional, IsPositive, IsString } from 'class-validator';
+import { IsDateString, IsNotEmpty, IsOptional, IsString } from 'class-validator';
+import { IsMoney } from '../../common/dto.js';
 
 export class CreateTransferDto {
   @IsString()
@@ -9,8 +10,7 @@ export class CreateTransferDto {
   @IsNotEmpty()
   toAccountId: string;
 
-  @IsNumber({ maxDecimalPlaces: 2 })
-  @IsPositive()
+  @IsMoney()
   amount: number;
 
   @IsDateString()

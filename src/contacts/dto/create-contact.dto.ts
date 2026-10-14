@@ -1,5 +1,6 @@
 import { ContactCategory, ContactType } from '@prisma/client';
-import { IsEnum, IsNotEmpty, IsNumberString, IsOptional, IsString } from 'class-validator';
+import { IsEnum, IsNotEmpty, IsOptional, IsString, Matches } from 'class-validator';
+import { MONEY_STRING_MESSAGE, MONEY_STRING_REGEX } from '../../common/dto.js';
 
 // "At least one of phone/email" is a cross-field business rule, checked in
 // ContactsService rather than here -- same reasoning as AccountsService's
@@ -37,7 +38,7 @@ export class CreateContactDto {
   photoUrl?: string;
 
   @IsOptional()
-  @IsNumberString()
+  @Matches(MONEY_STRING_REGEX, { message: `openingBalance ${MONEY_STRING_MESSAGE}` })
   openingBalance?: string;
 
   @IsOptional()

@@ -197,10 +197,12 @@ export class AdminOwnersService {
     if (!newPlan) throw new BadRequestException('Target plan does not exist');
 
     return this.prisma.$transaction(async (tx) => {
+      // Selected, not the whole row: the Business carries the owner's
+      // workspace PIN hash, and this answer travels on to the browser.
       const updated = await tx.business.update({
         where: { id: business.id },
         data: { planId: dto.newPlanId },
-        include: { plan: true },
+        select: { id: true, planId: true, plan: { select: { id: true, name: true, slug: true, billingCycle: true, price: true } } },
       });
       await tx.auditLog.create({
         data: {

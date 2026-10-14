@@ -31,9 +31,12 @@ export class BusinessMembershipGuard implements CanActivate {
 
     const membership = await this.prisma.businessMember.findUnique({
       where: { businessId_userId: { businessId, userId } },
+      include: { business: { select: { deletedAt: true } } },
     });
 
-    if (!membership || membership.status !== 'ACTIVE') {
+    // A deleted workspace is gone for everyone: without the deletedAt check
+    // its owner could keep reading and posting into it by URL.
+    if (!membership || membership.status !== 'ACTIVE' || membership.business.deletedAt) {
       throw new ForbiddenException('You do not have access to this workspace');
     }
 

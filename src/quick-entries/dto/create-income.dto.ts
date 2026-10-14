@@ -1,4 +1,5 @@
-import { IsDateString, IsNotEmpty, IsNumber, IsOptional, IsPositive, IsString } from 'class-validator';
+import { IsDateString, IsNotEmpty, IsOptional, IsString } from 'class-validator';
+import { IsMoney } from '../../common/dto.js';
 
 export class CreateIncomeDto {
   // The money account (cash/bank/mfs) the income landed in.
@@ -13,8 +14,7 @@ export class CreateIncomeDto {
   @IsString()
   incomeAccountId?: string;
 
-  @IsNumber({ maxDecimalPlaces: 2 })
-  @IsPositive()
+  @IsMoney()
   amount: number;
 
   @IsDateString()

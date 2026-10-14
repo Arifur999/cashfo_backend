@@ -15,6 +15,7 @@ import {
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { Throttle } from '@nestjs/throttler';
+import { LOGIN_THROTTLE } from '../common/login-throttle.js';
 import type { Request } from 'express';
 import type { ClientInfo } from '../auth/auth-sessions.service.js';
 import { ChangePasswordDto } from './dto/change-password.dto.js';
@@ -22,6 +23,7 @@ import { ForgotPasswordDto } from './dto/forgot-password.dto.js';
 import { LoginDto } from './dto/login.dto.js';
 import { RefreshDto } from './dto/refresh.dto.js';
 import { RegisterDto } from './dto/register.dto.js';
+import { SessionExchangeDto } from './dto/session-exchange.dto.js';
 import { ResetPasswordDto } from './dto/reset-password.dto.js';
 import { UpdateLanguageDto } from './dto/update-language.dto.js';
 import { UpdateProfileDto } from './dto/update-profile.dto.js';
@@ -61,8 +63,8 @@ export class UserAuthController {
     return this.userAuthService.register(dto, this.resolveClientInfo(req));
   }
 
-  // Max 5 attempts per 15 minutes per IP, same policy as admin login.
-  @Throttle({ default: { limit: 5, ttl: 15 * 60 * 1000 } })
+  // Same policy as admin login: 5 per IP and account, 30 per IP.
+  @Throttle(LOGIN_THROTTLE)
   @UseFilters(LoginRateLimitFilter)
   @Post('login')
   login(@Body() dto: LoginDto, @Req() req: Request) {
@@ -73,8 +75,8 @@ export class UserAuthController {
   // callback left in the browser, forwarded by the frontend, for tokens.
   @Throttle({ default: { limit: 10, ttl: 60 * 1000 } })
   @Post('session/exchange')
-  exchangeSession(@Req() req: Request) {
-    return this.userAuthService.exchangeSession(req.headers.cookie, this.resolveClientInfo(req));
+  exchangeSession(@Req() req: Request, @Body() dto: SessionExchangeDto) {
+    return this.userAuthService.exchangeSession(req.headers.cookie, this.resolveClientInfo(req), dto.referralCode);
   }
 
   @Post('refresh')

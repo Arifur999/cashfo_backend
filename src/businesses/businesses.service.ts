@@ -6,6 +6,10 @@ import { CreateBusinessDto } from './dto/create-business.dto.js';
 import { UpdateBusinessDto } from './dto/update-business.dto.js';
 import { RequestBusinessMember } from '../business-access/interfaces/request-business-member.interface.js';
 import { AccountsService } from '../accounts/accounts.service.js';
+import { createWithinCap } from '../common/user-cap.js';
+
+// Workspaces a user may own besides the personal one -- see create().
+const MAX_WORKSPACES_PER_USER = 50;
 
 interface FeatureLimits {
   maxBusinessWorkspaces?: number;
@@ -86,7 +90,9 @@ export class BusinessesService {
       include: { plan: true },
     });
     if (!defaultBusiness?.plan) return null;
-    return (Number(defaultBusiness.plan.price) * 0.5).toFixed(2);
+    // A yearly plan's price is for twelve months.
+    const monthlyPrice = defaultBusiness.plan.billingCycle === 'YEARLY' ? Number(defaultBusiness.plan.price) / 12 : Number(defaultBusiness.plan.price);
+    return (monthlyPrice * 0.5).toFixed(2);
   }
 
   // Additional workspaces are no longer gated by SubscriptionPlan.featureLimits.
@@ -116,38 +122,50 @@ export class BusinessesService {
 
     const pinHash = dto.pin ? await bcrypt.hash(dto.pin, 10) : null;
 
-    const business = await this.prisma.$transaction(async (tx) => {
-      const created = await tx.business.create({
-        data: {
-          ownerId: userId,
-          name: dto.name,
-          type: dto.type,
-          currency: dto.currency ?? 'BDT',
-          planId,
-          isDefault: false,
-          phone: dto.phone ?? null,
-          email: dto.email ?? null,
-          pinHash,
-          trialEndsAt: isGroup ? null : new Date(Date.now() + 14 * 24 * 60 * 60 * 1000),
-        },
-      });
+    // Not a plan limit (extra workspaces are always allowed) but a ceiling
+    // on abuse: each BUSINESS workspace seeds a whole chart of accounts, and
+    // a looping client could otherwise create thousands. Counted under a
+    // per-user lock, so parallel requests can't overshoot it.
+    const business = await createWithinCap(
+      this.prisma,
+      userId,
+      'workspace',
+      MAX_WORKSPACES_PER_USER,
+      `You can have at most ${MAX_WORKSPACES_PER_USER} workspaces besides your personal one. Delete one you no longer use first.`,
+      (tx) => tx.business.count({ where: { ownerId: userId, isDefault: false, deletedAt: null } }),
+      async (tx) => {
+        const created = await tx.business.create({
+          data: {
+            ownerId: userId,
+            name: dto.name,
+            type: dto.type,
+            currency: dto.currency ?? 'BDT',
+            planId,
+            isDefault: false,
+            phone: dto.phone ?? null,
+            email: dto.email ?? null,
+            pinHash,
+            trialEndsAt: isGroup ? null : new Date(Date.now() + 14 * 24 * 60 * 60 * 1000),
+          },
+        });
 
-      await tx.businessMember.create({
-        data: { businessId: created.id, userId, role: 'OWNER' },
-      });
+        await tx.businessMember.create({
+          data: { businessId: created.id, userId, role: 'OWNER' },
+        });
 
-      // Prompt 4: a workspace should never exist without its starter Chart
-      // of Accounts -- seeded in the SAME transaction as the workspace/
-      // membership rows above, for the same all-or-nothing reason. GROUP
-      // workspaces skip this entirely -- Group Expense is deliberately not
-      // built on the Account/Transaction engine (see the GroupMember schema
-      // comment), so there's no chart of accounts to seed.
-      if (!isGroup) {
-        await this.accountsService.seedDefaultAccounts(created.id, WorkspaceType.BUSINESS, tx);
-      }
+        // Prompt 4: a workspace should never exist without its starter Chart
+        // of Accounts -- seeded in the SAME transaction as the workspace/
+        // membership rows above, for the same all-or-nothing reason. GROUP
+        // workspaces skip this entirely -- Group Expense is deliberately not
+        // built on the Account/Transaction engine (see the GroupMember schema
+        // comment), so there's no chart of accounts to seed.
+        if (!isGroup) {
+          await this.accountsService.seedDefaultAccounts(created.id, WorkspaceType.BUSINESS, tx);
+        }
 
-      return created;
-    });
+        return created;
+      },
+    );
 
     // Computed AFTER the transaction commits, not inside it -- this reads via
     // the plain (non-transactional) PrismaService client, and calling it from
@@ -195,8 +213,11 @@ export class BusinessesService {
     this.requireOwner(member);
     await this.requireBusiness(businessId);
 
-    let pinHash: string | undefined;
-    if (dto.pin !== undefined) {
+    // null removes the lock; a new PIN replaces it.
+    let pinHash: string | null | undefined;
+    if (dto.pin === null) {
+      pinHash = null;
+    } else if (dto.pin !== undefined) {
       pinHash = await bcrypt.hash(dto.pin, 10);
     }
 
