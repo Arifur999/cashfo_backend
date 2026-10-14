@@ -1,5 +1,5 @@
 import { Transform } from 'class-transformer';
-import { IsEmail, IsNotEmpty, IsString } from 'class-validator';
+import { IsEmail, IsNotEmpty, IsString, MaxLength } from 'class-validator';
 import { normalizeEmail } from '../../common/dto.js';
 
 export class LoginDto {
@@ -11,5 +11,6 @@ export class LoginDto {
   // existing password hash, not a new password.
   @IsString()
   @IsNotEmpty()
+  @MaxLength(128)
   password: string;
 }
