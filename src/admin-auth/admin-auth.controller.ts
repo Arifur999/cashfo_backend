@@ -1,4 +1,5 @@
 import { Body, Controller, Get, Post, Req, UseFilters, UseGuards } from '@nestjs/common';
+import { ChangePasswordDto } from '../user-auth/dto/change-password.dto.js';
 import { Throttle } from '@nestjs/throttler';
 import type { Request } from 'express';
 import { AdminAuthService } from './admin-auth.service.js';
@@ -38,6 +39,13 @@ export class AdminAuthController {
   @Post('logout')
   logout(@Body() dto: RefreshDto) {
     return this.adminAuthService.logout(dto.refreshToken);
+  }
+
+  @Throttle({ default: { limit: 5, ttl: 15 * 60 * 1000 } })
+  @UseGuards(AdminAuthGuard)
+  @Post('change-password')
+  changePassword(@CurrentAdmin() admin: RequestAdminUser, @Body() dto: ChangePasswordDto, @Req() req: Request) {
+    return this.adminAuthService.changePassword(admin.id, admin.sessionId, dto, req.ip);
   }
 
   @UseGuards(AdminAuthGuard)
