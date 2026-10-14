@@ -7,8 +7,9 @@ import { SettingsService } from '../settings/settings.service.js';
 import { FeatureFlagsService } from '../system/feature-flags.service.js';
 
 // What the admin panel configures that the customer app has to see: the
-// platform name and support address, maintenance mode, feature flags and
-// announcements -- one read for the customer layout instead of four.
+// platform name and support address, maintenance mode, feature flags,
+// announcements and translations -- one read for the customer layout
+// instead of four.
 @Injectable()
 export class PlatformService {
   constructor(
@@ -35,6 +36,20 @@ export class PlatformService {
       supportEmail: settings.supportEmail,
       maintenance: { enabled: settings.maintenanceMode, message: settings.maintenanceMessage },
     };
+  }
+
+  // Content > Translations, the way the app looks text up: its English
+  // wording is the key, so each string's Bangla replaces the app's own for
+  // the same English. Blank ones are skipped, and of two strings with the
+  // same English the one edited last wins.
+  async translations() {
+    const strings = await this.prisma.translationString.findMany({ select: { en: true, bn: true }, orderBy: { updatedAt: 'asc' } });
+    // A Map, so no English text (not even __proto__) reaches an object's prototype.
+    const bn = new Map<string, string>();
+    for (const { en, bn: text } of strings) {
+      if (en.trim() && text.trim()) bn.set(en.trim(), text.trim());
+    }
+    return { bn: Object.fromEntries(bn) };
   }
 
   async forCustomer(userId: string) {
