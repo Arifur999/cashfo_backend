@@ -781,7 +781,9 @@ export class ReceivablesPayablesService {
   private async getDefaultIncomeAccountId(businessId: string): Promise<string> {
     const account = await this.prisma.account.findFirst({
       where: { businessId, accountType: 'INCOME', status: 'ACTIVE' },
-      orderBy: { displayOrder: 'asc' },
+      // Oldest first among equal display orders: accounts a user adds
+      // default to 0 too, and the seeded one should win the tie.
+      orderBy: [{ displayOrder: 'asc' }, { createdAt: 'asc' }],
     });
     if (!account) {
       throw new BadRequestException('No income account exists in this workspace -- specify incomeAccountId or create one first');
@@ -792,7 +794,9 @@ export class ReceivablesPayablesService {
   private async getDefaultExpenseAccountId(businessId: string): Promise<string> {
     const account = await this.prisma.account.findFirst({
       where: { businessId, accountType: 'EXPENSE', status: 'ACTIVE' },
-      orderBy: { displayOrder: 'asc' },
+      // Oldest first among equal display orders: accounts a user adds
+      // default to 0 too, and the seeded one should win the tie.
+      orderBy: [{ displayOrder: 'asc' }, { createdAt: 'asc' }],
     });
     if (!account) {
       throw new BadRequestException('No expense account exists in this workspace -- specify expenseAccountId or create one first');
