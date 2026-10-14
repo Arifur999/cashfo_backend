@@ -725,6 +725,9 @@ model AuthSession {
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+  // Set on a super admin's read-only "View as customer" session: the admin's
+  // User id (AdminOwnersController's impersonate). Null for every real sign-in.
+  impersonatedBy String?
 
   @@index([userId])
 }

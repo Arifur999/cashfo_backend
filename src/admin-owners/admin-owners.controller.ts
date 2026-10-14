@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
 import type { Request } from 'express';
 import { AdminRole } from '../common/roles.js';
 import { CurrentAdmin } from '../admin-auth/decorators/current-admin.decorator.js';
@@ -10,11 +10,15 @@ import { AdminOwnersService } from './admin-owners.service.js';
 import { ChangeOwnerPlanDto } from './dto/change-owner-plan.dto.js';
 import { ListOwnersQueryDto } from './dto/list-owners-query.dto.js';
 import { SuspendOwnerDto } from './dto/suspend-owner.dto.js';
+import { OwnerImpersonationService } from './owner-impersonation.service.js';
 
 @UseGuards(AdminAuthGuard, RolesGuard)
 @Controller('admin/owners')
 export class AdminOwnersController {
-  constructor(private readonly adminOwnersService: AdminOwnersService) {}
+  constructor(
+    private readonly adminOwnersService: AdminOwnersService,
+    private readonly impersonation: OwnerImpersonationService,
+  ) {}
 
   // No @Roles() -- any authenticated admin can view the list/detail, same
   // convention as AdminWorkspacesController's GET route.
@@ -52,5 +56,20 @@ export class AdminOwnersController {
   @Post(':userId/reset')
   reset(@Param('userId') userId: string, @CurrentAdmin() admin: RequestAdminUser, @Req() req: Request) {
     return this.adminOwnersService.resetOwnerData(userId, admin.id, req.ip);
+  }
+
+  // "View as customer" (read-only, see OwnerImpersonationService): customer
+  // tokens for a session of this owner. SUPER_ADMIN only -- it shows a real
+  // customer's books.
+  @Roles(AdminRole.SUPER_ADMIN)
+  @Post(':userId/impersonate')
+  impersonate(@Param('userId') userId: string, @CurrentAdmin() admin: RequestAdminUser, @Req() req: Request) {
+    return this.impersonation.start(userId, admin.id, { ipAddress: req.ip, userAgent: req.headers['user-agent'] });
+  }
+
+  @Roles(AdminRole.SUPER_ADMIN)
+  @Delete(':userId/impersonate')
+  endImpersonation(@Param('userId') userId: string, @CurrentAdmin() admin: RequestAdminUser, @Req() req: Request) {
+    return this.impersonation.end(userId, admin.id, req.ip);
   }
 }

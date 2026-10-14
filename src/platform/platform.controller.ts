@@ -24,6 +24,12 @@ export class PlatformController {
     return this.platformService.publicInfo();
   }
 
+  // Public, like the strings it carries: the sign-in pages show them too.
+  @Get('translations')
+  translations() {
+    return this.platformService.translations();
+  }
+
   // Public: read by the sign-up page and the footer links before anyone
   // signs in.
   @Get('legal/:page')

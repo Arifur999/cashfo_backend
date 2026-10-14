@@ -107,7 +107,7 @@ export class UserAuthController {
   @UseGuards(UserAuthGuard)
   @Get('me')
   me(@CurrentUser() user: RequestUser) {
-    return this.userProfileService.me(user.id);
+    return this.userProfileService.me(user.id, user.impersonatedBy);
   }
 
   @UseGuards(UserAuthGuard)
