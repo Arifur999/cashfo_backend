@@ -93,7 +93,7 @@ export class UserAuthService {
   // cookie in the browser. The frontend forwards that cookie here and gets
   // the usual token pair, bound to that same session. An admin's session is
   // refused, not ended, so the frontend can exchange it on the admin side.
-  async exchangeSession(cookieHeader: string | undefined, client: ClientInfo) {
+  async exchangeSession(cookieHeader: string | undefined, client: ClientInfo, referralCode?: string) {
     const signedIn = await this.sessions.fromCookie(cookieHeader);
     if (!signedIn) {
       throw new UnauthorizedException('No signed-in session to exchange');
@@ -112,8 +112,9 @@ export class UserAuthService {
         data: { email: user.email, ipAddress: client.ipAddress ?? 'unknown', userAgent: client.userAgent, success: true },
       }),
     ]);
-    // A first Google sign-in is also the signup: this creates the workspace.
-    const defaultBusinessId = await this.provisioning.ensureDefaultWorkspace(user.id);
+    // A first Google sign-in is also the signup: this creates the workspace
+    // and records the referral the invite link carried.
+    const defaultBusinessId = await this.provisioning.ensureDefaultWorkspace(user.id, { referralCode });
     return this.signedInResponse(user, signedIn.sessionId, client, defaultBusinessId);
   }
 

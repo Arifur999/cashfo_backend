@@ -46,7 +46,7 @@ export class SignInService {
   // The second half of Google sign-in, for everyone: the better-auth session
   // cookie its callback left behind, exchanged on the side the account
   // belongs to. A first Google sign-in by a new person is their signup.
-  async withSession(cookieHeader: string | undefined, client: ClientInfo): Promise<SignInResult> {
+  async withSession(cookieHeader: string | undefined, client: ClientInfo, referralCode?: string): Promise<SignInResult> {
     const signedIn = await this.sessions.fromCookie(cookieHeader);
     if (!signedIn) {
       throw new UnauthorizedException('No signed-in session to exchange');
@@ -55,7 +55,7 @@ export class SignInService {
       const { accessToken, refreshToken, adminUser } = await this.adminAuth.exchangeSession(cookieHeader, client);
       return { audience: 'admin', accessToken, refreshToken, account: adminUser };
     }
-    const { accessToken, refreshToken, user, defaultBusinessId } = await this.userAuth.exchangeSession(cookieHeader, client);
+    const { accessToken, refreshToken, user, defaultBusinessId } = await this.userAuth.exchangeSession(cookieHeader, client, referralCode);
     return { audience: 'user', accessToken, refreshToken, account: { id: user.id, name: user.name, email: user.email, role: 'USER' }, defaultBusinessId };
   }
 

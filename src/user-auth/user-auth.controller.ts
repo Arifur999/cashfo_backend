@@ -23,6 +23,7 @@ import { ForgotPasswordDto } from './dto/forgot-password.dto.js';
 import { LoginDto } from './dto/login.dto.js';
 import { RefreshDto } from './dto/refresh.dto.js';
 import { RegisterDto } from './dto/register.dto.js';
+import { SessionExchangeDto } from './dto/session-exchange.dto.js';
 import { ResetPasswordDto } from './dto/reset-password.dto.js';
 import { UpdateLanguageDto } from './dto/update-language.dto.js';
 import { UpdateProfileDto } from './dto/update-profile.dto.js';
@@ -74,8 +75,8 @@ export class UserAuthController {
   // callback left in the browser, forwarded by the frontend, for tokens.
   @Throttle({ default: { limit: 10, ttl: 60 * 1000 } })
   @Post('session/exchange')
-  exchangeSession(@Req() req: Request) {
-    return this.userAuthService.exchangeSession(req.headers.cookie, this.resolveClientInfo(req));
+  exchangeSession(@Req() req: Request, @Body() dto: SessionExchangeDto) {
+    return this.userAuthService.exchangeSession(req.headers.cookie, this.resolveClientInfo(req), dto.referralCode);
   }
 
   @Post('refresh')
