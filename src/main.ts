@@ -7,6 +7,7 @@ import express from 'express';
 import { AppModule } from './app.module.js';
 import { BETTER_AUTH, type Auth } from './auth/better-auth.js';
 import { betterAuthMiddleware } from './auth/better-auth.middleware.js';
+import { NoNulPipe } from './common/no-nul.pipe.js';
 import { parseTrustProxy } from './common/trust-proxy.js';
 
 async function bootstrap() {
@@ -29,6 +30,7 @@ async function bootstrap() {
   // ahead of Nest's body parser, which is only added when the app starts.
   app.use(betterAuthMiddleware(app.get<Auth>(BETTER_AUTH)));
   app.useGlobalPipes(
+    new NoNulPipe(),
     new ValidationPipe({
       whitelist: true,
       transform: true,
