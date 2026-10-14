@@ -6,10 +6,13 @@ describe('isExposedAuthUrl', () => {
     '/api/auth/callback/google?code=abc&state=xyz',
     '/api/auth/get-session',
     '/api/auth/sign-out',
-    '/api/auth/dash/list-users',
-    '/api/auth/events/types',
   ])('exposes %s', (url) => {
-    expect(isExposedAuthUrl(url)).toBe(true);
+    expect(isExposedAuthUrl(url, false)).toBe(true);
+  });
+
+  it.each(['/api/auth/dash/list-users', '/api/auth/events/types'])('exposes the dashboard route %s only while the dashboard key is set', (url) => {
+    expect(isExposedAuthUrl(url, true)).toBe(true);
+    expect(isExposedAuthUrl(url, false)).toBe(false);
   });
 
   it.each([
@@ -27,13 +30,13 @@ describe('isExposedAuthUrl', () => {
     '/api/auth/dash',
     '/admin/auth/login',
   ])('keeps %s closed', (url) => {
-    expect(isExposedAuthUrl(url)).toBe(false);
+    expect(isExposedAuthUrl(url, true)).toBe(false);
   });
 
   it.each(['/api/auth/callback/../sign-up/email', '/api/auth/callback/%2e%2e/sign-up/email', '/api/auth/dash/%2E%2E/update-user'])(
     'is not fooled by dot segments: %s',
     (url) => {
-      expect(isExposedAuthUrl(url)).toBe(false);
+      expect(isExposedAuthUrl(url, true)).toBe(false);
     },
   );
 });
