@@ -4,6 +4,10 @@ import { PrismaService } from '../prisma/prisma.service.js';
 import { CreatePlanDto } from './dto/create-plan.dto.js';
 import { UpdatePlanDto } from './dto/update-plan.dto.js';
 
+// The plan new accounts are put on (UserProvisioningService looks it up by
+// this slug).
+const FREE_PLAN_SLUG = 'free';
+
 @Injectable()
 export class SubscriptionPlansService {
   constructor(private readonly prisma: PrismaService) {}
@@ -50,6 +54,14 @@ export class SubscriptionPlansService {
 
   async update(id: string, dto: UpdatePlanDto, adminId: string, ipAddress?: string) {
     const plan = await this.requirePlan(id);
+    // New sign-ups are put on the plan whose slug is "free"
+    // (UserProvisioningService); renaming it would leave them on no plan.
+    if (plan.slug === FREE_PLAN_SLUG && dto.slug !== undefined && dto.slug !== FREE_PLAN_SLUG) {
+      throw new BadRequestException('The free plan keeps the slug "free" -- new accounts are put on it by that name.');
+    }
+    if (dto.slug !== undefined && dto.slug !== plan.slug && (await this.prisma.subscriptionPlan.findUnique({ where: { slug: dto.slug } }))) {
+      throw new ConflictException('Another plan already uses this slug');
+    }
 
     const updated = await this.prisma.$transaction(async (tx) => {
       const result = await tx.subscriptionPlan.update({
@@ -110,9 +122,22 @@ export class SubscriptionPlansService {
   async remove(id: string, adminId: string, ipAddress?: string) {
     await this.requirePlan(id);
 
-    const usersOnPlan = await this.prisma.business.count({ where: { planId: id, isDefault: true, deletedAt: null } });
-    if (usersOnPlan > 0) {
-      throw new BadRequestException(`Cannot delete this plan -- ${usersOnPlan} user(s) are currently on it. Archive it instead.`);
+    const plan = await this.prisma.subscriptionPlan.findUniqueOrThrow({ where: { id } });
+    if (plan.slug === FREE_PLAN_SLUG) {
+      throw new BadRequestException('The free plan cannot be deleted -- new accounts are put on it. Archive other plans instead.');
+    }
+    // Every reference, not just default workspaces: extra workspaces carry
+    // the owner's plan too (deleting would silently clear it), and payments
+    // and coupon redemptions block the delete at the database.
+    const [workspaces, payments, redemptions] = await Promise.all([
+      this.prisma.business.count({ where: { planId: id } }),
+      this.prisma.payment.count({ where: { planId: id } }),
+      this.prisma.couponRedemption.count({ where: { planId: id } }),
+    ]);
+    if (workspaces + payments + redemptions > 0) {
+      throw new BadRequestException(
+        `Cannot delete this plan -- ${workspaces} workspace(s), ${payments} payment(s) and ${redemptions} coupon redemption(s) refer to it. Archive it instead.`,
+      );
     }
 
     await this.prisma.$transaction(async (tx) => {
