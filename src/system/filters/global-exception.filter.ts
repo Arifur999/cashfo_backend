@@ -1,4 +1,4 @@
-import { ArgumentsHost, BadRequestException, Catch, ConflictException, HttpException, Injectable, NotFoundException } from '@nestjs/common';
+import { ArgumentsHost, BadRequestException, Catch, ConflictException, HttpException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { BaseExceptionFilter } from '@nestjs/core';
 import { Prisma } from '@prisma/client';
 import type { Request } from 'express';
@@ -13,13 +13,26 @@ import { ErrorLogsService } from '../error-logs.service.js';
 @Injectable()
 @Catch()
 export class GlobalExceptionFilter extends BaseExceptionFilter {
+  private readonly logger = new Logger('ClientError');
+
   constructor(private readonly errorLogsService: ErrorLogsService) {
     super();
   }
 
   async catch(exception: unknown, host: ArgumentsHost) {
-    const response = toClientError(exception) ?? exception;
+    const clientError = toClientError(exception);
+    const response = clientError ?? exception;
     const status = statusOf(response);
+
+    // A database error answered as a 4xx is usually the client's doing, but
+    // can be a query the code built wrongly -- keep a line in the server
+    // log (not an ErrorLog incident) so that stays findable.
+    if (clientError) {
+      const request = host.switchToHttp().getRequest<Request>();
+      this.logger.warn(
+        `${request.method} ${request.path} -> ${status}: ${exception instanceof Error ? exception.message.split('\n').filter(Boolean).at(-1) : 'unknown'}`,
+      );
+    }
 
     // Only genuine server-side failures are incidents worth logging --
     // expected 4xx responses (validation errors, auth failures, throttling,
