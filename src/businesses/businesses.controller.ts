@@ -2,8 +2,10 @@ import { Body, Controller, Delete, Get, Param, Patch, Post, UseGuards } from '@n
 import { Throttle } from '@nestjs/throttler';
 import { BusinessesService } from './businesses.service.js';
 import { CreateBusinessDto } from './dto/create-business.dto.js';
+import { ResetBusinessPinDto } from './dto/reset-business-pin.dto.js';
 import { UpdateBusinessDto } from './dto/update-business.dto.js';
 import { VerifyBusinessPinDto } from './dto/verify-business-pin.dto.js';
+import { AllowLockedWorkspace } from '../business-access/decorators/allow-locked-workspace.decorator.js';
 import { CurrentBusinessMember } from '../business-access/decorators/current-business-member.decorator.js';
 import { RequireBusinessMembership } from '../business-access/decorators/require-business-membership.decorator.js';
 import type { RequestBusinessMember } from '../business-access/interfaces/request-business-member.interface.js';
@@ -25,7 +27,7 @@ export class BusinessesController {
   @UseGuards(UserAuthGuard)
   @Post()
   create(@CurrentUser() user: RequestUser, @Body() dto: CreateBusinessDto) {
-    return this.businessesService.create(user.id, dto);
+    return this.businessesService.create(user, dto);
   }
 
   // Lets the frontend show/disable "Create workspace" proactively instead of
@@ -48,8 +50,13 @@ export class BusinessesController {
 
   @RequireBusinessMembership()
   @Patch(':id')
-  update(@Param('id') id: string, @CurrentBusinessMember() member: RequestBusinessMember, @Body() dto: UpdateBusinessDto) {
-    return this.businessesService.update(id, member, dto);
+  update(
+    @Param('id') id: string,
+    @CurrentBusinessMember() member: RequestBusinessMember,
+    @CurrentUser() user: RequestUser,
+    @Body() dto: UpdateBusinessDto,
+  ) {
+    return this.businessesService.update(id, member, user, dto);
   }
 
   // Reachable by ANY business member (not owner-only): a STAFF/ACCOUNTANT
@@ -58,9 +65,19 @@ export class BusinessesController {
   // A 4-6 digit PIN falls to guessing at the global 100 a minute.
   @Throttle({ default: { limit: 10, ttl: 15 * 60 * 1000 } })
   @RequireBusinessMembership()
+  @AllowLockedWorkspace()
   @Post(':id/verify-pin')
-  verifyPin(@Param('id') id: string, @Body() dto: VerifyBusinessPinDto) {
-    return this.businessesService.verifyPin(id, dto.pin);
+  verifyPin(@Param('id') id: string, @CurrentUser() user: RequestUser, @Body() dto: VerifyBusinessPinDto) {
+    return this.businessesService.verifyPin(id, user, dto.pin);
+  }
+
+  // Owner only; throttled like the PIN, since it checks a password.
+  @Throttle({ default: { limit: 10, ttl: 15 * 60 * 1000 } })
+  @RequireBusinessMembership()
+  @AllowLockedWorkspace()
+  @Post(':id/reset-pin')
+  resetPin(@Param('id') id: string, @CurrentBusinessMember() member: RequestBusinessMember, @Body() dto: ResetBusinessPinDto) {
+    return this.businessesService.resetPin(id, member, dto.password);
   }
 
   @RequireBusinessMembership()

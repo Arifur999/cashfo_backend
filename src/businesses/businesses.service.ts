@@ -6,6 +6,9 @@ import { CreateBusinessDto } from './dto/create-business.dto.js';
 import { UpdateBusinessDto } from './dto/update-business.dto.js';
 import { RequestBusinessMember } from '../business-access/interfaces/request-business-member.interface.js';
 import { AccountsService } from '../accounts/accounts.service.js';
+import { CredentialsService } from '../auth/credentials.service.js';
+import { WorkspaceUnlockService, type WorkspaceUnlock } from '../business-access/workspace-unlock.service.js';
+import type { RequestUser } from '../user-auth/interfaces/request-user.interface.js';
 import { createWithinCap } from '../common/user-cap.js';
 
 // Workspaces a user may own besides the personal one -- see create().
@@ -21,6 +24,8 @@ export class BusinessesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly accountsService: AccountsService,
+    private readonly credentials: CredentialsService,
+    private readonly unlocks: WorkspaceUnlockService,
   ) {}
 
   async list(userId: string) {
@@ -107,7 +112,8 @@ export class BusinessesService {
     return { maxBusinessWorkspaces, currentCount, atLimit: false };
   }
 
-  async create(userId: string, dto: CreateBusinessDto) {
+  async create(user: RequestUser, dto: CreateBusinessDto) {
+    const userId = user.id;
     if (dto.type !== WorkspaceType.BUSINESS && dto.type !== WorkspaceType.GROUP) {
       throw new BadRequestException(
         'Only BUSINESS or GROUP-type workspaces can be created here -- every account already has one PERSONAL workspace created automatically at signup.',
@@ -187,6 +193,8 @@ export class BusinessesService {
       hasPinLock: business.pinHash !== null,
       trialEndsAt: business.trialEndsAt,
       monthlyFee,
+      // A PIN set here locks the workspace; this device gets its unlock.
+      ...(business.pinHash && { unlock: this.unlocks.issue(userId, user.sessionId, business.id, business.pinHash) }),
     };
   }
 
@@ -209,7 +217,7 @@ export class BusinessesService {
     };
   }
 
-  async update(businessId: string, member: RequestBusinessMember, dto: UpdateBusinessDto) {
+  async update(businessId: string, member: RequestBusinessMember, user: RequestUser, dto: UpdateBusinessDto) {
     this.requireOwner(member);
     await this.requireBusiness(businessId);
 
@@ -243,6 +251,9 @@ export class BusinessesService {
       hasPinLock: updated.pinHash !== null,
       trialEndsAt: updated.trialEndsAt,
       monthlyFee: updated.type === 'BUSINESS' && !updated.isDefault ? await this.getAdditionalWorkspaceMonthlyFee(updated.ownerId) : null,
+      // A new PIN ends every unlock made with the old one -- except on the
+      // device that set it, which gets a fresh one.
+      ...(pinHash && { unlock: this.unlocks.issue(user.id, user.sessionId, updated.id, pinHash) }),
     };
   }
 
@@ -266,11 +277,30 @@ export class BusinessesService {
     return { success: true };
   }
 
-  async verifyPin(businessId: string, pin: string): Promise<{ valid: boolean }> {
+  // A correct PIN comes back with the unlock this session's requests to the
+  // workspace carry (see BusinessMembershipGuard).
+  async verifyPin(businessId: string, user: RequestUser, pin: string): Promise<{ valid: boolean; unlock?: WorkspaceUnlock }> {
     const business = await this.requireBusiness(businessId);
     if (!business.pinHash) return { valid: true }; // no lock configured -- nothing to verify
     const valid = await bcrypt.compare(pin, business.pinHash);
-    return { valid };
+    return valid ? { valid, unlock: this.unlocks.issue(user.id, user.sessionId, businessId, business.pinHash) } : { valid };
+  }
+
+  // "Forgot PIN?": the owner proves who they are with the account password,
+  // which someone merely holding their signed-in device doesn't know.
+  async resetPin(businessId: string, member: RequestBusinessMember, password: string) {
+    this.requireOwner(member);
+    await this.requireBusiness(businessId);
+    if (!(await this.credentials.verify(member.userId, password))) {
+      if (!(await this.credentials.has(member.userId))) {
+        throw new BadRequestException(
+          'Your account has no password yet because you sign in with Google. Set one with "Forgot password?" on the sign-in page, then come back.',
+        );
+      }
+      throw new BadRequestException('Your account password is incorrect');
+    }
+    await this.prisma.business.update({ where: { id: businessId }, data: { pinHash: null } });
+    return { success: true };
   }
 
   private requireOwner(member: RequestBusinessMember) {
