@@ -1,5 +1,7 @@
+import { isIP } from 'node:net';
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import geoip from 'geoip-country';
 import { dhakaDateKey } from '../common/dhaka.js';
 import { END_USER_WHERE } from '../common/roles.js';
 import { PrismaService } from '../prisma/prisma.service.js';
@@ -15,6 +17,18 @@ function classifyDeviceType(userAgent: string | null): 'MOBILE' | 'DESKTOP' | 'T
   if (/iPad|Tablet/i.test(userAgent)) return 'TABLET';
   if (/Mobile|Android|iPhone/i.test(userAgent)) return 'MOBILE';
   return 'DESKTOP';
+}
+
+// The country an IP address is in, by name, from the GeoLite2 country
+// database bundled with geoip-country (no network call). "Unknown" for an
+// address it can't place: a private network, a test client, anything that
+// isn't an IP at all.
+export function countryOfIp(ipAddress: string | null): string {
+  if (!ipAddress) return 'Unknown';
+  // How an IPv4 client can appear on a dual-stack socket.
+  const address = ipAddress.startsWith('::ffff:') ? ipAddress.slice('::ffff:'.length) : ipAddress;
+  if (!isIP(address)) return 'Unknown';
+  return geoip.lookup(address)?.name ?? 'Unknown';
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -181,44 +195,29 @@ export class AnalyticsService {
     });
   }
 
-  // No real equivalent exists anywhere in this app -- no model captures a
-  // real User's or real UserSession's country/city (UserSession.ipAddress is
-  // stored but never geocoded, and no IP-geolocation library/service is
-  // wired in). Left reading UsageEvent on purpose: with that table's seed
-  // data cleared this honestly returns empty until real IP geolocation is
-  // built, rather than fabricating a stand-in metric.
+  // Where customers sign in from: the country of every sign-in's address
+  // (UserSession, recorded at each customer sign-in), looked up offline.
+  // eventCount is sign-ins, userCount distinct customers. Country level
+  // only: a city database is many times the size and much less accurate,
+  // so cities stays empty.
   async geography() {
-    const events = await this.prisma.usageEvent.findMany({
-      select: { platformUserId: true, country: true, city: true },
-    });
+    const sessions = await this.prisma.userSession.findMany({ select: { userId: true, ipAddress: true } });
 
     const byCountry = new Map<string, { eventCount: number; userIds: Set<string> }>();
-    const byCity = new Map<string, { country: string; eventCount: number; userIds: Set<string> }>();
-
-    for (const event of events) {
-      const country = event.country ?? 'Unknown';
-      const countryEntry = byCountry.get(country) ?? { eventCount: 0, userIds: new Set<string>() };
-      countryEntry.eventCount += 1;
-      countryEntry.userIds.add(event.platformUserId);
-      byCountry.set(country, countryEntry);
-
-      if (event.city) {
-        const cityEntry = byCity.get(event.city) ?? { country, eventCount: 0, userIds: new Set<string>() };
-        cityEntry.eventCount += 1;
-        cityEntry.userIds.add(event.platformUserId);
-        byCity.set(event.city, cityEntry);
-      }
+    for (const session of sessions) {
+      const country = countryOfIp(session.ipAddress);
+      const entry = byCountry.get(country) ?? { eventCount: 0, userIds: new Set<string>() };
+      entry.eventCount += 1;
+      entry.userIds.add(session.userId);
+      byCountry.set(country, entry);
     }
 
     const countries = [...byCountry.entries()]
       .map(([country, v]) => ({ country, eventCount: v.eventCount, userCount: v.userIds.size }))
-      .sort((a, b) => b.userCount - a.userCount);
+      // Places first, most customers first; the addresses no country claims last.
+      .sort((a, b) => Number(a.country === 'Unknown') - Number(b.country === 'Unknown') || b.userCount - a.userCount || b.eventCount - a.eventCount);
 
-    const cities = [...byCity.entries()]
-      .map(([city, v]) => ({ city, country: v.country, eventCount: v.eventCount, userCount: v.userIds.size }))
-      .sort((a, b) => b.userCount - a.userCount);
-
-    return { countries, cities };
+    return { countries, cities: [] as { city: string; country: string; eventCount: number; userCount: number }[] };
   }
 
   // Real device signal -- classifies every real UserSession.userAgent
