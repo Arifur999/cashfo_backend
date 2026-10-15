@@ -114,6 +114,8 @@ export interface HabitTrackerView {
   elapsedDays: number;
   todayDay: number | null;
   checks: { day: number; item: string }[];
+  // When the sheet was created: a challenge counts its days from here.
+  createdAt: string;
 }
 
 @Injectable()
@@ -335,6 +337,7 @@ export class HabitTrackersService {
     totalDays: number | null;
     items: string[];
     checks: { day: number; item: string }[];
+    createdAt: Date;
   }): HabitTrackerView {
     // Ramadan/Others sheets are just Day 1..N -- no start date is known, so
     // there's no "today" or elapsed-days notion for them, only Namaz's real
@@ -353,6 +356,7 @@ export class HabitTrackersService {
       // Drop any tick whose habit was removed (a tick landing mid-removal
       // could otherwise leave an orphan row).
       checks: tracker.checks.filter((c) => tracker.items.includes(c.item)),
+      createdAt: tracker.createdAt.toISOString(),
     };
   }
 
