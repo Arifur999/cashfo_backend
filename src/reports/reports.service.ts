@@ -1,10 +1,12 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { AccountType, Prisma } from '@prisma/client';
 import { isDebitPositive } from '../accounts/account-balance.service.js';
 import { dhakaMonthRange } from '../common/dhaka.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { CategoryBreakdownQueryDto } from './dto/category-breakdown-query.dto.js';
 import { GeneralLedgerQueryDto } from './dto/general-ledger-query.dto.js';
+import { MonthlyBreakdownQueryDto } from './dto/monthly-breakdown-query.dto.js';
+import { MAX_REPORT_MONTHS, monthBucketsBetween } from './month-buckets.js';
 
 const ACCOUNT_TYPE_ORDER: AccountType[] = ['ASSET', 'LIABILITY', 'EQUITY', 'INCOME', 'EXPENSE'];
 
@@ -180,6 +182,66 @@ export class ReportsService {
         percent: total.isZero() ? 0 : Math.round(row.amount.dividedBy(total).times(100).toNumber()),
         color: row.color,
       })),
+    };
+  }
+
+  // Insights › Reports: every category of one type, with a column per
+  // calendar month in the range. The same "categoryId picks one side of the
+  // pair" rule as getCategoryBreakdown(), but nothing is capped: the table
+  // is the place a customer goes for every row. One groupBy per month
+  // (at most MAX_REPORT_MONTHS) rather than a raw date_trunc, like the
+  // trend below. `accountId` keeps only the transactions that touched that
+  // wallet (the entry on the wallet side is the other half of the pair).
+  async getMonthlyBreakdown(businessId: string, query: MonthlyBreakdownQueryDto) {
+    const buckets = monthBucketsBetween(query.dateFrom, query.dateTo);
+    if (buckets.length === 0) throw new BadRequestException(`Pick a range of 1 to ${MAX_REPORT_MONTHS} months, oldest day first`);
+
+    const grouped = await Promise.all(
+      buckets.map((bucket) =>
+        this.prisma.transactionEntry.groupBy({
+          by: ['categoryId'],
+          where: {
+            categoryId: { not: null },
+            transaction: {
+              businessId,
+              status: 'POSTED',
+              reversalOfId: null,
+              transactionType: query.type,
+              transactionDate: { gte: bucket.start, lt: bucket.end },
+              ...(query.accountId && { entries: { some: { accountId: query.accountId } } }),
+            },
+          },
+          _sum: { amount: true },
+        }),
+      ),
+    );
+
+    const byName = new Map<string, Prisma.Decimal[]>();
+    grouped.forEach((rows, monthIndex) => {
+      for (const row of rows) {
+        if (!row.categoryId) continue;
+        const amounts = byName.get(row.categoryId) ?? buckets.map(() => new Prisma.Decimal(0));
+        amounts[monthIndex] = new Prisma.Decimal(row._sum.amount ?? 0);
+        byName.set(row.categoryId, amounts);
+      }
+    });
+
+    const names = [...byName.keys()];
+    const budgetCategories = names.length ? await this.prisma.budgetCategory.findMany({ where: { businessId, type: query.type, name: { in: names } } }) : [];
+    const colorByName = new Map(budgetCategories.map((c) => [c.name, c.color]));
+    const sum = (values: Prisma.Decimal[]) => values.reduce((acc, v) => acc.plus(v), new Prisma.Decimal(0));
+
+    const rows = names
+      .map((name, i) => ({ name, color: colorByName.get(name) ?? FALLBACK_COLORS[i % FALLBACK_COLORS.length], amounts: byName.get(name)!, total: sum(byName.get(name)!) }))
+      .sort((a, b) => b.total.comparedTo(a.total));
+    const totals = buckets.map((_, monthIndex) => sum(rows.map((row) => row.amounts[monthIndex])));
+
+    return {
+      type: query.type,
+      months: buckets.map((bucket) => bucket.key),
+      rows: rows.map((row) => ({ name: row.name, color: row.color, amounts: row.amounts.map((a) => a.toFixed(2)), total: row.total.toFixed(2) })),
+      totals: totals.map((t) => t.toFixed(2)),
+      total: sum(totals).toFixed(2),
     };
   }
 
