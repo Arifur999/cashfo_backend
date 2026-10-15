@@ -54,6 +54,8 @@ export interface WeekDay {
   date: string; // 'YYYY-MM-DD' (Asia/Dhaka)
   minutes: number; // learned that day in HOURS skills
   lessons: number; // learned that day in LESSONS skills
+  // That day's amount per skill (id -> lessons, or minutes), for a per-skill grid.
+  bySkill: Record<string, number>;
 }
 
 export interface SkillsOverview {
@@ -160,19 +162,21 @@ export class SkillsService {
       where: { userId, date: { gte: new Date(today.getTime() - STREAK_LOOKBACK_DAYS * DAY_MS) } },
       _sum: { amount: true },
     });
-    const perDay = new Map<string, { minutes: number; lessons: number }>();
+    const perDay = new Map<string, { minutes: number; lessons: number; bySkill: Record<string, number> }>();
     for (const row of rows) {
       const key = row.date.toISOString().slice(0, 10);
-      const day = perDay.get(key) ?? { minutes: 0, lessons: 0 };
+      const day = perDay.get(key) ?? { minutes: 0, lessons: 0, bySkill: {} };
       const amount = row._sum.amount ?? 0;
       if (unitOf.get(row.skillId) === SkillUnit.HOURS) day.minutes += amount;
       else day.lessons += amount;
+      day.bySkill[row.skillId] = (day.bySkill[row.skillId] ?? 0) + amount;
       perDay.set(key, day);
     }
     const week: WeekDay[] = [];
     for (let n = 6; n >= 0; n--) {
       const key = daysAgo(n);
-      week.push({ date: key, minutes: perDay.get(key)?.minutes ?? 0, lessons: perDay.get(key)?.lessons ?? 0 });
+      const day = perDay.get(key);
+      week.push({ date: key, minutes: day?.minutes ?? 0, lessons: day?.lessons ?? 0, bySkill: day?.bySkill ?? {} });
     }
 
     // Today counts if it has activity; otherwise the streak may still be alive
