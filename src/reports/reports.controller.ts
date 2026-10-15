@@ -1,6 +1,7 @@
 import { Controller, Get, Param, Query } from '@nestjs/common';
 import { CategoryBreakdownQueryDto } from './dto/category-breakdown-query.dto.js';
 import { GeneralLedgerQueryDto } from './dto/general-ledger-query.dto.js';
+import { MonthlyBreakdownQueryDto } from './dto/monthly-breakdown-query.dto.js';
 import { ReportsService } from './reports.service.js';
 import { RequireBusinessMembership } from '../business-access/decorators/require-business-membership.decorator.js';
 
@@ -26,6 +27,11 @@ export class ReportsController {
   @Get('reports/category-breakdown')
   categoryBreakdown(@Param('businessId') businessId: string, @Query() query: CategoryBreakdownQueryDto) {
     return this.reportsService.getCategoryBreakdown(businessId, query);
+  }
+
+  @Get('reports/monthly-breakdown')
+  monthlyBreakdown(@Param('businessId') businessId: string, @Query() query: MonthlyBreakdownQueryDto) {
+    return this.reportsService.getMonthlyBreakdown(businessId, query);
   }
 
   @Get('reports/income-vs-savings')
