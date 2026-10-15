@@ -316,6 +316,7 @@ export class AccountBalanceService {
         name: account.name,
         nameBn: account.nameBn,
         accountNumber: account.accountNumber,
+        accountSubtype: account.accountSubtype,
         status: account.status,
         openingBalance: account.openingBalance.toFixed(2),
         totalIn: (inByAccount.get(account.id) ?? new Prisma.Decimal(0)).toFixed(2),
