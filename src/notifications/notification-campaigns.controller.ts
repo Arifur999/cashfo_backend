@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Patch, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
 import type { Request } from 'express';
 import { AdminRole } from '../common/roles.js';
 import { CurrentAdmin } from '../admin-auth/decorators/current-admin.decorator.js';
@@ -6,6 +6,7 @@ import { Roles } from '../admin-auth/decorators/roles.decorator.js';
 import { AdminAuthGuard } from '../admin-auth/guards/admin-auth.guard.js';
 import { RolesGuard } from '../admin-auth/guards/roles.guard.js';
 import type { RequestAdminUser } from '../admin-auth/interfaces/request-admin-user.interface.js';
+import { AudienceQueryDto } from './dto/audience-query.dto.js';
 import { CreateCampaignDto } from './dto/create-campaign.dto.js';
 import { NotificationCampaignsService } from './notification-campaigns.service.js';
 
@@ -17,6 +18,12 @@ export class NotificationCampaignsController {
   @Get()
   list() {
     return this.notificationCampaignsService.list();
+  }
+
+  // How many people a filter would reach, for the drawer as it is filled in.
+  @Get('audience')
+  async audience(@Query() query: AudienceQueryDto) {
+    return { count: await this.notificationCampaignsService.audienceCount(query) };
   }
 
   @Post()
