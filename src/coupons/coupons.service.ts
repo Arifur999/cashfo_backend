@@ -1,15 +1,10 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { PaymentStatus } from '@prisma/client';
+import { dhakaMonthStart, dhakaToday } from '../common/dhaka.js';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { computeCouponStatus } from './coupon-status.js';
 import { CreateCouponDto } from './dto/create-coupon.dto.js';
 import { UpdateCouponDto } from './dto/update-coupon.dto.js';
-
-function computeStatus(coupon: { isActive: boolean; validFrom: Date; validUntil: Date }): 'ACTIVE' | 'EXPIRED' | 'DISABLED' | 'SCHEDULED' {
-  if (!coupon.isActive) return 'DISABLED';
-  const now = new Date();
-  if (now < coupon.validFrom) return 'SCHEDULED';
-  if (now > coupon.validUntil) return 'EXPIRED';
-  return 'ACTIVE';
-}
 
 @Injectable()
 export class CouponsService {
@@ -17,7 +12,32 @@ export class CouponsService {
 
   async list() {
     const coupons = await this.prisma.coupon.findMany({ orderBy: { createdAt: 'desc' } });
-    return coupons.map((coupon) => ({ ...coupon, status: computeStatus(coupon) }));
+    return coupons.map((coupon) => ({ ...coupon, status: computeCouponStatus(coupon) }));
+  }
+
+  // The figures over the coupons list: what is live, how much this (Dhaka)
+  // month's successful payments used a coupon and saved, and the coupon
+  // used most ever.
+  async stats() {
+    const { year, month } = dhakaToday();
+    const [coupons, payments] = await Promise.all([
+      this.prisma.coupon.findMany({ orderBy: { createdAt: 'desc' } }),
+      this.prisma.payment.findMany({
+        where: { status: PaymentStatus.SUCCESS, createdAt: { gte: dhakaMonthStart(year, month) } },
+        select: { couponId: true, discountApplied: true },
+      }),
+    ]);
+    const active = coupons.filter((coupon) => computeCouponStatus(coupon) === 'ACTIVE');
+    const withCoupon = payments.filter((payment) => payment.couponId !== null);
+    const mostUsed = coupons.reduce<(typeof coupons)[number] | null>((best, coupon) => (coupon.timesRedeemed > (best?.timesRedeemed ?? 0) ? coupon : best), null);
+
+    return {
+      active: { count: active.length, codes: active.map((coupon) => coupon.code) },
+      usedThisMonth: withCoupon.length,
+      paymentsThisMonth: payments.length,
+      moneyOffThisMonth: withCoupon.reduce((sum, payment) => sum + Number(payment.discountApplied ?? 0), 0).toFixed(2),
+      mostUsed: mostUsed ? { code: mostUsed.code, times: mostUsed.timesRedeemed } : null,
+    };
   }
 
   async create(dto: CreateCouponDto, adminId: string, ipAddress?: string) {

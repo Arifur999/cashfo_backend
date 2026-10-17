@@ -1,20 +1,11 @@
 import { Injectable } from '@nestjs/common';
 import { BillingCycle, PaymentStatus } from '@prisma/client';
-import { dhakaDateKey, dhakaToday } from '../common/dhaka.js';
+import { dhakaDateKey, dhakaMonthStart, dhakaToday } from '../common/dhaka.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { computeMrr, PAYING_WORKSPACE_WHERE } from './mrr.js';
 
 // Payments that brought money in: refunds are subtracted separately.
 const REVENUE_STATUSES: PaymentStatus[] = [PaymentStatus.SUCCESS, PaymentStatus.REFUNDED];
-
-const DHAKA_OFFSET_MS = 6 * 60 * 60 * 1000;
-
-// The instant a Dhaka calendar month begins -- payments carry real
-// timestamps, so "this month" starts at Dhaka midnight (18:00 UTC the day
-// before), not at the server's own midnight. `month` may run past 1-12.
-function dhakaMonthStart(year: number, month: number): Date {
-  return new Date(Date.UTC(year, month - 1, 1) - DHAKA_OFFSET_MS);
-}
 
 // 'YYYY-MM' of the Dhaka month an instant falls in.
 function monthKey(date: Date): string {

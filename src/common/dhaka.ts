@@ -31,6 +31,13 @@ export function dhakaMonthRange(offset = 0): { start: Date; end: Date } {
   return { start: new Date(Date.UTC(year, month - 1 + offset, 1)), end: new Date(Date.UTC(year, month + offset, 1)) };
 }
 
+// The instant a Dhaka calendar month begins -- for timestamp columns, so
+// "this month" starts at Dhaka midnight (18:00 UTC the evening before), not
+// at the server's own midnight. `month` may run past 1-12.
+export function dhakaMonthStart(year: number, month: number): Date {
+  return new Date(Date.UTC(year, month - 1, 1) - DHAKA_OFFSET_MS);
+}
+
 // The Dhaka calendar date as a Date at UTC midnight -- the shape a
 // `@db.Date` column stores and returns.
 export function dhakaDateOnly(date: Date): Date {

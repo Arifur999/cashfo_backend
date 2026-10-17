@@ -20,6 +20,11 @@ export class CouponsController {
     return this.couponsService.list();
   }
 
+  @Get('stats')
+  stats() {
+    return this.couponsService.stats();
+  }
+
   @Get(':id/redemptions')
   getRedemptions(@Param('id') id: string) {
     return this.couponsService.getRedemptions(id);
