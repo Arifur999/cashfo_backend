@@ -31,10 +31,11 @@ export class AdminOwnersService {
     // so in practice this "some non-deleted owned business" filter matches every
     // registered user -- it just guards against the edge case of a user whose
     // only workspace(s) were all soft-deleted.
-    const where: Prisma.UserWhereInput = {
+    // Everything but the status, so the status tabs can count what each
+    // one would show under the same search and plan.
+    const baseWhere: Prisma.UserWhereInput = {
       ...END_USER_WHERE,
       ownedBusinesses: { some: { deletedAt: null } },
-      ...(query.status ? { status: query.status } : {}),
       ...(query.planId ? { ownedBusinesses: { some: { deletedAt: null, isDefault: true, planId: query.planId } } } : {}),
       ...(search
         ? {
@@ -47,8 +48,9 @@ export class AdminOwnersService {
           }
         : {}),
     };
+    const where: Prisma.UserWhereInput = { ...baseWhere, ...(query.status ? { status: query.status } : {}) };
 
-    const [owners, totalCount] = await Promise.all([
+    const [owners, totalCount, byStatus] = await Promise.all([
       this.prisma.user.findMany({
         where,
         skip: (page - 1) * limit,
@@ -57,13 +59,18 @@ export class AdminOwnersService {
         include: { ownedBusinesses: { where: { deletedAt: null }, include: { plan: true } } },
       }),
       this.prisma.user.count({ where }),
+      this.prisma.user.groupBy({ by: ['status'], where: baseWhere, _count: true }),
     ]);
+
+    const statusCounts = Object.fromEntries(Object.values(UserStatus).map((status) => [status, 0])) as Record<UserStatus, number>;
+    for (const row of byStatus) statusCounts[row.status] = row._count;
 
     return {
       items: owners.map((owner) => this.summarizeOwner(owner)),
       page,
       limit,
       totalCount,
+      statusCounts,
     };
   }
 
