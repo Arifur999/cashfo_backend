@@ -3,6 +3,7 @@ import type { User } from '@prisma/client';
 import { AuthSessionsService, type ClientInfo } from '../auth/auth-sessions.service.js';
 import { CredentialsService } from '../auth/credentials.service.js';
 import { SessionTokensService } from '../auth/session-tokens.service.js';
+import { placeOfIp } from '../common/ip-country.js';
 import { isAdminRole } from '../common/roles.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import type { ChangePasswordDto } from '../user-auth/dto/change-password.dto.js';
@@ -188,6 +189,9 @@ export class AdminAuthService {
         id: row.id,
         deviceLabel: parseDeviceLabel(row.userAgent),
         ipAddress: row.ipAddress || null,
+        // The country, as "Where you're signed in" names it; null when the
+        // address can't be placed.
+        place: placeOfIp(row.ipAddress),
         signedInAt: row.createdAt,
         lastActiveAt: row.updatedAt,
         current: row.id === currentSessionId,
