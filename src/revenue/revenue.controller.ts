@@ -20,4 +20,9 @@ export class RevenueController {
   churn() {
     return this.revenueService.churn();
   }
+
+  @Get('overview')
+  overview() {
+    return this.revenueService.overview();
+  }
 }

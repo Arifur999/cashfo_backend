@@ -2,10 +2,14 @@ import { Injectable } from '@nestjs/common';
 import { BillingCycle, PaymentStatus } from '@prisma/client';
 import { dhakaDateKey, dhakaMonthStart, dhakaToday } from '../common/dhaka.js';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { monthEnds, paidPeopleAt } from '../subscription-plans/plan-history.js';
 import { computeMrr, PAYING_WORKSPACE_WHERE } from './mrr.js';
 
 // Payments that brought money in: refunds are subtracted separately.
 const REVENUE_STATUSES: PaymentStatus[] = [PaymentStatus.SUCCESS, PaymentStatus.REFUNDED];
+
+// How far back the MRR-by-month chart looks.
+const HISTORY_MONTHS = 6;
 
 // 'YYYY-MM' of the Dhaka month an instant falls in.
 function monthKey(date: Date): string {
@@ -111,6 +115,95 @@ export class RevenueService {
       startOfMonthPaidCount,
       currentPaidCount,
       churnRatePercent: Math.round(churnRate * 10000) / 100,
+    };
+  }
+
+  // The Revenue page: MRR and ARR as the dashboard counts them (from the
+  // workspaces' plans), and everything the payments themselves tell --
+  // paid people at each of the last six month ends and the MRR they
+  // carried, who joined and left this month, this month's takings by
+  // plan, its refunds and what coupons cost.
+  async overview() {
+    const now = new Date();
+    const { year, month } = dhakaToday();
+    const thisMonthStart = dhakaMonthStart(year, month);
+    const ends = monthEnds(now, HISTORY_MONTHS);
+    const lookBack = new Date(Date.UTC(ends[0].at.getUTCFullYear() - 1, ends[0].at.getUTCMonth(), 1));
+
+    const [plans, payments, churn, mrr] = await Promise.all([
+      this.prisma.subscriptionPlan.findMany({ select: { id: true, name: true, billingCycle: true, price: true } }),
+      this.prisma.payment.findMany({
+        where: { status: { in: REVENUE_STATUSES }, createdAt: { gte: lookBack } },
+        select: {
+          platformUserId: true,
+          planId: true,
+          amount: true,
+          discountApplied: true,
+          couponId: true,
+          paidAt: true,
+          createdAt: true,
+          refund: { select: { amount: true, status: true, createdAt: true } },
+        },
+      }),
+      this.churn(),
+      computeMrr(this.prisma),
+    ]);
+
+    const monthlyPrice = new Map(plans.map((plan) => [plan.id, plan.billingCycle === BillingCycle.YEARLY ? Number(plan.price) / 12 : Number(plan.price)]));
+    const paid = payments.map((payment) => ({ platformUserId: payment.platformUserId, planId: payment.planId, paidAt: payment.paidAt ?? payment.createdAt }));
+    const peopleAt = (at: Date) => paidPeopleAt(paid, plans, at);
+    const everyone = (sets: Map<string, Set<string>>) => new Set([...sets.values()].flatMap((people) => [...people]));
+
+    const mrrHistory = ends.map(({ month: key, at }) => {
+      let total = 0;
+      for (const [planId, people] of peopleAt(at)) total += people.size * (monthlyPrice.get(planId) ?? 0);
+      return { month: key, mrr: Math.round(total * 100) / 100 };
+    });
+    const lastMonthEnd = ends[ends.length - 2];
+    const paidNow = everyone(peopleAt(now));
+    const paidAtLastMonthEnd = lastMonthEnd ? everyone(peopleAt(lastMonthEnd.at)) : new Set<string>();
+    const leftThisMonth = [...paidAtLastMonthEnd].filter((person) => !paidNow.has(person)).length;
+    // Joined: paid now, never inside a paid period before this month began.
+    const paidBefore = everyone(peopleAt(new Date(thisMonthStart.getTime() - 1)));
+    const joinedThisMonth = [...paidNow].filter((person) => !paidBefore.has(person)).length;
+
+    const thisMonth = payments.filter((payment) => payment.createdAt >= thisMonthStart);
+    const net = (payment: (typeof payments)[number]) => Number(payment.amount) - (payment.refund?.status === 'COMPLETED' ? Number(payment.refund.amount) : 0);
+    const byPlan = new Map<string, { payments: number; amount: number }>();
+    for (const payment of thisMonth) {
+      const entry = byPlan.get(payment.planId) ?? { payments: 0, amount: 0 };
+      entry.payments += 1;
+      entry.amount += net(payment);
+      byPlan.set(payment.planId, entry);
+    }
+    const refundsThisMonth = payments.filter((payment) => payment.refund?.status === 'COMPLETED' && payment.refund.createdAt >= thisMonthStart);
+
+    return {
+      month: dhakaDateKey(thisMonthStart).slice(0, 7),
+      mrr,
+      arr: Math.round(mrr * 12 * 100) / 100,
+      mrrChangePct:
+        lastMonthEnd && mrrHistory[mrrHistory.length - 2].mrr > 0
+          ? Math.round(((mrrHistory[mrrHistory.length - 1].mrr - mrrHistory[mrrHistory.length - 2].mrr) / mrrHistory[mrrHistory.length - 2].mrr) * 1000) / 10
+          : null,
+      paidPeople: { now: paidNow.size, joinedThisMonth, leftThisMonth },
+      churn,
+      mrrHistory,
+      byPlan: plans
+        .filter((plan) => byPlan.has(plan.id))
+        .map((plan) => {
+          const entry = byPlan.get(plan.id)!;
+          return { planId: plan.id, planName: plan.name, payments: entry.payments, amount: (Math.round(entry.amount * 100) / 100).toFixed(2) };
+        })
+        .sort((a, b) => Number(b.amount) - Number(a.amount)),
+      thisMonthTotal: (Math.round(thisMonth.reduce((sum, payment) => sum + net(payment), 0) * 100) / 100).toFixed(2),
+      refundsThisMonth: {
+        count: refundsThisMonth.length,
+        amount: (Math.round(refundsThisMonth.reduce((sum, payment) => sum + Number(payment.refund?.amount ?? 0), 0) * 100) / 100).toFixed(2),
+      },
+      couponsCostThisMonth: (
+        Math.round(thisMonth.filter((payment) => payment.couponId).reduce((sum, payment) => sum + Number(payment.discountApplied ?? 0), 0) * 100) / 100
+      ).toFixed(2),
     };
   }
 }
