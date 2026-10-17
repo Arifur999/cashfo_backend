@@ -12,6 +12,10 @@ export class ListPaymentsQueryDto {
   gateway?: PaymentGateway;
 
   @IsOptional()
+  @IsString()
+  planId?: string;
+
+  @IsOptional()
   @IsISO8601()
   dateFrom?: string;
 

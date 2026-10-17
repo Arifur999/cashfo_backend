@@ -25,6 +25,11 @@ export class PaymentsController {
     return this.paymentsService.failed(query);
   }
 
+  @Get('stats')
+  stats() {
+    return this.paymentsService.stats();
+  }
+
   @Get(':id')
   getById(@Param('id') id: string) {
     return this.paymentsService.getById(id);
