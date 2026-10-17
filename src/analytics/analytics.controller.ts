@@ -48,4 +48,10 @@ export class AnalyticsController {
   devices() {
     return this.analyticsService.devices();
   }
+
+  @UseGuards(AdminAuthGuard)
+  @Get('summary')
+  summary() {
+    return this.analyticsService.summary();
+  }
 }

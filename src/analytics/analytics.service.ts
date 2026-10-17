@@ -110,6 +110,35 @@ export class AnalyticsService {
   // DAU used to read, is written by nothing, so DAU was always 0. The full
   // session set for the range (plus a 7-day lookback) is small enough to
   // pull once and compute in memory rather than issuing one query per day.
+  // The figures over the Analytics page: distinct customers active (a
+  // session made or used) in the last 30 and 7 days, in the 7 days before
+  // those, and yesterday in Dhaka, out of every customer account.
+  async summary(now: Date = new Date()) {
+    const nowMs = now.getTime();
+    const since = new Date(nowMs - 30 * DAY_MS);
+    const [sessions, totalAccounts] = await Promise.all([
+      this.prisma.userSession.findMany({
+        where: { OR: [{ createdAt: { gte: since } }, { lastUsedAt: { gte: since } }] },
+        select: { userId: true, createdAt: true, lastUsedAt: true },
+      }),
+      this.prisma.user.count({ where: END_USER_WHERE }),
+    ]);
+
+    const touches = sessions.flatMap((session) => [session.createdAt, session.lastUsedAt].map((at) => ({ userId: session.userId, at })));
+    const activeWhere = (keep: (at: Date) => boolean) => new Set(touches.filter((touch) => keep(touch.at)).map((touch) => touch.userId)).size;
+    const between = (fromDaysAgo: number, toDaysAgo: number) => (at: Date) =>
+      at.getTime() >= nowMs - fromDaysAgo * DAY_MS && at.getTime() < nowMs - toDaysAgo * DAY_MS;
+    const yesterday = dhakaDateKey(new Date(nowMs - DAY_MS));
+
+    return {
+      activeLast30d: activeWhere(between(30, 0)),
+      activeLast7d: activeWhere(between(7, 0)),
+      activePrevious7d: activeWhere(between(14, 7)),
+      activeYesterday: activeWhere((at) => dhakaDateKey(at) === yesterday),
+      totalAccounts,
+    };
+  }
+
   async engagement(query: DateRangeQueryDto) {
     const { from, toExclusive, days } = this.resolveRange(query);
     const windowStart = new Date(from.getTime() - 6 * DAY_MS);
