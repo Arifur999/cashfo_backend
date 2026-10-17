@@ -18,12 +18,13 @@ export class SettingsController {
   // maintenance mode is on) -- only editing is SUPER_ADMIN only.
   @Get()
   get() {
-    return this.settingsService.get();
+    return this.settingsService.getForAdmin();
   }
 
   @Roles(AdminRole.SUPER_ADMIN)
   @Patch()
-  update(@Body() dto: UpdateSettingsDto, @CurrentAdmin() admin: RequestAdminUser, @Req() req: Request) {
-    return this.settingsService.update(dto, admin.id, req.ip);
+  async update(@Body() dto: UpdateSettingsDto, @CurrentAdmin() admin: RequestAdminUser, @Req() req: Request) {
+    await this.settingsService.update(dto, admin.id, req.ip);
+    return this.settingsService.getForAdmin();
   }
 }
