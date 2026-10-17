@@ -20,6 +20,11 @@ export class CreatePayableDto {
   @IsString()
   description?: string;
 
+  // The supplier's bill number.
+  @IsOptional()
+  @IsString()
+  referenceNo?: string;
+
   // Optional -- falls back to the workspace's default expense account (same
   // lowest-displayOrder convention as the income-account default). Ignored
   // for a LOAN-category contact -- taking a loan isn't an expense.

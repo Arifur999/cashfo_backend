@@ -199,6 +199,7 @@ export class ReceivablesPayablesService {
         transactionDate: dto.date,
         dueDate: dto.dueDate,
         description: dto.description,
+        referenceNo: dto.referenceNo,
         contactId: contact.id,
         entries: [
           { accountId: arAccount.id, entryType: 'DEBIT', amount: dto.amount },
@@ -239,6 +240,7 @@ export class ReceivablesPayablesService {
         transactionDate: dto.date,
         dueDate: dto.dueDate,
         description: dto.description,
+        referenceNo: dto.referenceNo,
         contactId: contact.id,
         entries: [
           { accountId: debitAccountId, entryType: 'DEBIT', amount: dto.amount },
