@@ -24,6 +24,7 @@ export class NotificationTemplatesService {
         ...(dto.bodyEn !== undefined && { bodyEn: dto.bodyEn }),
         ...(dto.bodyBn !== undefined && { bodyBn: dto.bodyBn }),
         ...(dto.variables !== undefined && { variables: dto.variables }),
+        ...(dto.isActive !== undefined && { isActive: dto.isActive }),
       },
     });
 
@@ -33,8 +34,8 @@ export class NotificationTemplatesService {
         action: 'NOTIFICATION_TEMPLATE_UPDATED',
         entityType: 'NotificationTemplate',
         entityId: id,
-        oldValue: { subjectEn: existing.subjectEn, bodyEn: existing.bodyEn },
-        newValue: { subjectEn: result.subjectEn, bodyEn: result.bodyEn },
+        oldValue: { subjectEn: existing.subjectEn, bodyEn: existing.bodyEn, isActive: existing.isActive },
+        newValue: { subjectEn: result.subjectEn, bodyEn: result.bodyEn, isActive: result.isActive },
         ipAddress,
       },
     });
