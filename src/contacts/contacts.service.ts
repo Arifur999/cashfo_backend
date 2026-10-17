@@ -50,9 +50,18 @@ export class ContactsService {
     // this app's realistic contact-list-page size. O(page size), same
     // "acceptable at this app's scale" tradeoff as Prompt 7's ledger
     // pagination -- just spread over time instead of all at once.
-    const withBalance: (Prisma.ContactGetPayload<object> & { currentBalance: Prisma.Decimal })[] = [];
+    // The newest posting with each contact on the page, for the list's
+    // "last activity" column.
+    const latest = await this.prisma.transaction.groupBy({
+      by: ['contactId'],
+      where: { businessId, contactId: { in: data.map((c) => c.id) }, status: 'POSTED' },
+      _max: { transactionDate: true },
+    });
+    const lastActivity = new Map(latest.map((row) => [row.contactId, row._max.transactionDate]));
+
+    const withBalance: (Prisma.ContactGetPayload<object> & { currentBalance: Prisma.Decimal; lastActivityAt: Date | null })[] = [];
     for (const c of data) {
-      withBalance.push({ ...c, currentBalance: await this.receivablesPayablesService.getContactCurrentBalance(businessId, c) });
+      withBalance.push({ ...c, currentBalance: await this.receivablesPayablesService.getContactCurrentBalance(businessId, c), lastActivityAt: lastActivity.get(c.id) ?? null });
     }
 
     return {
