@@ -151,7 +151,9 @@ export class AccountBalanceService {
         transactionId: entry.transactionId,
         transactionType: entry.transaction.transactionType,
         date: entry.transaction.transactionDate,
-        description: entry.transaction.description,
+        // A quick entry keeps its note on the entry, not the transaction; a
+        // statement row still deserves the words.
+        description: entry.transaction.description ?? entry.note,
         referenceNo: entry.transaction.referenceNo,
         entryType: entry.entryType,
         amount: entry.amount,
