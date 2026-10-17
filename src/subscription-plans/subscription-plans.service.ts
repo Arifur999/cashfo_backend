@@ -1,7 +1,11 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
-import { Prisma, UserStatus } from '@prisma/client';
+import { PaymentStatus, Prisma, UserStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { CreatePlanDto } from './dto/create-plan.dto.js';
+import { monthEnds, paidPeopleAtMonthEnds } from './plan-history.js';
+
+// How far back the "paid people at the end of each month" chart looks.
+const HISTORY_MONTHS = 6;
 import { UpdatePlanDto } from './dto/update-plan.dto.js';
 
 // The plan new accounts are put on (UserProvisioningService looks it up by
@@ -166,13 +170,16 @@ export class SubscriptionPlansService {
   async analytics() {
     const plans = await this.prisma.subscriptionPlan.findMany({ orderBy: { displayOrder: 'asc' } });
 
+    const now = new Date();
     const perPlan = await Promise.all(
       plans.map(async (plan) => {
-        const [totalUsers, activeUsers] = await Promise.all([
+        const [totalUsers, activeUsers, trialing] = await Promise.all([
           this.prisma.business.count({ where: { planId: plan.id, isDefault: true, deletedAt: null } }),
           this.prisma.business.count({
             where: { planId: plan.id, isDefault: true, deletedAt: null, owner: { status: UserStatus.ACTIVE } },
           }),
+          // Workspaces on the plan whose trial is still running.
+          this.prisma.business.count({ where: { planId: plan.id, deletedAt: null, trialEndsAt: { gt: now } } }),
         ]);
         const revenueEstimate = Number(plan.price) * activeUsers;
         return {
@@ -181,9 +188,24 @@ export class SubscriptionPlansService {
           billingCycle: plan.billingCycle,
           totalUsers,
           activeUsers,
+          trialing,
           revenueEstimate,
         };
       }),
+    );
+
+    // Paid people at each of the last month ends, from the successful
+    // payments whose period could still be running then (a yearly payment
+    // reaches back twelve months).
+    const ends = monthEnds(now, HISTORY_MONTHS);
+    const payments = await this.prisma.payment.findMany({
+      where: { status: PaymentStatus.SUCCESS, createdAt: { gte: new Date(Date.UTC(ends[0].at.getUTCFullYear() - 1, ends[0].at.getUTCMonth(), 1)) } },
+      select: { platformUserId: true, planId: true, paidAt: true, createdAt: true },
+    });
+    const history = paidPeopleAtMonthEnds(
+      payments.map((payment) => ({ platformUserId: payment.platformUserId, planId: payment.planId, paidAt: payment.paidAt ?? payment.createdAt })),
+      plans,
+      ends,
     );
 
     const usersWithNoPlan = await this.prisma.business.count({
@@ -196,6 +218,7 @@ export class SubscriptionPlansService {
 
     return {
       perPlan,
+      history,
       summary: {
         totalUsers,
         freeUsers,
