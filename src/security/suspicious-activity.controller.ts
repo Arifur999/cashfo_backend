@@ -1,4 +1,5 @@
-import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
+import type { Request } from 'express';
 import { AdminRole } from '../common/roles.js';
 import { CurrentAdmin } from '../admin-auth/decorators/current-admin.decorator.js';
 import { Roles } from '../admin-auth/decorators/roles.decorator.js';
@@ -21,13 +22,18 @@ export class SuspiciousActivityController {
     return this.suspiciousActivityService.list(query);
   }
 
+  @Get('summary')
+  summary() {
+    return this.suspiciousActivityService.summary();
+  }
+
   @Patch(':id')
-  updateStatus(@Param('id') id: string, @Body() dto: UpdateFlagDto, @CurrentAdmin() admin: RequestAdminUser) {
-    return this.suspiciousActivityService.updateStatus(id, dto, admin.id);
+  updateStatus(@Param('id') id: string, @Body() dto: UpdateFlagDto, @CurrentAdmin() admin: RequestAdminUser, @Req() req: Request) {
+    return this.suspiciousActivityService.updateStatus(id, dto, admin.id, req.ip);
   }
 
   @Post('run-detection')
-  runDetection() {
-    return this.suspiciousActivityService.runDetection();
+  runDetection(@CurrentAdmin() admin: RequestAdminUser, @Req() req: Request) {
+    return this.suspiciousActivityService.runDetection(admin.id, req.ip);
   }
 }
