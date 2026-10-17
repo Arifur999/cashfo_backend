@@ -40,6 +40,9 @@ export class BackupsService {
       lastSuccessfulBackupAt: lastSuccess?.completedAt ?? null,
       daysSinceLastBackup,
       successRate30d,
+      // "30 of 31 backups" beside the rate.
+      succeededLast30d: successCount,
+      finishedLast30d: recentRecords.length,
     };
   }
 }
