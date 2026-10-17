@@ -56,11 +56,18 @@ export class TicketsService {
         orderBy: [{ assignedToAdminId: { sort: 'asc', nulls: 'first' } }, { priority: 'desc' }, { createdAt: 'desc' }],
         skip: (page - 1) * limit,
         take: limit,
+        // The last message says whether the user is waiting on an answer.
+        include: { messages: { orderBy: { createdAt: 'desc' }, take: 1, select: { senderType: true, createdAt: true } } },
       }),
       this.prisma.supportTicket.count({ where }),
     ]);
 
-    const withUsers = await this.attachRequesters(tickets);
+    const rows = tickets.map(({ messages, ...ticket }) => ({
+      ...ticket,
+      lastMessageAt: messages[0]?.createdAt ?? null,
+      lastMessageFrom: messages[0]?.senderType ?? null,
+    }));
+    const withUsers = await this.attachRequesters(rows);
     const data = await this.attachAssignedAdmins(withUsers);
     return { data, meta: { page, limit, total, totalPage: Math.ceil(total / limit) } };
   }
@@ -81,7 +88,12 @@ export class TicketsService {
         : Promise.resolve(null),
     ]);
 
-    return { ...ticket, platformUser: requesters.get(ticket.platformUserId) ?? null, assignedAdmin };
+    // The person's other tickets: how many, and how many were solved.
+    const [total, solved] = await Promise.all([
+      this.prisma.supportTicket.count({ where: { platformUserId: ticket.platformUserId, id: { not: id } } }),
+      this.prisma.supportTicket.count({ where: { platformUserId: ticket.platformUserId, id: { not: id }, status: { in: RESOLVED_STATUSES } } }),
+    ]);
+    return { ...ticket, platformUser: requesters.get(ticket.platformUserId) ?? null, assignedAdmin, requesterTickets: { total, solved } };
   }
 
   // Opened by an admin on a customer's behalf (phone, email). The customer
@@ -177,29 +189,54 @@ export class TicketsService {
     }
   }
 
+  // The figures over the queue: what needs a reply and how much of it is
+  // unassigned, what is in progress and stale, what waits on the user, what
+  // got solved this week and how fast the first reply came.
   async stats() {
-    const [openCount, inProgressCount, urgentCount, byCategoryRaw, byPriorityRaw, resolvedTickets] = await Promise.all([
-      this.prisma.supportTicket.count({ where: { status: 'OPEN' } }),
-      this.prisma.supportTicket.count({ where: { status: 'IN_PROGRESS' } }),
-      this.prisma.supportTicket.count({ where: { priority: 'URGENT', status: { notIn: ['RESOLVED', 'CLOSED'] } } }),
-      this.prisma.supportTicket.groupBy({ by: ['category'], _count: true }),
-      this.prisma.supportTicket.groupBy({ by: ['priority'], _count: true }),
-      this.prisma.supportTicket.findMany({
-        where: { resolvedAt: { not: null } },
-        select: { createdAt: true, resolvedAt: true },
-      }),
-    ]);
+    const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const monthAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const [byStatusRaw, unassignedOpenCount, inProgressOver24hCount, urgentCount, solvedThisWeekCount, byCategoryRaw, byPriorityRaw, resolvedTickets, recentTickets] =
+      await Promise.all([
+        this.prisma.supportTicket.groupBy({ by: ['status'], _count: true }),
+        this.prisma.supportTicket.count({ where: { status: 'OPEN', assignedToAdminId: null } }),
+        this.prisma.supportTicket.count({ where: { status: 'IN_PROGRESS', updatedAt: { lt: dayAgo } } }),
+        this.prisma.supportTicket.count({ where: { priority: 'URGENT', status: { notIn: ['RESOLVED', 'CLOSED'] } } }),
+        this.prisma.supportTicket.count({ where: { resolvedAt: { gte: weekAgo } } }),
+        this.prisma.supportTicket.groupBy({ by: ['category'], _count: true }),
+        this.prisma.supportTicket.groupBy({ by: ['priority'], _count: true }),
+        this.prisma.supportTicket.findMany({
+          where: { resolvedAt: { not: null } },
+          select: { createdAt: true, resolvedAt: true },
+        }),
+        // The first admin reply on each ticket opened in the last 30 days.
+        this.prisma.supportTicket.findMany({
+          where: { createdAt: { gte: monthAgo } },
+          select: { createdAt: true, messages: { where: { senderType: 'ADMIN' }, orderBy: { createdAt: 'asc' }, take: 1, select: { createdAt: true } } },
+        }),
+      ]);
 
+    const hours = (ms: number) => ms / (1000 * 60 * 60);
     const avgResolutionHours =
-      resolvedTickets.length > 0
-        ? resolvedTickets.reduce((sum, t) => sum + (t.resolvedAt!.getTime() - t.createdAt.getTime()), 0) / resolvedTickets.length / (1000 * 60 * 60)
-        : 0;
+      resolvedTickets.length > 0 ? hours(resolvedTickets.reduce((sum, t) => sum + (t.resolvedAt!.getTime() - t.createdAt.getTime()), 0) / resolvedTickets.length) : 0;
+    const answered = recentTickets.filter((t) => t.messages.length > 0);
+    const avgFirstReplyHours =
+      answered.length > 0 ? hours(answered.reduce((sum, t) => sum + (t.messages[0].createdAt.getTime() - t.createdAt.getTime()), 0) / answered.length) : 0;
+
+    const statusCounts = Object.fromEntries(Object.values(TicketStatus).map((status) => [status, 0])) as Record<TicketStatus, number>;
+    for (const row of byStatusRaw) statusCounts[row.status] = row._count;
 
     return {
-      openCount,
-      inProgressCount,
+      openCount: statusCounts.OPEN,
+      unassignedOpenCount,
+      inProgressCount: statusCounts.IN_PROGRESS,
+      inProgressOver24hCount,
+      waitingOnUserCount: statusCounts.WAITING_ON_USER,
       urgentCount,
+      solvedThisWeekCount,
       avgResolutionHours: Math.round(avgResolutionHours * 10) / 10,
+      avgFirstReplyHours: Math.round(avgFirstReplyHours * 10) / 10,
+      statusCounts,
       byCategory: byCategoryRaw.map((r) => ({ category: r.category, count: r._count })),
       byPriority: byPriorityRaw.map((r) => ({ priority: r.priority, count: r._count })),
     };

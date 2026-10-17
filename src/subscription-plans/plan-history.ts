@@ -42,21 +42,25 @@ export function monthEnds(now: Date, count: number): MonthEnd[] {
   return ends;
 }
 
+// Who was still inside a paid period of each plan at one instant: a set of
+// people per plan id.
+export function paidPeopleAt(payments: PaidPayment[], plans: PlanCycle[], at: Date): Map<string, Set<string>> {
+  const cycleByPlan = new Map(plans.map((plan) => [plan.id, plan.billingCycle]));
+  const peopleByPlan = new Map<string, Set<string>>(plans.map((plan) => [plan.id, new Set<string>()]));
+  for (const payment of payments) {
+    const cycle = cycleByPlan.get(payment.planId);
+    if (!cycle || payment.paidAt > at || addMonths(payment.paidAt, monthsCovered(cycle)) <= at) continue;
+    peopleByPlan.get(payment.planId)?.add(payment.platformUserId);
+  }
+  return peopleByPlan;
+}
+
 // How many different people were still inside a paid period of each plan
 // at each month end: "paid people at the end of each month".
 export function paidPeopleAtMonthEnds(payments: PaidPayment[], plans: PlanCycle[], ends: MonthEnd[]): { month: string; perPlan: Record<string, number> }[] {
-  const cycleByPlan = new Map(plans.map((plan) => [plan.id, plan.billingCycle]));
   return ends.map(({ month, at }) => {
-    const peopleByPlan = new Map<string, Set<string>>();
-    for (const payment of payments) {
-      const cycle = cycleByPlan.get(payment.planId);
-      if (!cycle || payment.paidAt > at || addMonths(payment.paidAt, monthsCovered(cycle)) <= at) continue;
-      let people = peopleByPlan.get(payment.planId);
-      if (!people) peopleByPlan.set(payment.planId, (people = new Set()));
-      people.add(payment.platformUserId);
-    }
     const perPlan: Record<string, number> = {};
-    for (const plan of plans) perPlan[plan.id] = peopleByPlan.get(plan.id)?.size ?? 0;
+    for (const [planId, people] of paidPeopleAt(payments, plans, at)) perPlan[planId] = people.size;
     return { month, perPlan };
   });
 }

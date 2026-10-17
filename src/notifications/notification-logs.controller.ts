@@ -12,4 +12,9 @@ export class NotificationLogsController {
   list(@Query() query: ListNotificationLogsQueryDto) {
     return this.notificationLogsService.list(query);
   }
+
+  @Get('stats')
+  stats() {
+    return this.notificationLogsService.stats();
+  }
 }

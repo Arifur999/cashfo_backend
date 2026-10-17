@@ -1,5 +1,6 @@
 import { BadRequestException, Injectable, NotFoundException, NotImplementedException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { END_USER_WHERE } from '../common/roles.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { CreateCampaignDto } from './dto/create-campaign.dto.js';
 
@@ -9,8 +10,29 @@ const SENDABLE_STATUSES = ['DRAFT', 'SCHEDULED'];
 export class NotificationCampaignsService {
   constructor(private readonly prisma: PrismaService) {}
 
-  list() {
-    return this.prisma.bulkNotificationCampaign.findMany({ orderBy: { createdAt: 'desc' } });
+  // Each campaign with how many people its filter reaches right now.
+  async list() {
+    const campaigns = await this.prisma.bulkNotificationCampaign.findMany({ orderBy: { createdAt: 'desc' } });
+    return Promise.all(
+      campaigns.map(async (campaign) => ({
+        ...campaign,
+        audienceCount: await this.audienceCount(campaign.targetFilter as { planId?: string; status?: string }),
+      })),
+    );
+  }
+
+  // How many real customers a target filter reaches: by account status
+  // (the legacy statuses that have no customer counterpart match nobody)
+  // and by the plan of their default workspace.
+  audienceCount(filter: { planId?: string; status?: string }): Promise<number> {
+    const status = filter.status === 'ACTIVE' || filter.status === 'SUSPENDED' ? filter.status : filter.status ? 'DELETED' : undefined;
+    return this.prisma.user.count({
+      where: {
+        ...END_USER_WHERE,
+        ...(status && { status }),
+        ownedBusinesses: { some: { deletedAt: null, isDefault: true, ...(filter.planId && { planId: filter.planId }) } },
+      },
+    });
   }
 
   async create(dto: CreateCampaignDto, adminId: string) {
