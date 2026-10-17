@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { withEntityLabels } from './audit-entity-labels.js';
 import { ListAuditLogsQueryDto } from './dto/list-audit-logs-query.dto.js';
 
 @Injectable()
@@ -31,7 +32,7 @@ export class AuditLogsService {
     const [logs, total] = await Promise.all([
       this.prisma.auditLog.findMany({
         where,
-        include: { adminUser: { select: { id: true, name: true } } },
+        include: { adminUser: { select: { id: true, name: true, role: true } } },
         orderBy: { createdAt: 'desc' },
         skip: (page - 1) * limit,
         take: limit,
@@ -39,17 +40,18 @@ export class AuditLogsService {
       this.prisma.auditLog.count({ where }),
     ]);
 
-    return { data: logs, meta: { page, limit, total, totalPage: Math.ceil(total / limit) } };
+    return { data: await withEntityLabels(this.prisma, logs), meta: { page, limit, total, totalPage: Math.ceil(total / limit) } };
   }
 
   async getById(id: string) {
     const log = await this.prisma.auditLog.findUnique({
       where: { id },
-      include: { adminUser: { select: { id: true, name: true } } },
+      include: { adminUser: { select: { id: true, name: true, role: true } } },
     });
     if (!log) {
       throw new NotFoundException('Audit log entry not found');
     }
-    return log;
+    const [labelled] = await withEntityLabels(this.prisma, [log]);
+    return labelled;
   }
 }
