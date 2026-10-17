@@ -6,6 +6,7 @@ import { END_USER_WHERE } from '../common/roles.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { ChangeOwnerPlanDto } from './dto/change-owner-plan.dto.js';
 import { ListOwnersQueryDto } from './dto/list-owners-query.dto.js';
+import { ownerDateFilters, ownerOrderBy, workspaceCount } from './owner-filters.js';
 import { SuspendOwnerDto } from './dto/suspend-owner.dto.js';
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
@@ -26,6 +27,17 @@ export class AdminOwnersService {
     const page = query.page ?? 1;
     const limit = query.limit ?? 20;
     const search = query.search?.trim();
+    // Joined, Last active and Workspaces narrow the list and its tab counts
+    // alike, like the search and the plan do.
+    const extra = ownerDateFilters(query);
+    if (query.workspaces) {
+      const owners = await this.prisma.business.groupBy({
+        by: ['ownerId'],
+        where: { deletedAt: null },
+        having: { ownerId: { _count: workspaceCount(query.workspaces) } },
+      });
+      extra.push({ id: { in: owners.map((owner) => owner.ownerId) } });
+    }
 
     // Every real signup gets a default Business (see UserAuthService.register()),
     // so in practice this "some non-deleted owned business" filter matches every
@@ -47,6 +59,7 @@ export class AdminOwnersService {
             ],
           }
         : {}),
+      ...(extra.length > 0 ? { AND: extra } : {}),
     };
     const where: Prisma.UserWhereInput = { ...baseWhere, ...(query.status ? { status: query.status } : {}) };
 
@@ -55,7 +68,7 @@ export class AdminOwnersService {
         where,
         skip: (page - 1) * limit,
         take: limit,
-        orderBy: { createdAt: 'desc' },
+        orderBy: ownerOrderBy(query.sort),
         include: { ownedBusinesses: { where: { deletedAt: null }, include: { plan: true } } },
       }),
       this.prisma.user.count({ where }),
