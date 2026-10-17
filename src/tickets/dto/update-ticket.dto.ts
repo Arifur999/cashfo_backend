@@ -1,5 +1,5 @@
 import { IsEnum, IsOptional, IsString } from 'class-validator';
-import { TicketPriority, TicketStatus } from '@prisma/client';
+import { TicketCategory, TicketPriority, TicketStatus } from '@prisma/client';
 
 export class UpdateTicketDto {
   @IsOptional()
@@ -9,6 +9,11 @@ export class UpdateTicketDto {
   @IsOptional()
   @IsEnum(TicketPriority)
   priority?: TicketPriority;
+
+  // The ticket's type, when the person filed it under the wrong one.
+  @IsOptional()
+  @IsEnum(TicketCategory)
+  category?: TicketCategory;
 
   @IsOptional()
   @IsString()

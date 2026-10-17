@@ -137,6 +137,7 @@ export class TicketsService {
       data: {
         ...(dto.status !== undefined && { status: dto.status }),
         ...(dto.priority !== undefined && { priority: dto.priority }),
+        ...(dto.category !== undefined && { category: dto.category }),
         ...(dto.assignedToAdminId !== undefined && { assignedToAdminId: dto.assignedToAdminId }),
         ...(resolvedAt !== undefined && { resolvedAt }),
       },
