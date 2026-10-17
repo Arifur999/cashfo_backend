@@ -5,7 +5,7 @@ import { PrismaService } from '../prisma/prisma.service.js';
 import { AddMessageDto } from './dto/add-message.dto.js';
 import { AssignTicketDto } from './dto/assign-ticket.dto.js';
 import { CreateTicketDto } from './dto/create-ticket.dto.js';
-import { ListTicketsQueryDto } from './dto/list-tickets-query.dto.js';
+import { ListTicketsQueryDto, TICKET_STATUS_GROUPS, type TicketStatusFilter } from './dto/list-tickets-query.dto.js';
 import { UpdateTicketDto } from './dto/update-ticket.dto.js';
 
 const RESOLVED_STATUSES: TicketStatus[] = [TicketStatus.RESOLVED, TicketStatus.CLOSED];
@@ -21,6 +21,8 @@ export interface Requester {
   plan: { id: string; name: string } | null;
 }
 
+const isStatusGroup = (status: TicketStatusFilter): status is keyof typeof TICKET_STATUS_GROUPS => status in TICKET_STATUS_GROUPS;
+
 @Injectable()
 export class TicketsService {
   constructor(private readonly prisma: PrismaService) {}
@@ -30,7 +32,7 @@ export class TicketsService {
     const limit = query.limit ?? 10;
 
     const where: Prisma.SupportTicketWhereInput = {};
-    if (query.status) where.status = query.status;
+    if (query.status) where.status = isStatusGroup(query.status) ? { in: TICKET_STATUS_GROUPS[query.status] } : query.status;
     if (query.priority) where.priority = query.priority;
     if (query.category) where.category = query.category;
     if (query.assignedToAdminId) where.assignedToAdminId = query.assignedToAdminId;
