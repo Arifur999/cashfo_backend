@@ -20,6 +20,11 @@ export class CreateReceivableDto {
   @IsString()
   description?: string;
 
+  // The invoice number, as it reads on the paper copy.
+  @IsOptional()
+  @IsString()
+  referenceNo?: string;
+
   // Optional -- falls back to the workspace's default income account, same
   // lowest-displayOrder lookup convention as Prompt 6's QuickEntriesService.
   // Ignored for a LOAN-category contact (see
