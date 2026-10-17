@@ -1,6 +1,7 @@
 import { Type } from 'class-transformer';
-import { IsDateString, IsEnum, IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
+import { IsDateString, IsEnum, IsIn, IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
 import { ErrorSource, Severity } from '@prisma/client';
+import { TIME_WINDOWS, type TimeWindow } from '../../common/time-window.js';
 
 export class ListErrorLogsQueryDto {
   @IsOptional()
@@ -16,6 +17,11 @@ export class ListErrorLogsQueryDto {
   @IsOptional()
   @IsString()
   resolved?: string;
+
+  // "Last 24 hours" and friends; wins over dateFrom/dateTo.
+  @IsOptional()
+  @IsIn(TIME_WINDOWS)
+  within?: TimeWindow;
 
   @IsOptional()
   @IsDateString()

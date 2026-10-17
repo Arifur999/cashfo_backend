@@ -5,10 +5,6 @@ import type { Role, UserStatus } from '@prisma/client';
 export const PAUSE_MS = 15 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-// The "When" choices on the sign-ins list.
-export const LOGIN_WINDOWS = { '24h': DAY_MS, '7d': 7 * DAY_MS, '30d': 30 * DAY_MS } as const;
-export type LoginWindow = keyof typeof LOGIN_WINDOWS;
-
 // How long after a failed try a successful one still counts as "then signed in".
 export const SIGNED_IN_AFTER_MS = DAY_MS;
 

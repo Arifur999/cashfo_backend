@@ -43,3 +43,30 @@ describe('AnalyticsService.geography', () => {
     });
   });
 });
+
+describe('AnalyticsService.summary', () => {
+  it('counts distinct customers active in each window and yesterday in Dhaka', async () => {
+    // 2026-10-17 12:00 in Dhaka.
+    const now = new Date('2026-10-17T06:00:00Z');
+    const daysAgo = (days: number) => new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
+    const prisma = {
+      userSession: {
+        findMany: vi.fn().mockResolvedValue([
+          { userId: 'a', createdAt: daysAgo(20), lastUsedAt: daysAgo(1) },
+          { userId: 'a', createdAt: daysAgo(3), lastUsedAt: daysAgo(3) },
+          { userId: 'b', createdAt: daysAgo(10), lastUsedAt: daysAgo(9) },
+          { userId: 'c', createdAt: daysAgo(25), lastUsedAt: daysAgo(25) },
+        ]),
+      },
+      user: { count: vi.fn().mockResolvedValue(12) },
+    };
+    const service = new AnalyticsService(prisma as never);
+    await expect(service.summary(now)).resolves.toEqual({
+      activeLast30d: 3,
+      activeLast7d: 1,
+      activePrevious7d: 1,
+      activeYesterday: 1,
+      totalAccounts: 12,
+    });
+  });
+});

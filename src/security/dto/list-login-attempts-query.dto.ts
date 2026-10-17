@@ -1,6 +1,6 @@
 import { Type } from 'class-transformer';
 import { IsDateString, IsIn, IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
-import { LOGIN_WINDOWS, type LoginWindow } from '../security-extras.js';
+import { TIME_WINDOWS, type TimeWindow } from '../../common/time-window.js';
 
 export class ListLoginAttemptsQueryDto {
   @IsOptional()
@@ -19,8 +19,8 @@ export class ListLoginAttemptsQueryDto {
 
   // "Last 24 hours" and friends; wins over dateFrom/dateTo when both are sent.
   @IsOptional()
-  @IsIn(Object.keys(LOGIN_WINDOWS))
-  within?: LoginWindow;
+  @IsIn(TIME_WINDOWS)
+  within?: TimeWindow;
 
   @IsOptional()
   @IsDateString()

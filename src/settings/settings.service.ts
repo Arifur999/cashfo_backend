@@ -77,6 +77,21 @@ export class SettingsService {
     };
   }
 
+  // The admin page's copy: the settings, plus who changed one last and when
+  // ("Last changed by Nadia Rahman on 14 Sep").
+  async getForAdmin() {
+    const [settings, latest] = await Promise.all([
+      this.get(),
+      this.prisma.platformSetting.findFirst({
+        where: { updatedBy: { not: null } },
+        orderBy: { updatedAt: 'desc' },
+        select: { updatedAt: true, updatedBy: true },
+      }),
+    ]);
+    const admin = latest?.updatedBy ? await this.prisma.user.findUnique({ where: { id: latest.updatedBy }, select: { name: true } }) : null;
+    return { ...settings, lastChange: latest ? { at: latest.updatedAt, by: admin?.name ?? null } : null };
+  }
+
   async update(dto: UpdateSettingsDto, adminId: string, ipAddress?: string): Promise<PlatformSettings> {
     const before = await this.get();
 

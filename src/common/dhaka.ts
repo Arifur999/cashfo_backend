@@ -38,6 +38,13 @@ export function dhakaMonthStart(year: number, month: number): Date {
   return new Date(Date.UTC(year, month - 1, 1) - DHAKA_OFFSET_MS);
 }
 
+// The instant the Dhaka calendar day of `date` began: Dhaka midnight,
+// 18:00 UTC the evening before.
+export function dhakaDayStart(date: Date = new Date()): Date {
+  const local = new Date(date.getTime() + DHAKA_OFFSET_MS);
+  return new Date(Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate()) - DHAKA_OFFSET_MS);
+}
+
 // The Dhaka calendar date as a Date at UTC midnight -- the shape a
 // `@db.Date` column stores and returns.
 export function dhakaDateOnly(date: Date): Date {

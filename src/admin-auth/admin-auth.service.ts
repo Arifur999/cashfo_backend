@@ -6,7 +6,12 @@ import { SessionTokensService } from '../auth/session-tokens.service.js';
 import { isAdminRole } from '../common/roles.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import type { ChangePasswordDto } from '../user-auth/dto/change-password.dto.js';
+import { parseDeviceLabel } from '../user-auth/device-label.js';
 import { LoginDto } from './dto/login.dto.js';
+import type { UpdateOwnProfileDto } from './dto/update-own-profile.dto.js';
+
+// How many of their own sign-in tries My account lists.
+const OWN_SIGN_INS_SHOWN = 5;
 
 @Injectable()
 export class AdminAuthService {
@@ -142,10 +147,83 @@ export class AdminAuthService {
   }
 
   async me(adminId: string) {
+    const admin = await this.requireAdmin(adminId);
+    const credential = await this.prisma.authAccount.findFirst({ where: { userId: adminId, providerId: 'credential' }, select: { updatedAt: true } });
+    return { id: admin.id, name: admin.name, email: admin.email, role: admin.role, passwordChangedAt: credential?.updatedAt ?? null };
+  }
+
+  // My account: an admin renames themselves. Written to the audit log.
+  async updateProfile(adminId: string, dto: UpdateOwnProfileDto, ipAddress?: string) {
+    const admin = await this.requireAdmin(adminId);
+    if (admin.name !== dto.name) {
+      await this.prisma.$transaction([
+        this.prisma.user.update({ where: { id: adminId }, data: { name: dto.name } }),
+        this.prisma.auditLog.create({
+          data: {
+            adminUserId: adminId,
+            action: 'ADMIN_ACCOUNT_UPDATED',
+            entityType: 'AdminUser',
+            entityId: adminId,
+            oldValue: { name: admin.name },
+            newValue: { name: dto.name },
+            ipAddress,
+          },
+        }),
+      ]);
+    }
+    return this.me(adminId);
+  }
+
+  // Where this admin is signed in: their live sessions, this one first. A
+  // super admin's "view as customer" sessions belong to the customer, so
+  // they never show here.
+  async listSessions(adminId: string, currentSessionId: string) {
+    const rows = await this.prisma.authSession.findMany({
+      where: { userId: adminId, expiresAt: { gt: new Date() }, impersonatedBy: null },
+      orderBy: { updatedAt: 'desc' },
+      select: { id: true, ipAddress: true, userAgent: true, createdAt: true, updatedAt: true },
+    });
+    return rows
+      .map((row) => ({
+        id: row.id,
+        deviceLabel: parseDeviceLabel(row.userAgent),
+        ipAddress: row.ipAddress || null,
+        signedInAt: row.createdAt,
+        lastActiveAt: row.updatedAt,
+        current: row.id === currentSessionId,
+      }))
+      .sort((a, b) => Number(b.current) - Number(a.current));
+  }
+
+  // "Sign out other devices": every session but this one. Audited.
+  async signOutOthers(adminId: string, currentSessionId: string, ipAddress?: string) {
+    const others = await this.prisma.authSession.count({ where: { userId: adminId, id: { not: currentSessionId }, expiresAt: { gt: new Date() } } });
+    await this.sessions.revokeOthersForUser(adminId, currentSessionId);
+    if (others > 0) {
+      await this.prisma.auditLog.create({
+        data: { adminUserId: adminId, action: 'ADMIN_SIGNED_OUT_OTHER_DEVICES', entityType: 'AdminUser', entityId: adminId, newValue: { signedOut: others }, ipAddress },
+      });
+    }
+    return { signedOut: others };
+  }
+
+  // The newest tries to sign in with this admin's email, from anywhere.
+  async recentSignIns(adminId: string) {
+    const admin = await this.requireAdmin(adminId);
+    const attempts = await this.prisma.loginAttempt.findMany({
+      where: { email: { equals: admin.email, mode: 'insensitive' } },
+      orderBy: { createdAt: 'desc' },
+      take: OWN_SIGN_INS_SHOWN,
+      select: { id: true, success: true, failureReason: true, ipAddress: true, userAgent: true, createdAt: true },
+    });
+    return attempts.map(({ userAgent, ...attempt }) => ({ ...attempt, deviceLabel: parseDeviceLabel(userAgent) }));
+  }
+
+  private async requireAdmin(adminId: string) {
     const admin = await this.prisma.user.findUnique({ where: { id: adminId } });
     if (!admin || !isAdminRole(admin.role)) {
       throw new UnauthorizedException('Admin no longer exists');
     }
-    return { id: admin.id, name: admin.name, email: admin.email, role: admin.role };
+    return admin;
   }
 }

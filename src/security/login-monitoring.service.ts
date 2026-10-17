@@ -3,7 +3,8 @@ import { type LoginAttempt, Prisma, SuspiciousActivityType } from '@prisma/clien
 import { PrismaService } from '../prisma/prisma.service.js';
 import { parseDeviceLabel } from '../user-auth/device-label.js';
 import { ListLoginAttemptsQueryDto } from './dto/list-login-attempts-query.dto.js';
-import { LOGIN_WINDOWS, normalizeEmail, PAUSE_MS, pausedNetworks, SIGNED_IN_AFTER_MS, signedInAfter } from './security-extras.js';
+import { createdAtFilter } from '../common/time-window.js';
+import { normalizeEmail, PAUSE_MS, pausedNetworks, SIGNED_IN_AFTER_MS, signedInAfter } from './security-extras.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const TOP_NETWORKS = 5;
@@ -25,14 +26,8 @@ export class LoginMonitoringService {
     if (query.ipAddress) where.ipAddress = { contains: query.ipAddress };
     if (query.success === 'true') where.success = true;
     if (query.success === 'false') where.success = false;
-    if (query.within) {
-      where.createdAt = { gte: new Date(Date.now() - LOGIN_WINDOWS[query.within]) };
-    } else if (query.dateFrom || query.dateTo) {
-      where.createdAt = {
-        ...(query.dateFrom && { gte: new Date(query.dateFrom) }),
-        ...(query.dateTo && { lte: new Date(query.dateTo) }),
-      };
-    }
+    const createdAt = createdAtFilter(query);
+    if (createdAt) where.createdAt = createdAt;
 
     const [attempts, total] = await Promise.all([
       this.prisma.loginAttempt.findMany({

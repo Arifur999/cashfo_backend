@@ -1,5 +1,6 @@
 import { Type } from 'class-transformer';
-import { IsDateString, IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
+import { IsDateString, IsIn, IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
+import { TIME_WINDOWS, type TimeWindow } from '../../common/time-window.js';
 
 export class ListAuditLogsQueryDto {
   @IsOptional()
@@ -13,6 +14,11 @@ export class ListAuditLogsQueryDto {
   @IsOptional()
   @IsString()
   action?: string;
+
+  // "Today", "Last 24 hours" and friends; wins over dateFrom/dateTo.
+  @IsOptional()
+  @IsIn(TIME_WINDOWS)
+  within?: TimeWindow;
 
   @IsOptional()
   @IsDateString()

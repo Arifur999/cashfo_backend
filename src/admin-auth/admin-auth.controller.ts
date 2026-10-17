@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Post, Req, UseFilters, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Patch, Post, Req, UseFilters, UseGuards } from '@nestjs/common';
 import { ChangePasswordDto } from '../user-auth/dto/change-password.dto.js';
 import { Throttle } from '@nestjs/throttler';
 import { LOGIN_THROTTLE } from '../common/login-throttle.js';
@@ -7,6 +7,7 @@ import { AdminAuthService } from './admin-auth.service.js';
 import { CurrentAdmin } from './decorators/current-admin.decorator.js';
 import { LoginDto } from './dto/login.dto.js';
 import { RefreshDto } from './dto/refresh.dto.js';
+import { UpdateOwnProfileDto } from './dto/update-own-profile.dto.js';
 import { AdminAuthGuard } from './guards/admin-auth.guard.js';
 import { LoginRateLimitFilter } from './filters/login-rate-limit.filter.js';
 import type { RequestAdminUser } from './interfaces/request-admin-user.interface.js';
@@ -52,5 +53,30 @@ export class AdminAuthController {
   @Get('me')
   me(@CurrentAdmin() admin: RequestAdminUser) {
     return this.adminAuthService.me(admin.id);
+  }
+
+  // My account: every admin, about themselves only.
+  @UseGuards(AdminAuthGuard)
+  @Patch('me')
+  updateMe(@CurrentAdmin() admin: RequestAdminUser, @Body() dto: UpdateOwnProfileDto, @Req() req: Request) {
+    return this.adminAuthService.updateProfile(admin.id, dto, req.ip);
+  }
+
+  @UseGuards(AdminAuthGuard)
+  @Get('sessions')
+  sessions(@CurrentAdmin() admin: RequestAdminUser) {
+    return this.adminAuthService.listSessions(admin.id, admin.sessionId);
+  }
+
+  @UseGuards(AdminAuthGuard)
+  @Post('sessions/sign-out-others')
+  signOutOthers(@CurrentAdmin() admin: RequestAdminUser, @Req() req: Request) {
+    return this.adminAuthService.signOutOthers(admin.id, admin.sessionId, req.ip);
+  }
+
+  @UseGuards(AdminAuthGuard)
+  @Get('sign-ins')
+  signIns(@CurrentAdmin() admin: RequestAdminUser) {
+    return this.adminAuthService.recentSignIns(admin.id);
   }
 }
