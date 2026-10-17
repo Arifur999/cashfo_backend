@@ -1,5 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { ErrorSource, Prisma, Severity } from '@prisma/client';
+import { createdAtFilter } from '../common/time-window.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { ListErrorLogsQueryDto } from './dto/list-error-logs-query.dto.js';
 
@@ -24,12 +25,8 @@ export class ErrorLogsService {
     if (query.severity) where.severity = query.severity;
     if (query.resolved === 'true') where.resolved = true;
     if (query.resolved === 'false') where.resolved = false;
-    if (query.dateFrom || query.dateTo) {
-      where.createdAt = {
-        ...(query.dateFrom && { gte: new Date(query.dateFrom) }),
-        ...(query.dateTo && { lte: new Date(query.dateTo) }),
-      };
-    }
+    const createdAt = createdAtFilter(query);
+    if (createdAt) where.createdAt = createdAt;
 
     const [logs, total] = await Promise.all([
       this.prisma.errorLog.findMany({ where, orderBy: { createdAt: 'desc' }, skip: (page - 1) * limit, take: limit }),

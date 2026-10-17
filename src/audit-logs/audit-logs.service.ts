@@ -1,5 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { createdAtFilter } from '../common/time-window.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { withEntityLabels } from './audit-entity-labels.js';
 import { ListAuditLogsQueryDto } from './dto/list-audit-logs-query.dto.js';
@@ -16,12 +17,8 @@ export class AuditLogsService {
     if (query.adminUserId) where.adminUserId = query.adminUserId;
     if (query.entityType) where.entityType = query.entityType;
     if (query.action) where.action = query.action;
-    if (query.dateFrom || query.dateTo) {
-      where.createdAt = {
-        ...(query.dateFrom && { gte: new Date(query.dateFrom) }),
-        ...(query.dateTo && { lte: new Date(query.dateTo) }),
-      };
-    }
+    const createdAt = createdAtFilter(query);
+    if (createdAt) where.createdAt = createdAt;
     // The impersonation-logging convention (Prompt 2) marks sensitive entries
     // with `newValue.sensitive === true` -- this is the only place that
     // convention is read back out, so keep it in sync if it ever changes.
