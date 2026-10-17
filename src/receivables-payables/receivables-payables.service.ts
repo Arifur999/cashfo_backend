@@ -69,6 +69,17 @@ export interface OverdueRow {
   daysOverdue: number;
 }
 
+export interface DueSoonRow {
+  contactId: string;
+  contactName: string;
+  transactionId: string;
+  description: string | null;
+  remainingAmount: string;
+  dueDate: Date;
+  // 0 for something due today.
+  daysUntilDue: number;
+}
+
 export type LoanBalanceDirection = 'DENA' | 'PAWNA' | 'SETTLED';
 
 export interface LoanDashboardRow {
@@ -505,6 +516,39 @@ export class ReceivablesPayablesService {
     }
 
     rows.sort((a, b) => b.daysOverdue - a.daysOverdue);
+    return rows;
+  }
+
+  // What falls due within the next `days` days, today included, and is not
+  // paid off yet: the "Due this week" list. Anything already overdue is
+  // getOverdue()'s, so no row shows up in both.
+  async getDueSoon(businessId: string, direction: Direction, days = 7): Promise<DueSoonRow[]> {
+    const contactType = direction === 'RECEIVABLE' ? 'CUSTOMER' : 'SUPPLIER';
+    const contacts = await this.prisma.contact.findMany({
+      where: { businessId, type: { in: [contactType, 'BOTH'] } },
+    });
+
+    const today = todayUtcMidnight();
+    const horizon = today.getTime() + days * DAY_MS;
+    const rows: DueSoonRow[] = [];
+    for (const contact of contacts) {
+      const breakdown = await this.computeDirection(businessId, contact, direction);
+      for (const t of breakdown.transactions) {
+        if (!t.dueDate || t.isOverdue || t.dueDate.getTime() > horizon) continue;
+        if (new Prisma.Decimal(t.remainingAmount).lessThanOrEqualTo(0)) continue;
+        rows.push({
+          contactId: contact.id,
+          contactName: contact.name,
+          transactionId: t.transactionId,
+          description: t.description,
+          remainingAmount: t.remainingAmount,
+          dueDate: t.dueDate,
+          daysUntilDue: Math.round((t.dueDate.getTime() - today.getTime()) / DAY_MS),
+        });
+      }
+    }
+
+    rows.sort((a, b) => a.daysUntilDue - b.daysUntilDue || a.dueDate.getTime() - b.dueDate.getTime());
     return rows;
   }
 
