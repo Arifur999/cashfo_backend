@@ -22,9 +22,14 @@ export class PasswordVaultService {
     private readonly credentials: CredentialsService,
   ) {}
 
+  // Whether the vault is set up, and how many logins it holds (Home shows
+  // the count on the vault card; the entries themselves stay locked).
   async getStatus(userId: string) {
-    const user = await this.prisma.user.findUniqueOrThrow({ where: { id: userId } });
-    return { hasVaultPassword: user.vaultPasswordHash !== null };
+    const [user, entryCount] = await Promise.all([
+      this.prisma.user.findUniqueOrThrow({ where: { id: userId }, select: { vaultPasswordHash: true } }),
+      this.prisma.vaultEntry.count({ where: { userId } }),
+    ]);
+    return { hasVaultPassword: user.vaultPasswordHash !== null, entryCount };
   }
 
   // Sets the first vault password, or changes it. Changing needs the
