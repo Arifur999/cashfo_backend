@@ -24,6 +24,12 @@ export class TodosController {
     return this.todosService.create(user.id, dto);
   }
 
+  // Declared before ':id', which would otherwise take "repeats" as a list id.
+  @Get('repeats')
+  listRepeats(@CurrentUser() user: RequestUser) {
+    return this.todosService.listRepeats(user.id);
+  }
+
   @Get(':id')
   get(@CurrentUser() user: RequestUser, @Param('id', ParseUUIDPipe) id: string) {
     return this.todosService.get(user.id, id);
