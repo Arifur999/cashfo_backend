@@ -44,6 +44,13 @@ export class AdminOwnersController {
     return this.adminOwnersService.activate(userId, admin.id, req.ip);
   }
 
+  // The roles that can suspend a customer can also let one back in.
+  @Roles(AdminRole.SUPER_ADMIN, AdminRole.SUPPORT_ADMIN)
+  @Post(':userId/reset-password')
+  resetPassword(@Param('userId') userId: string, @CurrentAdmin() admin: RequestAdminUser, @Req() req: Request) {
+    return this.adminOwnersService.resetPassword(userId, admin.id, req.ip);
+  }
+
   @Roles(AdminRole.SUPER_ADMIN, AdminRole.FINANCE_ADMIN)
   @Patch(':userId/change-plan')
   changePlan(@Param('userId') userId: string, @Body() dto: ChangeOwnerPlanDto, @CurrentAdmin() admin: RequestAdminUser, @Req() req: Request) {

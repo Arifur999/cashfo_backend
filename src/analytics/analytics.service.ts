@@ -1,8 +1,7 @@
-import { isIP } from 'node:net';
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import geoip from 'geoip-country';
 import { dhakaDateKey } from '../common/dhaka.js';
+import { countryOfIp } from '../common/ip-country.js';
 import { END_USER_WHERE } from '../common/roles.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { DateRangeQueryDto } from './dto/date-range-query.dto.js';
@@ -17,18 +16,6 @@ function classifyDeviceType(userAgent: string | null): 'MOBILE' | 'DESKTOP' | 'T
   if (/iPad|Tablet/i.test(userAgent)) return 'TABLET';
   if (/Mobile|Android|iPhone/i.test(userAgent)) return 'MOBILE';
   return 'DESKTOP';
-}
-
-// The country an IP address is in, by name, from the GeoLite2 country
-// database bundled with geoip-country (no network call). "Unknown" for an
-// address it can't place: a private network, a test client, anything that
-// isn't an IP at all.
-export function countryOfIp(ipAddress: string | null): string {
-  if (!ipAddress) return 'Unknown';
-  // How an IPv4 client can appear on a dual-stack socket.
-  const address = ipAddress.startsWith('::ffff:') ? ipAddress.slice('::ffff:'.length) : ipAddress;
-  if (!isIP(address)) return 'Unknown';
-  return geoip.lookup(address)?.name ?? 'Unknown';
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
