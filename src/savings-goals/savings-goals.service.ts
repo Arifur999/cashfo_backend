@@ -77,6 +77,8 @@ export class SavingsGoalsService {
         ? 0
         : Math.min(999, Math.round(new Prisma.Decimal(savedThisMonth).dividedBy(monthlyTarget).times(100).toNumber())),
       savingsRatePercent: this.percent(savedThisMonth, incomeThisMonth),
+      // What the rate is a share of, so the page can name it.
+      incomeThisMonth: incomeThisMonth.toFixed(2),
     };
   }
 
