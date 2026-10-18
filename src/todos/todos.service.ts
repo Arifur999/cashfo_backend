@@ -192,19 +192,25 @@ export class TodosService {
       data: { ...fields, ...(dto.completed !== undefined && { completed: dto.completed }) },
     });
 
+    // The move comes first, so a repeat set in the same save starts on the
+    // task's new day.
     const rule = item.repeat && item.repeat.endsOn === null ? item.repeat : null;
+    let day = list.date;
+    if (dto.date !== undefined) {
+      const date = this.calendarDay(dto.date);
+      if (date.getTime() !== day.getTime()) {
+        await this.moveItem(userId, item, day, date);
+        day = date;
+      }
+    }
+
     if (dto.repeat !== undefined) {
-      await this.setRepeat(userId, { ...item, ...fields }, list.date, rule, dto.repeat);
-    } else if (rule && Object.keys(fields).length > 0) {
+      await this.setRepeat(userId, { ...item, ...fields }, list.date, day, rule, dto.repeat);
+    } else if (rule && day === list.date && Object.keys(fields).length > 0) {
       // Words, priority or time changed on a repeating task: its days ahead
       // follow.
       await this.prisma.todoRepeat.update({ where: { id: rule.id }, data: fields });
-      await this.prisma.todoItem.updateMany({ where: { repeatId: rule.id, completed: false, list: { date: { gt: list.date } } }, data: fields });
-    }
-
-    if (dto.date !== undefined) {
-      const date = this.calendarDay(dto.date);
-      if (date.getTime() !== list.date.getTime()) await this.moveItem(userId, item, list.date, date);
+      await this.prisma.todoItem.updateMany({ where: { repeatId: rule.id, completed: false, list: { date: { gt: day } } }, data: fields });
     }
     return this.get(userId, listId);
   }
@@ -241,19 +247,24 @@ export class TodosService {
     });
   }
 
-  // Starts, changes or stops a task's repeating. Copies already made for the
-  // days ahead are remade, so they follow the new rule.
-  private async setRepeat(userId: string, item: Pick<TodoItem, 'id' | 'text' | 'priority' | 'dueTime'>, day: Date, rule: TodoRepeat | null, repeat: TodoRepeatDto | null): Promise<void> {
+  // Starts, changes or stops a task's repeating. `since` is the day the
+  // task was on when the save began, `day` the one it is on now (they differ
+  // when the same save moved it). Copies already made from the earlier of
+  // the two are remade, so they follow the new rule.
+  private async setRepeat(userId: string, item: Pick<TodoItem, 'id' | 'text' | 'priority' | 'dueTime'>, since: Date, day: Date, rule: TodoRepeat | null, repeat: TodoRepeatDto | null): Promise<void> {
+    const from = day < since ? day : since;
     if (repeat === null) {
       if (!rule) return;
-      await this.prisma.todoRepeat.update({ where: { id: rule.id }, data: { endsOn: day } });
-      await this.dropCopiesAfter(rule.id, day, item.id);
+      await this.prisma.todoRepeat.update({ where: { id: rule.id }, data: { endsOn: since } });
+      await this.dropCopiesFrom(rule.id, addDays(from, 1), item.id);
       return;
     }
     const fields = ruleFields(repeat, day);
     if (rule) {
+      await this.dropCopiesFrom(rule.id, from, item.id);
       await this.prisma.todoRepeat.update({ where: { id: rule.id }, data: { ...fields, text: item.text, priority: item.priority, dueTime: item.dueTime, filledThrough: day } });
-      await this.dropCopiesAfter(rule.id, day, item.id);
+      // A move took the task off its rule; it comes back on.
+      await this.prisma.todoItem.update({ where: { id: item.id }, data: { repeatId: rule.id } });
     } else {
       const created = await createWithinCap(
         this.prisma,
@@ -269,10 +280,10 @@ export class TodosService {
     await this.fillRepeats(userId);
   }
 
-  // Unticked copies after `day` (not the task being edited) go, for the
+  // Unticked copies from `day` on (not the task being edited) go, for the
   // rule to remake.
-  private async dropCopiesAfter(repeatId: string, day: Date, keepId: string): Promise<void> {
-    await this.prisma.todoItem.deleteMany({ where: { repeatId, completed: false, id: { not: keepId }, list: { date: { gt: day } } } });
+  private async dropCopiesFrom(repeatId: string, day: Date, keepId: string): Promise<void> {
+    await this.prisma.todoItem.deleteMany({ where: { repeatId, completed: false, id: { not: keepId }, list: { date: { gte: day } } } });
   }
 
   // Makes each repeating task's copies up to a week ahead. Each day is made
