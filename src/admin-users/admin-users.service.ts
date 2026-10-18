@@ -1,8 +1,8 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
-import { randomBytes } from 'crypto';
 import { AuthSessionsService } from '../auth/auth-sessions.service.js';
 import { CredentialsService } from '../auth/credentials.service.js';
 import { ADMIN_USER_WHERE } from '../common/roles.js';
+import { generateTempPassword } from '../common/temp-password.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { CreateAdminDto } from './dto/create-admin.dto.js';
 import { UpdateAdminDto } from './dto/update-admin.dto.js';
@@ -45,7 +45,7 @@ export class AdminUsersService {
       throw new ConflictException('An account with this email already exists');
     }
 
-    const temporaryPassword = dto.temporaryPassword ?? this.generateTempPassword();
+    const temporaryPassword = dto.temporaryPassword ?? generateTempPassword();
 
     const admin = await this.prisma.$transaction(async (tx) => {
       const created = await tx.user.create({
@@ -158,7 +158,7 @@ export class AdminUsersService {
   async resetPassword(id: string, currentAdminId: string, ipAddress?: string) {
     await this.requireAdmin(id);
 
-    const temporaryPassword = this.generateTempPassword();
+    const temporaryPassword = generateTempPassword();
     await this.credentials.set(id, temporaryPassword);
     // Whoever was signed in with the old password is signed out.
     await this.sessions.revokeAllForUser(id);
@@ -185,7 +185,4 @@ export class AdminUsersService {
     return admin;
   }
 
-  private generateTempPassword(): string {
-    return randomBytes(12).toString('base64url');
-  }
 }

@@ -2,12 +2,14 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 import { Prisma, UserStatus } from '@prisma/client';
 import { AccountsService } from '../accounts/accounts.service.js';
 import { AuthSessionsService } from '../auth/auth-sessions.service.js';
+import { CredentialsService } from '../auth/credentials.service.js';
 import { END_USER_WHERE } from '../common/roles.js';
+import { generateTempPassword } from '../common/temp-password.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { ChangeOwnerPlanDto } from './dto/change-owner-plan.dto.js';
 import { ListOwnersQueryDto } from './dto/list-owners-query.dto.js';
-import { ownerDateFilters, ownerOrderBy, workspaceCount } from './owner-filters.js';
 import { SuspendOwnerDto } from './dto/suspend-owner.dto.js';
+import { ownerDateFilters, ownerOrderBy, workspaceCount } from './owner-filters.js';
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
@@ -21,7 +23,35 @@ export class AdminOwnersService {
     private readonly prisma: PrismaService,
     private readonly accountsService: AccountsService,
     private readonly sessions: AuthSessionsService,
+    private readonly credentials: CredentialsService,
   ) {}
+
+  // A temporary password for a customer who can't get in, shown to the
+  // admin once to hand over. Every device they were signed in on is signed
+  // out, and the reset is in the audit log without the password.
+  async resetPassword(userId: string, adminId: string, ipAddress?: string) {
+    const owner = await this.prisma.user.findUnique({ where: { id: userId, ...END_USER_WHERE }, select: { id: true } });
+    if (!owner) {
+      throw new NotFoundException('Owner not found');
+    }
+
+    const temporaryPassword = generateTempPassword();
+    await this.credentials.set(userId, temporaryPassword);
+    await this.sessions.revokeAllForUser(userId);
+
+    await this.prisma.auditLog.create({
+      data: {
+        adminUserId: adminId,
+        action: 'OWNER_PASSWORD_RESET',
+        entityType: 'User',
+        entityId: userId,
+        newValue: { note: 'Temporary password generated and shown to the admin once; value not logged.' },
+        ipAddress,
+      },
+    });
+
+    return { temporaryPassword };
+  }
 
   async list(query: ListOwnersQueryDto) {
     const page = query.page ?? 1;
