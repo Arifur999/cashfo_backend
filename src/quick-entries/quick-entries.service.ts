@@ -1,5 +1,5 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
-import { Account, AccountType } from '@prisma/client';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { Account, AccountType, Prisma } from '@prisma/client';
 import { MONEY_ACCOUNT_SUBTYPES } from '../accounts/accounts.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { TransactionsService } from '../transactions/transactions.service.js';
@@ -20,7 +20,7 @@ export class QuickEntriesService {
     private readonly transactionsService: TransactionsService,
   ) {}
 
-  async createIncome(businessId: string, dto: CreateIncomeDto, userId: string) {
+  async createIncome(businessId: string, dto: CreateIncomeDto, userId: string, tx?: Prisma.TransactionClient) {
     const toAccount = await this.requireMoneyAccount(businessId, dto.toAccountId, 'toAccountId');
     const incomeAccountId = dto.incomeAccountId ?? (await this.getDefaultIncomeAccountId(businessId));
     const incomeAccount = await this.requireAccountOfType(businessId, incomeAccountId, 'INCOME', 'incomeAccountId');
@@ -37,10 +37,11 @@ export class QuickEntriesService {
         ],
       },
       userId,
+      tx,
     );
   }
 
-  async createExpense(businessId: string, dto: CreateExpenseDto, userId: string) {
+  async createExpense(businessId: string, dto: CreateExpenseDto, userId: string, tx?: Prisma.TransactionClient) {
     const fromAccount = await this.requireMoneyAccount(businessId, dto.fromAccountId, 'fromAccountId');
     const expenseAccount = await this.requireAccountOfType(businessId, dto.expenseAccountId, 'EXPENSE', 'expenseAccountId');
 
@@ -56,10 +57,11 @@ export class QuickEntriesService {
         ],
       },
       userId,
+      tx,
     );
   }
 
-  async createTransfer(businessId: string, dto: CreateTransferDto, userId: string) {
+  async createTransfer(businessId: string, dto: CreateTransferDto, userId: string, tx?: Prisma.TransactionClient) {
     if (dto.fromAccountId === dto.toAccountId) {
       throw new BadRequestException('Cannot transfer to the same account');
     }
@@ -78,7 +80,39 @@ export class QuickEntriesService {
         ],
       },
       userId,
+      tx,
     );
+  }
+
+  // Editing an entry (decision D2): the original is voided with the reason
+  // 'Corrected' and the corrected one posted in the same database
+  // transaction, so the balances never show both or neither. An entry stays
+  // the kind it was; the void itself refuses a reversal, an entry already
+  // voided and one another feature (a savings goal, an asset) keeps.
+  correctIncome(businessId: string, transactionId: string, dto: CreateIncomeDto, userId: string) {
+    return this.correct(businessId, transactionId, 'INCOME', userId, (tx) => this.createIncome(businessId, dto, userId, tx));
+  }
+
+  correctExpense(businessId: string, transactionId: string, dto: CreateExpenseDto, userId: string) {
+    return this.correct(businessId, transactionId, 'EXPENSE', userId, (tx) => this.createExpense(businessId, dto, userId, tx));
+  }
+
+  correctTransfer(businessId: string, transactionId: string, dto: CreateTransferDto, userId: string) {
+    return this.correct(businessId, transactionId, 'TRANSFER', userId, (tx) => this.createTransfer(businessId, dto, userId, tx));
+  }
+
+  private correct<T>(businessId: string, transactionId: string, kind: 'INCOME' | 'EXPENSE' | 'TRANSFER', userId: string, post: (tx: Prisma.TransactionClient) => Promise<T>) {
+    return this.prisma.$transaction(async (tx) => {
+      const original = await tx.transaction.findUnique({ where: { id: transactionId }, select: { businessId: true, transactionType: true } });
+      if (!original || original.businessId !== businessId) {
+        throw new NotFoundException('Transaction not found');
+      }
+      if (original.transactionType !== kind) {
+        throw new BadRequestException(`This entry is not a ${kind.toLowerCase()}, so it can't be corrected as one`);
+      }
+      await this.transactionsService.voidTransaction(businessId, transactionId, 'Corrected', userId, tx);
+      return post(tx);
+    });
   }
 
   // DESIGN DECISION (documented per Prompt 6's explicit request): "the
