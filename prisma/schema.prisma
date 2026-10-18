@@ -683,6 +683,7 @@ model User {
   skills              Skill[]
   skillGoals          SkillGoal[]
   todoLists           TodoList[]
+  todoRepeats         TodoRepeat[]
   // Every Referral row this user created by inviting someone else (as the
   // referrer), vs. the single Referral row recording that this user was
   // THEMSELVES referred by someone else's code at registration.
@@ -1110,14 +1111,61 @@ model TodoList {
 }
 
 model TodoItem {
-  id        String   @id @default(uuid())
+  id        String       @id @default(uuid())
   listId    String
-  list      TodoList @relation(fields: [listId], references: [id], onDelete: Cascade)
+  list      TodoList     @relation(fields: [listId], references: [id], onDelete: Cascade)
   text      String
-  completed Boolean  @default(false)
-  createdAt DateTime @default(now())
+  completed Boolean      @default(false)
+  priority  TodoPriority @default(MEDIUM)
+  // "HH:MM" on a 24-hour clock, Dhaka time; null = any time that day.
+  dueTime   String?
+  // The day the task was first planned for, once it has moved to another.
+  movedFrom DateTime?    @db.Date
+  // Set on a task a repeat rule added; one per rule per day.
+  repeatId  String?
+  repeat    TodoRepeat?  @relation(fields: [repeatId], references: [id], onDelete: SetNull)
+  createdAt DateTime     @default(now())
 
+  @@unique([repeatId, listId])
   @@index([listId])
+}
+
+enum TodoPriority {
+  HIGH
+  MEDIUM
+  LOW
+}
+
+enum TodoRepeatKind {
+  DAILY
+  WEEKLY
+  MONTHLY
+}
+
+// A task that adds itself to the to-do list on its days: every day, on
+// certain weekdays, or once a month. Its copies are made a week ahead, and
+// only once each, so a deleted copy stays deleted.
+model TodoRepeat {
+  id            String         @id @default(uuid())
+  userId        String
+  user          User           @relation(fields: [userId], references: [id])
+  text          String
+  priority      TodoPriority   @default(MEDIUM)
+  dueTime       String?
+  kind          TodoRepeatKind
+  // WEEKLY: 0 = Sunday ... 6 = Saturday.
+  weekdays      Int[]
+  // MONTHLY: the day of the month; a shorter month uses its last day.
+  monthDay      Int?
+  startsOn      DateTime       @db.Date
+  // Copies exist for every day up to and including this one.
+  filledThrough DateTime?      @db.Date
+  // The last day it adds itself; null while it keeps going.
+  endsOn        DateTime?      @db.Date
+  createdAt     DateTime       @default(now())
+  items         TodoItem[]
+
+  @@index([userId])
 }
 
 model Business {
