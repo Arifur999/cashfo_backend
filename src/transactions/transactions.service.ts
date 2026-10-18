@@ -142,66 +142,72 @@ export class TransactionsService {
   // record of (a savings goal's deposit or withdrawal, an asset's purchase
   // or sale, a referral payout): voiding only the money would leave that
   // feature's figures saying the opposite of the ledger.
-  async voidTransaction(businessId: string, transactionId: string, reason: string, userId: string) {
-    return this.prisma.$transaction(async (tx) => {
-      const original = await tx.transaction.findUnique({
-        where: { id: transactionId },
-        include: { entries: true },
-      });
-      if (!original || original.businessId !== businessId) {
-        throw new NotFoundException('Transaction not found');
-      }
-      if (original.reversalOfId) {
-        throw new BadRequestException('This is the reversal of a voided transaction and cannot be voided itself');
-      }
-      if (original.status === 'VOIDED') {
-        throw new BadRequestException('This transaction has already been voided');
-      }
-      await this.requireNotOwnedByAFeature(tx, original);
+  //
+  // Pass `tx` to void inside a caller's own transaction: correcting an
+  // entry voids the old one and posts the new one together.
+  async voidTransaction(businessId: string, transactionId: string, reason: string, userId: string, tx?: Prisma.TransactionClient) {
+    if (tx) return this.voidIn(tx, businessId, transactionId, reason, userId);
+    return this.prisma.$transaction((client) => this.voidIn(client, businessId, transactionId, reason, userId));
+  }
 
-      const distinctAccountIds = [...new Set(original.entries.map((e) => e.accountId))];
-      await this.lockAccounts(tx, distinctAccountIds);
-
-      // Claimed with a condition, not just updated: of two voids racing
-      // past the status check above, only one flips POSTED -> VOIDED; the
-      // other stops here instead of posting a second reversal.
-      const claimed = await tx.transaction.updateMany({
-        where: { id: transactionId, status: 'POSTED' },
-        data: { status: 'VOIDED', voidedAt: new Date(), voidedReason: reason },
-      });
-      if (claimed.count === 0) {
-        throw new BadRequestException('This transaction has already been voided');
-      }
-
-      const reversal = await tx.transaction.create({
-        data: {
-          businessId,
-          transactionType: original.transactionType,
-          transactionDate: dhakaDateOnly(new Date()),
-          description: `Reversal of: ${original.description ?? original.referenceNo ?? original.id}`,
-          referenceNo: original.referenceNo,
-          contactId: original.contactId,
-          createdBy: userId,
-          reversalOfId: original.id,
-          entries: {
-            create: original.entries.map((e) => ({
-              accountId: e.accountId,
-              entryType: this.flip(e.entryType),
-              amount: e.amount,
-              categoryId: e.categoryId,
-              note: e.note,
-            })),
-          },
-        },
-        include: { entries: true },
-      });
-
-      for (const accountId of distinctAccountIds) {
-        await this.accountBalanceService.recalculateBalance(accountId, tx);
-      }
-
-      return { original: { id: original.id, status: 'VOIDED' as const }, reversal };
+  private async voidIn(tx: Prisma.TransactionClient, businessId: string, transactionId: string, reason: string, userId: string) {
+    const original = await tx.transaction.findUnique({
+      where: { id: transactionId },
+      include: { entries: true },
     });
+    if (!original || original.businessId !== businessId) {
+      throw new NotFoundException('Transaction not found');
+    }
+    if (original.reversalOfId) {
+      throw new BadRequestException('This is the reversal of a voided transaction and cannot be voided itself');
+    }
+    if (original.status === 'VOIDED') {
+      throw new BadRequestException('This transaction has already been voided');
+    }
+    await this.requireNotOwnedByAFeature(tx, original);
+
+    const distinctAccountIds = [...new Set(original.entries.map((e) => e.accountId))];
+    await this.lockAccounts(tx, distinctAccountIds);
+
+    // Claimed with a condition, not just updated: of two voids racing
+    // past the status check above, only one flips POSTED -> VOIDED; the
+    // other stops here instead of posting a second reversal.
+    const claimed = await tx.transaction.updateMany({
+      where: { id: transactionId, status: 'POSTED' },
+      data: { status: 'VOIDED', voidedAt: new Date(), voidedReason: reason },
+    });
+    if (claimed.count === 0) {
+      throw new BadRequestException('This transaction has already been voided');
+    }
+
+    const reversal = await tx.transaction.create({
+      data: {
+        businessId,
+        transactionType: original.transactionType,
+        transactionDate: dhakaDateOnly(new Date()),
+        description: `Reversal of: ${original.description ?? original.referenceNo ?? original.id}`,
+        referenceNo: original.referenceNo,
+        contactId: original.contactId,
+        createdBy: userId,
+        reversalOfId: original.id,
+        entries: {
+          create: original.entries.map((e) => ({
+            accountId: e.accountId,
+            entryType: this.flip(e.entryType),
+            amount: e.amount,
+            categoryId: e.categoryId,
+            note: e.note,
+          })),
+        },
+      },
+      include: { entries: true },
+    });
+
+    for (const accountId of distinctAccountIds) {
+      await this.accountBalanceService.recalculateBalance(accountId, tx);
+    }
+
+    return { original: { id: original.id, status: 'VOIDED' as const }, reversal };
   }
 
   // Locks the accounts' rows (in id order, so two postings over the same
