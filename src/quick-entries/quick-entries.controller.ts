@@ -34,4 +34,21 @@ export class QuickEntriesController {
   createTransfer(@Param('businessId') businessId: string, @Body() dto: CreateTransferDto, @CurrentUser() user: RequestUser) {
     return this.quickEntriesService.createTransfer(businessId, dto, user.id);
   }
+
+  // Editing an entry: the original is voided ('Corrected') and the corrected
+  // one posted together; the answer is the new transaction.
+  @Post('transactions/:transactionId/correct/income')
+  correctIncome(@Param('businessId') businessId: string, @Param('transactionId') transactionId: string, @Body() dto: CreateIncomeDto, @CurrentUser() user: RequestUser) {
+    return this.quickEntriesService.correctIncome(businessId, transactionId, dto, user.id);
+  }
+
+  @Post('transactions/:transactionId/correct/expense')
+  correctExpense(@Param('businessId') businessId: string, @Param('transactionId') transactionId: string, @Body() dto: CreateExpenseDto, @CurrentUser() user: RequestUser) {
+    return this.quickEntriesService.correctExpense(businessId, transactionId, dto, user.id);
+  }
+
+  @Post('transactions/:transactionId/correct/transfer')
+  correctTransfer(@Param('businessId') businessId: string, @Param('transactionId') transactionId: string, @Body() dto: CreateTransferDto, @CurrentUser() user: RequestUser) {
+    return this.quickEntriesService.correctTransfer(businessId, transactionId, dto, user.id);
+  }
 }
