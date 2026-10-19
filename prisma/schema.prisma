@@ -668,6 +668,9 @@ model User {
   remindLoans         Boolean              @default(true)
   remindSavings       Boolean              @default(false)
   remindersCheckedAt  DateTime?
+  // Admins only: when they last pressed "Mark all as read" on the bell;
+  // its rows newer than this are unread (AdminFeedService).
+  adminFeedSeenAt     DateTime?
   // Shareable short code for this user's own referral link ("Referral
   // Program" menu) -- nullable because pre-existing users only get one
   // lazily backfilled the first time they open that page (see

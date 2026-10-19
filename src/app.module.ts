@@ -6,6 +6,7 @@ import { AccountExportModule } from './account-export/account-export.module.js';
 import { AccountTemplatesModule } from './account-templates/account-templates.module.js';
 import { AccountsModule } from './accounts/accounts.module.js';
 import { AdminAuthModule } from './admin-auth/admin-auth.module.js';
+import { AdminFeedModule } from './admin-feed/admin-feed.module.js';
 import { AdminOwnersModule } from './admin-owners/admin-owners.module.js';
 import { AdminUsersModule } from './admin-users/admin-users.module.js';
 import { AdminWorkspacesModule } from './admin-workspaces/admin-workspaces.module.js';
@@ -121,6 +122,7 @@ import { UserNotificationsModule } from './user-notifications/user-notifications
     UserNotificationsModule,
     SupportModule,
     AccountExportModule,
+    AdminFeedModule,
   ],
   controllers: [AppController],
   providers: [AppService, { provide: APP_GUARD, useClass: ThrottlerGuard }, { provide: APP_FILTER, useClass: GlobalExceptionFilter }],
