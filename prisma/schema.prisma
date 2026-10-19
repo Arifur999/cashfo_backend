@@ -837,7 +837,15 @@ model VaultEntry {
   holderName         String?
   usernameOrEmail    String?
   passwordCiphertext String
+  // When the password itself last changed (no other field moves it), so the
+  // security checkup's "older than a year" is the password's own age.
+  passwordChangedAt  DateTime           @default(now())
   notes              String?
+  // Starred, for the Favorites view.
+  isFavorite         Boolean            @default(false)
+  // "It's fine" on the security checkup: its warnings stay hidden until the
+  // password changes again.
+  checkupDismissedAt DateTime?
   createdAt          DateTime           @default(now())
   updatedAt          DateTime           @updatedAt
 
@@ -847,9 +855,14 @@ model VaultEntry {
 enum VaultEntryCategory {
   SOCIAL
   BANK
+  // bKash, Nagad, Rocket and the like.
+  MOBILE_BANKING
   EMAIL
   SHOPPING
   WORK
+  WIFI
+  // e-TIN, NID and other government portals.
+  GOVERNMENT
   OTHER
 }
 
