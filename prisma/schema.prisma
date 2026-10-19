@@ -647,6 +647,13 @@ model User {
   // When the password was last set (CredentialsService.set); null before
   // this was recorded, or for a Google-only account.
   passwordChangedAt   DateTime?
+  // Settings > App > Reminders: which in-app reminders the bell's feed
+  // gets (UserNotificationsService), and when its checks last ran -- they
+  // run when the feed is read, at most every half hour.
+  remindBudget        Boolean              @default(true)
+  remindLoans         Boolean              @default(true)
+  remindSavings       Boolean              @default(false)
+  remindersCheckedAt  DateTime?
   // Shareable short code for this user's own referral link ("Referral
   // Program" menu) -- nullable because pre-existing users only get one
   // lazily backfilled the first time they open that page (see
@@ -699,6 +706,7 @@ model User {
   auditLogs           AuditLog[]
   authSessions        AuthSession[]
   authAccounts        AuthAccount[]
+  notifications       UserNotification[]
 
   // No separate @@index([email]) -- @unique above already creates a unique
   // index covering lookups by email (same reasoning as PlatformUser).
@@ -2121,4 +2129,32 @@ model GroupSettlementMember {
   balance       Decimal         @db.Decimal(14, 2)
 
   @@index([settlementId])
+}
+
+// The bell's feed in the customer app. Written by the reminder checks
+// (budget, loan due dates, savings check-ins) and by announcements; `key`
+// names what a row is about (e.g. "budget:<categoryId>:2026-10:90"), so a
+// check that runs again adds nothing new. The text is built from `data`
+// in the reader's language, never stored.
+model UserNotification {
+  id         String               @id @default(uuid())
+  userId     String
+  user       User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // The workspace it is about; null for an announcement.
+  businessId String?
+  type       UserNotificationType
+  key        String
+  data       Json
+  readAt     DateTime?
+  createdAt  DateTime             @default(now())
+
+  @@unique([userId, key])
+  @@index([userId, createdAt])
+}
+
+enum UserNotificationType {
+  BUDGET
+  LOAN_DUE
+  SAVINGS
+  ANNOUNCEMENT
 }

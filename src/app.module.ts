@@ -53,6 +53,7 @@ import { TodosModule } from './todos/todos.module.js';
 import { TransactionsModule } from './transactions/transactions.module.js';
 import { TranslationsModule } from './translations/translations.module.js';
 import { UserAuthModule } from './user-auth/user-auth.module.js';
+import { UserNotificationsModule } from './user-notifications/user-notifications.module.js';
 
 @Module({
   imports: [
@@ -115,6 +116,7 @@ import { UserAuthModule } from './user-auth/user-auth.module.js';
     BooksModule,
     SkillsModule,
     TodosModule,
+    UserNotificationsModule,
   ],
   controllers: [AppController],
   providers: [AppService, { provide: APP_GUARD, useClass: ThrottlerGuard }, { provide: APP_FILTER, useClass: GlobalExceptionFilter }],

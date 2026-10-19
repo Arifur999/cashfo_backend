@@ -8,5 +8,6 @@ import { BudgetsService } from './budgets.service.js';
 @Module({
   controllers: [BudgetsController],
   providers: [BudgetsService],
+  exports: [BudgetsService],
 })
 export class BudgetsModule {}

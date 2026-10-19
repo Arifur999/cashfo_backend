@@ -10,5 +10,6 @@ import { SavingsGoalsService } from './savings-goals.service.js';
   imports: [TransactionsModule],
   controllers: [SavingsGoalsController],
   providers: [SavingsGoalsService],
+  exports: [SavingsGoalsService],
 })
 export class SavingsGoalsModule {}
