@@ -843,8 +843,8 @@ model VaultEntry {
   notes              String?
   // Starred, for the Favorites view.
   isFavorite         Boolean            @default(false)
-  // "It's fine" on the security checkup: its warnings stay hidden until the
-  // password changes again.
+  // "It's fine" on the security checkup's old-password warning: hidden until
+  // its password changes again.
   checkupDismissedAt DateTime?
   createdAt          DateTime           @default(now())
   updatedAt          DateTime           @updatedAt

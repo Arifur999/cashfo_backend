@@ -36,7 +36,7 @@ export interface CheckupEntry {
   id: string;
   password: string;
   passwordChangedAt: Date;
-  // "It's fine": the warnings stay hidden until the password changes again.
+  // "It's fine" on an old password: hidden until the password changes again.
   checkupDismissedAt: Date | null;
 }
 
@@ -49,10 +49,11 @@ export interface Checkup {
 export function securityCheckup(entries: CheckupEntry[], person: { name: string; phone: string | null }, now: Date): Checkup {
   const uses = new Map<string, number>();
   for (const entry of entries) uses.set(entry.password, (uses.get(entry.password) ?? 0) + 1);
-  const open = entries.filter((entry) => !entry.checkupDismissedAt || entry.checkupDismissedAt < entry.passwordChangedAt);
+  // Only age can be marked fine; a weak or reused password stays flagged.
+  const fine = (entry: CheckupEntry) => !!entry.checkupDismissedAt && entry.checkupDismissedAt >= entry.passwordChangedAt;
   return {
-    weak: open.filter((entry) => isWeakPassword(entry.password, person)).map((entry) => entry.id),
-    reused: open.filter((entry) => (uses.get(entry.password) ?? 0) > 1).map((entry) => entry.id),
-    old: open.filter((entry) => now.getTime() - entry.passwordChangedAt.getTime() > OLD_AFTER_MS).map((entry) => entry.id),
+    weak: entries.filter((entry) => isWeakPassword(entry.password, person)).map((entry) => entry.id),
+    reused: entries.filter((entry) => (uses.get(entry.password) ?? 0) > 1).map((entry) => entry.id),
+    old: entries.filter((entry) => !fine(entry) && now.getTime() - entry.passwordChangedAt.getTime() > OLD_AFTER_MS).map((entry) => entry.id),
   };
 }

@@ -30,10 +30,12 @@ describe('securityCheckup', () => {
     expect(securityCheckup(entries, person, now)).toEqual({ weak: ['c'], reused: ['a', 'b'], old: ['d'] });
   });
 
-  it("hides an entry marked fine until its password changes again", () => {
+  it("hides an old password marked fine until it changes again", () => {
     const old = { id: 'd', password: 'G8$kPz!x4Wq1', passwordChangedAt: at('2025-08-01'), checkupDismissedAt: at('2026-09-20') };
     expect(securityCheckup([old], person, now).old).toEqual([]);
     expect(securityCheckup([{ ...old, passwordChangedAt: at('2026-09-25'), checkupDismissedAt: at('2026-09-20') }], person, now).old).toEqual([]);
     expect(securityCheckup([{ ...old, checkupDismissedAt: at('2025-07-01') }], person, now).old).toEqual(['d']);
+    // A weak password marked fine for its age is still weak.
+    expect(securityCheckup([{ ...old, password: 'qwerty12' }], person, now)).toEqual({ weak: ['d'], reused: [], old: [] });
   });
 });
