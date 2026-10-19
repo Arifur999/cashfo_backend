@@ -1072,8 +1072,39 @@ model Book {
   finishedAt DateTime?
   createdAt  DateTime   @default(now())
   updatedAt  DateTime   @updatedAt
+  logs       BookLog[]
+  notes      BookNote[]
 
   @@index([userId, status])
+}
+
+// One (Asia/Dhaka) day's reading of a book: how far its current page went up
+// that day. BooksService.update writes it whenever pagesRead changes, so a
+// correction the same day takes the pages back off; a day that ends at 0 has
+// no row. It gives the reading streak and the pages read each day.
+model BookLog {
+  id     String   @id @default(uuid())
+  bookId String
+  book   Book     @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  // The book's owner again, so a person's reading days come from one index.
+  userId String
+  date   DateTime @db.Date
+  pages  Int
+
+  @@unique([bookId, date])
+  @@index([userId, date])
+}
+
+// A note, or a line the reader liked, with the page it came from.
+model BookNote {
+  id        String   @id @default(uuid())
+  bookId    String
+  book      Book     @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  page      Int?
+  text      String
+  createdAt DateTime @default(now())
+
+  @@index([bookId, createdAt])
 }
 
 // "Finish N books this year" -- one target per user per (Asia/Dhaka) year.
