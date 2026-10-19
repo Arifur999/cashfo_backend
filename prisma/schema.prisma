@@ -1494,6 +1494,10 @@ model Transaction {
   // from the original to find its reversal via a Prisma include (query by
   // reversalOfId directly on the rare occasion it's needed).
   reversalOfId           String?
+  // Set on an entry made by Edit (decision D2): the original it corrects,
+  // which was voided 'Corrected' in the same request. Plain field, like
+  // reversalOfId; at most one correction per original.
+  correctedFromId        String?            @unique
   // Prompt 9: when set on a SALE/PURCHASE, the date it's due -- drives
   // aging/overdue. When set on a PAYMENT, which specific outstanding
   // SALE/PURCHASE this payment targets -- a payment with this left unset

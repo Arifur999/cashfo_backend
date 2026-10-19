@@ -8,7 +8,7 @@ const accounts: Record<string, { id: string; businessId: string; accountType: st
 };
 
 const setup = ({ original = { businessId: 'biz-1', transactionType: 'EXPENSE' } as { businessId: string; transactionType: string } | null } = {}) => {
-  const tx = { transaction: { findUnique: vi.fn().mockResolvedValue(original) } };
+  const tx = { transaction: { findUnique: vi.fn().mockResolvedValue(original), update: vi.fn().mockResolvedValue({}) } };
   const prisma = {
     $transaction: vi.fn((work: (client: typeof tx) => unknown) => work(tx)),
     account: { findUnique: vi.fn(({ where }: { where: { id: string } }) => Promise.resolve(accounts[where.id] ?? null)) },
@@ -26,12 +26,14 @@ const expense = { fromAccountId: 'cash', expenseAccountId: 'food', amount: 2540,
 describe('QuickEntriesService corrections', () => {
   it('voids the original as Corrected and posts the corrected entry in the same transaction', async () => {
     const { service, tx, transactions } = setup();
-    await expect(service.correctExpense('biz-1', 'tx-1', expense, 'user-1')).resolves.toEqual({ id: 'tx-2' });
+    await expect(service.correctExpense('biz-1', 'tx-1', expense, 'user-1')).resolves.toEqual({ id: 'tx-2', correctedFromId: 'tx-1' });
     expect(transactions.voidTransaction).toHaveBeenCalledWith('biz-1', 'tx-1', 'Corrected', 'user-1', tx);
     const [businessId, dto, userId, client] = transactions.createTransaction.mock.calls[0];
     expect([businessId, userId, client]).toEqual(['biz-1', 'user-1', tx]);
     expect(dto).toMatchObject({ transactionType: 'EXPENSE', transactionDate: '2026-09-30' });
     expect(transactions.voidTransaction.mock.invocationCallOrder[0]).toBeLessThan(transactions.createTransaction.mock.invocationCallOrder[0]);
+    // The corrected entry points back at the original.
+    expect(tx.transaction.update).toHaveBeenCalledWith({ where: { id: 'tx-2' }, data: { correctedFromId: 'tx-1' } });
   });
 
   it('keeps an entry the kind it was', async () => {

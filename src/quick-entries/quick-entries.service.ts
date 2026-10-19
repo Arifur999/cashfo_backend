@@ -101,7 +101,7 @@ export class QuickEntriesService {
     return this.correct(businessId, transactionId, 'TRANSFER', userId, (tx) => this.createTransfer(businessId, dto, userId, tx));
   }
 
-  private correct<T>(businessId: string, transactionId: string, kind: 'INCOME' | 'EXPENSE' | 'TRANSFER', userId: string, post: (tx: Prisma.TransactionClient) => Promise<T>) {
+  private correct<T extends { id: string }>(businessId: string, transactionId: string, kind: 'INCOME' | 'EXPENSE' | 'TRANSFER', userId: string, post: (tx: Prisma.TransactionClient) => Promise<T>) {
     return this.prisma.$transaction(async (tx) => {
       const original = await tx.transaction.findUnique({ where: { id: transactionId }, select: { businessId: true, transactionType: true } });
       if (!original || original.businessId !== businessId) {
@@ -111,7 +111,10 @@ export class QuickEntriesService {
         throw new BadRequestException(`This entry is not a ${kind.toLowerCase()}, so it can't be corrected as one`);
       }
       await this.transactionsService.voidTransaction(businessId, transactionId, 'Corrected', userId, tx);
-      return post(tx);
+      const corrected = await post(tx);
+      // So History can say what it corrected (and the original, what replaced it).
+      await tx.transaction.update({ where: { id: corrected.id }, data: { correctedFromId: transactionId } });
+      return { ...corrected, correctedFromId: transactionId };
     });
   }
 
