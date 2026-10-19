@@ -6,6 +6,7 @@ const fakeDb = (account: { password: string | null } | null = null) => ({
     findUnique: vi.fn().mockResolvedValue(account),
     upsert: vi.fn().mockResolvedValue({}),
   },
+  user: { update: vi.fn().mockResolvedValue({}) },
 });
 
 const serviceWith = (db: ReturnType<typeof fakeDb>) => new CredentialsService(db as never);
@@ -31,6 +32,8 @@ describe('CredentialsService', () => {
     expect(args.create).toMatchObject({ userId: 'user-1', providerId: 'credential', accountId: 'user-1' });
     expect(args.update.password).toMatch(/^\$2[aby]\$10\$/);
     expect(args.update.password).not.toBe('Secret-123');
+    // Settings says when it last changed.
+    expect(db.user.update).toHaveBeenCalledWith({ where: { id: 'user-1' }, data: { passwordChangedAt: expect.any(Date) } });
   });
 
   it('writes through the transaction client it is given', async () => {
@@ -39,6 +42,7 @@ describe('CredentialsService', () => {
     await serviceWith(db).set('user-1', 'Secret-123', tx as never);
 
     expect(tx.authAccount.upsert).toHaveBeenCalledOnce();
+    expect(tx.user.update).toHaveBeenCalledOnce();
     expect(db.authAccount.upsert).not.toHaveBeenCalled();
   });
 });

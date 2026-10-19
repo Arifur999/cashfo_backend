@@ -1,13 +1,14 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { Account, AccountType, Contact, Prisma, TransactionStatus } from '@prisma/client';
 import { MONEY_ACCOUNT_SUBTYPES } from '../accounts/accounts.service.js';
-import { dhakaDateOnly } from '../common/dhaka.js';
+import { dhakaDateOnly, dhakaYear } from '../common/dhaka.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { TransactionsService } from '../transactions/transactions.service.js';
 import { CreatePayableDto } from './dto/create-payable.dto.js';
 import { CreateReceivableDto } from './dto/create-receivable.dto.js';
 import { PayPaymentDto } from './dto/pay-payment.dto.js';
 import { ReceivePaymentDto } from './dto/receive-payment.dto.js';
+import { profitTotals } from './loan-profit.js';
 
 export type Direction = 'RECEIVABLE' | 'PAYABLE';
 
@@ -80,6 +81,12 @@ export interface DueSoonRow {
   daysUntilDue: number;
 }
 
+// A due-soon row for the bell's loan reminders: either way, any contact.
+export interface DueReminderRow extends DueSoonRow {
+  contactCategory: Contact['category'];
+  direction: Direction;
+}
+
 export type LoanBalanceDirection = 'DENA' | 'PAWNA' | 'SETTLED';
 
 export interface LoanDashboardRow {
@@ -94,6 +101,10 @@ export interface LoanDashboardRow {
   // reference layout's RECEIVE/PAYMENT columns.
   totalReceive: string;
   totalPayment: string;
+  // Profit or interest paid to them and received from them, all time. It
+  // never moves currentBalance.
+  profitPaid: string;
+  profitReceived: string;
   currentBalance: string;
   direction: LoanBalanceDirection;
 }
@@ -105,6 +116,10 @@ export interface LoanDashboard {
   totalReceived: string;
   netBalance: string;
   activeAccounts: number;
+  // Profit paid in this Asia/Dhaka year, and who most of it went to with
+  // about how much a month.
+  profitPaidThisYear: string;
+  topProfit: { contactId: string; contactName: string; monthly: string } | null;
   rows: LoanDashboardRow[];
 }
 
@@ -122,6 +137,10 @@ export interface LoanStatementRow {
   // sit on the Accounts Receivable or the Accounts Payable account.
   debit: string | null;
   credit: string | null;
+  // A Profit row: what was paid or received. Its runningPrincipal is the
+  // balance it left untouched.
+  profitPaid: string | null;
+  profitReceived: string | null;
   runningPrincipal: string;
   status: TransactionStatus;
 }
@@ -400,21 +419,37 @@ export class ReceivablesPayablesService {
             orderBy: [{ transaction: { transactionDate: 'asc' } }, { transaction: { createdAt: 'asc' } }],
           });
 
+    // Profit or interest paid to or received from them: an expense or an
+    // income with this contact (never a reversal, which only undoes one).
+    const profits = await this.prisma.transaction.findMany({
+      where: { businessId, contactId, transactionType: { in: ['INCOME', 'EXPENSE'] }, reversalOfId: null, ...(hasDateFilter && { transactionDate: dateFilter }) },
+      include: { entries: { where: { entryType: 'DEBIT' }, select: { amount: true } } },
+    });
+
+    // Principal and profit in date order; only principal moves the balance.
+    const items = [
+      ...entries.map((entry) => ({ transaction: entry.transaction, principal: entry })),
+      ...profits.map((transaction) => ({ transaction, principal: null })),
+    ].sort((a, b) => a.transaction.transactionDate.getTime() - b.transaction.transactionDate.getTime() || a.transaction.createdAt.getTime() - b.transaction.createdAt.getTime());
+
     let running = balanceBroughtForward;
-    const rows: LoanStatementRow[] = entries.map((entry) => {
-      const amount = new Prisma.Decimal(entry.amount);
-      const delta = entry.entryType === 'DEBIT' ? amount : amount.negated();
-      running = running.plus(delta);
+    const rows: LoanStatementRow[] = items.map(({ transaction, principal }) => {
+      const base = { transactionId: transaction.id, date: transaction.transactionDate, referenceNo: transaction.referenceNo, description: transaction.description, status: transaction.status };
+      if (!principal) {
+        const amount = (transaction as (typeof profits)[number]).entries.reduce((sum, entry) => sum.plus(entry.amount), new Prisma.Decimal(0)).toFixed(2);
+        const paid = transaction.transactionType === 'EXPENSE';
+        return { ...base, category: 'Profit', debit: null, credit: null, profitPaid: paid ? amount : null, profitReceived: paid ? null : amount, runningPrincipal: running.toFixed(2) };
+      }
+      const amount = new Prisma.Decimal(principal.amount);
+      running = running.plus(principal.entryType === 'DEBIT' ? amount : amount.negated());
       return {
-        transactionId: entry.transactionId,
-        date: entry.transaction.transactionDate,
-        referenceNo: entry.transaction.referenceNo,
-        description: entry.transaction.description,
+        ...base,
         category: 'Principal',
-        debit: entry.entryType === 'DEBIT' ? amount.toFixed(2) : null,
-        credit: entry.entryType === 'CREDIT' ? amount.toFixed(2) : null,
+        debit: principal.entryType === 'DEBIT' ? amount.toFixed(2) : null,
+        credit: principal.entryType === 'CREDIT' ? amount.toFixed(2) : null,
+        profitPaid: null,
+        profitReceived: null,
         runningPrincipal: running.toFixed(2),
-        status: entry.transaction.status,
       };
     });
 
@@ -554,6 +589,45 @@ export class ReceivablesPayablesService {
     return rows;
   }
 
+  // What falls due in the next `days` days, today included, either way and
+  // with any kind of contact (Dena-Pawna's and Loan Management's alike): the
+  // bell's loan reminders. Only the contacts with such an entry are worked
+  // out.
+  async dueWithin(businessId: string, days: number): Promise<DueReminderRow[]> {
+    const today = todayUtcMidnight();
+    const horizon = today.getTime() + days * DAY_MS;
+    const due = await this.prisma.transaction.findMany({
+      where: { businessId, transactionType: { in: ['SALE', 'PURCHASE'] }, status: 'POSTED', reversalOfId: null, contactId: { not: null }, dueDate: { gte: today, lte: new Date(horizon) } },
+      select: { contactId: true },
+      distinct: ['contactId'],
+    });
+    if (due.length === 0) return [];
+    const contacts = await this.prisma.contact.findMany({ where: { businessId, id: { in: due.map((row) => row.contactId as string) } } });
+
+    const rows: DueReminderRow[] = [];
+    for (const contact of contacts) {
+      for (const direction of ['RECEIVABLE', 'PAYABLE'] as const) {
+        const breakdown = await this.computeDirection(businessId, contact, direction);
+        for (const t of breakdown.transactions) {
+          if (!t.dueDate || t.isOverdue || t.dueDate.getTime() > horizon) continue;
+          if (new Prisma.Decimal(t.remainingAmount).lessThanOrEqualTo(0)) continue;
+          rows.push({
+            contactId: contact.id,
+            contactName: contact.name,
+            contactCategory: contact.category,
+            direction,
+            transactionId: t.transactionId,
+            description: t.description,
+            remainingAmount: t.remainingAmount,
+            dueDate: t.dueDate,
+            daysUntilDue: Math.round((t.dueDate.getTime() - today.getTime()) / DAY_MS),
+          });
+        }
+      }
+    }
+    return rows;
+  }
+
   // Loan Management's dashboard -- same engine as Dena-Pawna
   // (computeDirection() against the same Accounts Receivable/Payable
   // accounts). Not filtered by category or type: every contact in the
@@ -569,6 +643,21 @@ export class ReceivablesPayablesService {
       where: { businessId },
       orderBy: { name: 'asc' },
     });
+
+    // Profit or interest with any contact, posted and not undone.
+    const profitPostings = await this.prisma.transaction.findMany({
+      where: { businessId, contactId: { not: null }, transactionType: { in: ['INCOME', 'EXPENSE'] }, status: 'POSTED', reversalOfId: null },
+      select: { contactId: true, transactionDate: true, transactionType: true, entries: { where: { entryType: 'DEBIT' }, select: { amount: true } } },
+    });
+    const profit = profitTotals(
+      profitPostings.map((posting) => ({
+        contactId: posting.contactId as string,
+        date: posting.transactionDate,
+        amount: posting.entries.reduce((sum, entry) => sum + Number(entry.amount), 0),
+        paid: posting.transactionType === 'EXPENSE',
+      })),
+      dhakaYear(new Date()),
+    );
 
     let totalDena = new Prisma.Decimal(0);
     let totalPawna = new Prisma.Decimal(0);
@@ -603,6 +692,8 @@ export class ReceivablesPayablesService {
         openingBalance: opening.toFixed(2),
         totalReceive: totalReceive.toFixed(2),
         totalPayment: totalPayment.toFixed(2),
+        profitPaid: (profit.byContact.get(contact.id)?.paid ?? 0).toFixed(2),
+        profitReceived: (profit.byContact.get(contact.id)?.received ?? 0).toFixed(2),
         currentBalance: currentBalance.toFixed(2),
         direction,
       });
@@ -615,6 +706,8 @@ export class ReceivablesPayablesService {
       totalReceived: totalReceived.toFixed(2),
       netBalance: totalPawna.minus(totalDena).toFixed(2),
       activeAccounts: rows.length,
+      profitPaidThisYear: profit.paidThisYear.toFixed(2),
+      topProfit: profit.top ? { contactId: profit.top.contactId, contactName: contacts.find((contact) => contact.id === profit.top?.contactId)?.name ?? '', monthly: profit.top.monthly.toFixed(2) } : null,
       rows,
     };
   }

@@ -1,6 +1,6 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
-import { GroupMemberStatus, Prisma } from '@prisma/client';
-import { dhakaMonthRange } from '../common/dhaka.js';
+import { GroupContributionKind, GroupMemberStatus, GroupSplit, Prisma } from '@prisma/client';
+import { dhakaDateOnly, dhakaToday } from '../common/dhaka.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { CloseSettlementDto } from './dto/close-settlement.dto.js';
 import { CreateGroupContributionDto } from './dto/create-group-contribution.dto.js';
@@ -13,6 +13,10 @@ import { UpdateGroupExpenseCategoryDto } from './dto/update-group-expense-catego
 import { UpdateGroupExpenseDto } from './dto/update-group-expense.dto.js';
 import { UpdateGroupMemberDto } from './dto/update-group-member.dto.js';
 import { UpdateGroupMonthBudgetDto } from './dto/update-group-month-budget.dto.js';
+import { GroupExpenseSplitDto } from './dto/group-expense-split.dto.js';
+import { SetGroupMealsDto } from './dto/group-meal.dto.js';
+import { UpdateGroupSettingsDto } from './dto/group-settings.dto.js';
+import { settleGroup } from './group-settlement.js';
 
 export interface SettlementMemberRow {
   groupMemberId: string;
@@ -25,6 +29,15 @@ export interface SettlementMemberRow {
   grossDeposited: string;
   returned: string;
   contributed: string;
+  // Whether they shared the period's costs (in the group during it).
+  sharing: boolean;
+  // Paid from their own pocket, credited to them.
+  pocketPaid: string;
+  mealUnits: string;
+  mealCost: string;
+  // Their share of the costs not shared by meals.
+  otherShare: string;
+  // mealCost + otherShare.
   share: string;
   balance: string;
 }
@@ -35,10 +48,23 @@ export interface SettlementResult {
   totalExpense: string;
   memberCount: number;
   perMemberShare: string;
+  // What meals shared, over how many meal units, at what rate.
+  mealExpense: string;
+  mealUnits: string;
+  mealRate: string;
+  // Contributions less the expenses paid from the fund: every balance added up.
+  cashInHand: string;
   members: SettlementMemberRow[];
 }
 
+// A group's settings before any are saved.
+const DEFAULT_SETTINGS = { kind: 'FAMILY' as const, monthStartDay: 1, cashHolderMemberId: null, mealsOn: false, breakfastUnits: '0.50', lunchUnits: '1.00', dinnerUnits: '1.00' };
+
 const DAY_MS = 24 * 60 * 60 * 1000;
+const dayKey = (date: Date) => date.toISOString().slice(0, 10);
+// undefined leaves a date as it is; null clears it.
+const dateOrNull = (value: string | null | undefined) => (value === undefined ? undefined : value === null ? null : new Date(value));
+const paisa = (value: string | number | Prisma.Decimal) => Math.round(Number(value) * 100);
 
 @Injectable()
 export class GroupExpensesService {
@@ -55,12 +81,23 @@ export class GroupExpensesService {
 
   createMember(businessId: string, dto: CreateGroupMemberDto) {
     return this.prisma.groupMember.create({
-      data: { businessId, name: dto.name, phone: dto.phone, photoUrl: dto.photoUrl },
+      data: { businessId, name: dto.name, phone: dto.phone, photoUrl: dto.photoUrl, shareUnits: dto.shareUnits, joinedOn: dateOrNull(dto.joinedOn) },
     });
   }
 
+  // Archiving someone records today as the day they left (unless the edit
+  // says), so they still share this month's costs up to it; bringing them
+  // back clears it.
   async updateMember(businessId: string, id: string, dto: UpdateGroupMemberDto) {
-    await this.requireMember(businessId, id);
+    const current = await this.requireMember(businessId, id);
+    const archiving = dto.status === 'ARCHIVED' && current.status === 'ACTIVE';
+    const leftOn = dto.leftOn !== undefined ? dateOrNull(dto.leftOn) : archiving && !current.leftOn ? dhakaDateOnly(new Date()) : dto.status === 'ACTIVE' ? null : undefined;
+    const joinedOn = dateOrNull(dto.joinedOn);
+    const joined = joinedOn !== undefined ? joinedOn : current.joinedOn;
+    const left = leftOn !== undefined ? leftOn : current.leftOn;
+    if (joined && left && left < joined) {
+      throw new BadRequestException("Someone can't leave before they joined");
+    }
     return this.prisma.groupMember.update({
       where: { id },
       data: {
@@ -68,6 +105,9 @@ export class GroupExpensesService {
         ...(dto.phone !== undefined && { phone: dto.phone }),
         ...(dto.photoUrl !== undefined && { photoUrl: dto.photoUrl }),
         ...(dto.status !== undefined && { status: dto.status }),
+        ...(dto.shareUnits !== undefined && { shareUnits: dto.shareUnits }),
+        ...(joinedOn !== undefined && { joinedOn }),
+        ...(leftOn !== undefined && { leftOn }),
       },
     });
   }
@@ -78,18 +118,21 @@ export class GroupExpensesService {
   async deleteMember(businessId: string, id: string): Promise<{ id: string; action: 'deleted' | 'archived' }> {
     await this.requireMember(businessId, id);
 
-    const [contributionCount, expenseCount, settlementCount] = await Promise.all([
+    const [contributionCount, expenseCount, settlementCount, splitCount, mealCount] = await Promise.all([
       this.prisma.groupContribution.count({ where: { groupMemberId: id } }),
       this.prisma.groupExpense.count({ where: { paidByMemberId: id } }),
       this.prisma.groupSettlementMember.count({ where: { groupMemberId: id } }),
+      this.prisma.groupExpenseSplit.count({ where: { groupMemberId: id } }),
+      this.prisma.groupMeal.count({ where: { groupMemberId: id } }),
     ]);
 
-    if (contributionCount === 0 && expenseCount === 0 && settlementCount === 0) {
+    if (contributionCount === 0 && expenseCount === 0 && settlementCount === 0 && splitCount === 0 && mealCount === 0) {
       await this.prisma.groupMember.delete({ where: { id } });
       return { id, action: 'deleted' };
     }
 
-    await this.prisma.groupMember.update({ where: { id }, data: { status: 'ARCHIVED' } });
+    const member = await this.requireMember(businessId, id);
+    await this.prisma.groupMember.update({ where: { id }, data: { status: 'ARCHIVED', ...(!member.leftOn && { leftOn: dhakaDateOnly(new Date()) }) } });
     return { id, action: 'archived' };
   }
 
@@ -123,6 +166,7 @@ export class GroupExpensesService {
         businessId,
         groupMemberId: dto.groupMemberId,
         amount: dto.amount,
+        kind: dto.kind ?? (Number(dto.amount) < 0 ? 'RETURN' : 'DEPOSIT'),
         date: new Date(dto.date),
         note: dto.note,
       },
@@ -130,7 +174,9 @@ export class GroupExpensesService {
   }
 
   async updateContribution(businessId: string, id: string, dto: UpdateGroupContributionDto) {
-    await this.requireContribution(businessId, id);
+    const current = await this.requireContribution(businessId, id);
+    // A new amount on a deposit or a return says which it now is.
+    const kind: GroupContributionKind | undefined = dto.kind ?? (dto.amount !== undefined && (current.kind === 'DEPOSIT' || current.kind === 'RETURN') ? (Number(dto.amount) < 0 ? 'RETURN' : 'DEPOSIT') : undefined);
     if (dto.groupMemberId) {
       await this.requireMember(businessId, dto.groupMemberId);
     }
@@ -139,6 +185,7 @@ export class GroupExpensesService {
       data: {
         ...(dto.groupMemberId !== undefined && { groupMemberId: dto.groupMemberId }),
         ...(dto.amount !== undefined && { amount: dto.amount }),
+        ...(kind !== undefined && { kind }),
         ...(dto.date !== undefined && { date: new Date(dto.date) }),
         ...(dto.note !== undefined && { note: dto.note }),
       },
@@ -179,7 +226,7 @@ export class GroupExpensesService {
     }
     const count = await this.prisma.groupExpenseCategoryOption.count({ where: { businessId } });
     return this.prisma.groupExpenseCategoryOption.create({
-      data: { businessId, name: dto.name, icon: dto.icon, color: dto.color, displayOrder: count },
+      data: { businessId, name: dto.name, icon: dto.icon, color: dto.color, displayOrder: count, ...(dto.defaultSplit && { defaultSplit: dto.defaultSplit }) },
     });
   }
 
@@ -197,6 +244,7 @@ export class GroupExpensesService {
         ...(dto.name !== undefined && { name: dto.name }),
         ...(dto.icon !== undefined && { icon: dto.icon }),
         ...(dto.color !== undefined && { color: dto.color }),
+        ...(dto.defaultSplit !== undefined && { defaultSplit: dto.defaultSplit }),
       },
     });
   }
@@ -230,7 +278,7 @@ export class GroupExpensesService {
     }
     return this.prisma.groupExpense.findMany({
       where,
-      include: { paidByMember: true },
+      include: { paidByMember: true, splits: true },
       // Same tie-break reasoning as listContributions() above.
       orderBy: [{ date: 'desc' }, { createdAt: 'desc' }],
     });
@@ -240,35 +288,84 @@ export class GroupExpensesService {
     if (dto.paidByMemberId) {
       await this.requireMember(businessId, dto.paidByMemberId);
     }
+    const category = dto.category ?? 'Other';
+    // Shared the way its category says, unless the expense says otherwise.
+    const option = dto.split ? null : await this.prisma.groupExpenseCategoryOption.findUnique({ where: { businessId_name: { businessId, name: category } } });
+    const split = dto.split ?? option?.defaultSplit ?? 'EQUAL';
+    const paidFrom = dto.paidFrom ?? 'FUND';
+    await this.checkExpense(businessId, { amount: dto.amount, paidFrom, paidByMemberId: dto.paidByMemberId ?? null, split, splits: dto.splits ?? [] });
     return this.prisma.groupExpense.create({
       data: {
         businessId,
         amount: dto.amount,
         date: new Date(dto.date),
-        category: dto.category ?? 'Other',
+        category,
         description: dto.description,
         paidByMemberId: dto.paidByMemberId,
+        paidFrom,
+        split,
+        splits: { create: (dto.splits ?? []).map((s) => ({ groupMemberId: s.groupMemberId, units: s.units ?? null, amount: s.amount ?? null })) },
       },
+      include: { paidByMember: true, splits: true },
     });
   }
 
   async updateExpense(businessId: string, id: string, dto: UpdateGroupExpenseDto) {
-    await this.requireExpense(businessId, id);
+    const current = await this.prisma.groupExpense.findUnique({ where: { id }, include: { splits: true } });
+    if (!current || current.businessId !== businessId) {
+      throw new NotFoundException('Expense not found');
+    }
     if (dto.paidByMemberId) {
       await this.requireMember(businessId, dto.paidByMemberId);
     }
-    return this.prisma.groupExpense.update({
-      where: { id },
-      data: {
-        ...(dto.amount !== undefined && { amount: dto.amount }),
-        ...(dto.date !== undefined && { date: new Date(dto.date) }),
-        ...(dto.category !== undefined && { category: dto.category }),
-        ...(dto.description !== undefined && { description: dto.description }),
-        // "" clears it back to untracked -- see the DTO field's own comment.
-        ...(dto.paidByMemberId !== undefined && { paidByMemberId: dto.paidByMemberId || null }),
-      },
-      include: { paidByMember: true },
+    // "" clears who paid back to untracked -- see the DTO field's own comment.
+    const paidByMemberId = dto.paidByMemberId !== undefined ? dto.paidByMemberId || null : current.paidByMemberId;
+    await this.checkExpense(businessId, {
+      amount: dto.amount ?? current.amount.toString(),
+      paidFrom: dto.paidFrom ?? current.paidFrom,
+      paidByMemberId,
+      split: dto.split ?? current.split,
+      splits: dto.splits ?? current.splits.map((s) => ({ groupMemberId: s.groupMemberId, units: s.units === null ? null : Number(s.units), amount: s.amount?.toString() ?? null })),
     });
+    return this.prisma.$transaction(async (tx) => {
+      if (dto.splits !== undefined) await tx.groupExpenseSplit.deleteMany({ where: { expenseId: id } });
+      return tx.groupExpense.update({
+        where: { id },
+        data: {
+          ...(dto.amount !== undefined && { amount: dto.amount }),
+          ...(dto.date !== undefined && { date: new Date(dto.date) }),
+          ...(dto.category !== undefined && { category: dto.category }),
+          ...(dto.description !== undefined && { description: dto.description }),
+          ...(dto.paidByMemberId !== undefined && { paidByMemberId }),
+          ...(dto.paidFrom !== undefined && { paidFrom: dto.paidFrom }),
+          ...(dto.split !== undefined && { split: dto.split }),
+          ...(dto.splits !== undefined && { splits: { create: dto.splits.map((s) => ({ groupMemberId: s.groupMemberId, units: s.units ?? null, amount: s.amount ?? null })) } }),
+        },
+        include: { paidByMember: true, splits: true },
+      });
+    });
+  }
+
+  // An expense from a pocket names whose; exact amounts add up to it; the
+  // members it names are this group's, once each.
+  private async checkExpense(businessId: string, expense: { amount: string; paidFrom: string; paidByMemberId: string | null; split: GroupSplit; splits: GroupExpenseSplitDto[] }) {
+    if (expense.paidFrom === 'MEMBER' && !expense.paidByMemberId) {
+      throw new BadRequestException('Say who paid it from their own pocket');
+    }
+    const ids = expense.splits.map((s) => s.groupMemberId);
+    if (new Set(ids).size !== ids.length) {
+      throw new BadRequestException('A member is named twice on this expense');
+    }
+    if (ids.length > 0 && (await this.prisma.groupMember.count({ where: { businessId, id: { in: ids } } })) !== ids.length) {
+      throw new NotFoundException('Group member not found');
+    }
+    if (expense.split === 'EXACT') {
+      if (ids.length === 0) throw new BadRequestException('Give each member their exact amount');
+      const total = expense.splits.reduce((sum, s) => sum + paisa(s.amount ?? 0), 0);
+      if (total !== paisa(expense.amount)) {
+        throw new BadRequestException('The exact amounts must add up to the expense');
+      }
+    }
   }
 
   async deleteExpense(businessId: string, id: string) {
@@ -336,10 +433,66 @@ export class GroupExpensesService {
     return budget;
   }
 
+  // ---- Settings ----
+
+  async getSettings(businessId: string) {
+    const settings = await this.prisma.groupSettings.findUnique({ where: { businessId } });
+    return settings ?? { businessId, ...DEFAULT_SETTINGS };
+  }
+
+  async updateSettings(businessId: string, dto: UpdateGroupSettingsDto) {
+    if (dto.cashHolderMemberId) {
+      await this.requireMember(businessId, dto.cashHolderMemberId);
+    }
+    const data = {
+      ...(dto.kind !== undefined && { kind: dto.kind }),
+      ...(dto.monthStartDay !== undefined && { monthStartDay: dto.monthStartDay }),
+      ...(dto.cashHolderMemberId !== undefined && { cashHolderMemberId: dto.cashHolderMemberId }),
+      ...(dto.mealsOn !== undefined && { mealsOn: dto.mealsOn }),
+      ...(dto.breakfastUnits !== undefined && { breakfastUnits: dto.breakfastUnits }),
+      ...(dto.lunchUnits !== undefined && { lunchUnits: dto.lunchUnits }),
+      ...(dto.dinnerUnits !== undefined && { dinnerUnits: dto.dinnerUnits }),
+    };
+    return this.prisma.groupSettings.upsert({ where: { businessId }, update: data, create: { businessId, ...data } });
+  }
+
+  // ---- Meals ----
+
+  listMeals(businessId: string, filters: { from?: string; to?: string }) {
+    return this.prisma.groupMeal.findMany({
+      where: { businessId, ...((filters.from || filters.to) && { date: { ...(filters.from && { gte: new Date(filters.from) }), ...(filters.to && { lte: new Date(filters.to) }) } }) },
+      orderBy: [{ date: 'asc' }],
+    });
+  }
+
+  // A day's meals: each entry replaces that member's day, and one with no
+  // meals at all clears it.
+  async setMeals(businessId: string, dto: SetGroupMealsDto) {
+    const ids = dto.entries.map((e) => e.groupMemberId);
+    if (new Set(ids).size !== ids.length) {
+      throw new BadRequestException('A member is listed twice for this day');
+    }
+    if (ids.length > 0 && (await this.prisma.groupMember.count({ where: { businessId, id: { in: ids } } })) !== ids.length) {
+      throw new NotFoundException('Group member not found');
+    }
+    const date = new Date(dto.date);
+    await this.prisma.$transaction(async (tx) => {
+      for (const entry of dto.entries) {
+        const meals = { breakfast: entry.breakfast, lunch: entry.lunch, dinner: entry.dinner, guests: entry.guests };
+        if (!entry.breakfast && !entry.lunch && !entry.dinner && !entry.guests) {
+          await tx.groupMeal.deleteMany({ where: { groupMemberId: entry.groupMemberId, date } });
+        } else {
+          await tx.groupMeal.upsert({ where: { groupMemberId_date: { groupMemberId: entry.groupMemberId, date } }, update: meals, create: { businessId, groupMemberId: entry.groupMemberId, date, ...meals } });
+        }
+      }
+    });
+    return this.listMeals(businessId, { from: dto.date, to: dto.date });
+  }
+
   // ---- Settlement ----
 
   async getSettlement(businessId: string, from?: string, to?: string): Promise<SettlementResult> {
-    const { periodStart, periodEnd } = this.resolvePeriod(from, to);
+    const { periodStart, periodEnd } = await this.resolvePeriod(businessId, from, to);
     return this.computeSettlement(businessId, periodStart, periodEnd);
   }
 
@@ -381,6 +534,17 @@ export class GroupExpensesService {
         throw new BadRequestException('Add at least one active member before closing a settlement');
       }
 
+      // Carried forward: each balance opens the next month as a CARRY
+      // contribution, so a member owed money starts it in credit.
+      if (dto.carryForward) {
+        const next = new Date(periodEnd.getTime() + DAY_MS);
+        const label = `Carried from ${dayKey(periodStart)} to ${dayKey(periodEnd)}`;
+        const carried = result.members.filter((m) => Number(m.balance) !== 0);
+        if (carried.length > 0) {
+          await tx.groupContribution.createMany({ data: carried.map((m) => ({ businessId, groupMemberId: m.groupMemberId, amount: m.balance, kind: 'CARRY' as const, date: next, note: label })) });
+        }
+      }
+
       return tx.groupSettlement.create({
         data: {
           businessId,
@@ -389,11 +553,19 @@ export class GroupExpensesService {
           totalExpense: result.totalExpense,
           memberCount: result.memberCount,
           perMemberShare: result.perMemberShare,
+          mealExpense: result.mealExpense,
+          mealUnits: result.mealUnits,
+          mealRate: result.mealRate,
+          cashInHand: result.cashInHand,
+          carriedForward: !!dto.carryForward,
           closedBy: userId,
           members: {
             create: result.members.map((m) => ({
               groupMemberId: m.groupMemberId,
               contributed: m.contributed,
+              pocketPaid: m.pocketPaid,
+              mealUnits: m.mealUnits,
+              mealCost: m.mealCost,
               share: m.share,
               balance: m.balance,
             })),
@@ -406,101 +578,85 @@ export class GroupExpensesService {
 
   // Shared by getSettlement() (live, uncommitted numbers for the current or
   // any requested period) and closeSettlement() (same computation, then
-  // persisted as a locked snapshot) -- one source of truth for the split
-  // math so the two never drift apart.
-  //
-  // Archived members don't share the period's expenses, but money they put
-  // in during it still counts: they're listed with a zero share, so their
-  // balance shows what the group owes them back.
+  // persisted as a locked snapshot) -- one source of truth for the math
+  // (settleGroup()) so the two never drift apart.
   private async computeSettlement(
     businessId: string,
     periodStart: Date,
     periodEnd: Date,
     client: Prisma.TransactionClient = this.prisma,
   ): Promise<SettlementResult> {
-    const [allMembers, expenseAgg, contributions] = await Promise.all([
+    const inPeriod = { gte: periodStart, lte: periodEnd };
+    const [members, contributions, expenses, meals, settings] = await Promise.all([
       client.groupMember.findMany({ where: { businessId }, orderBy: { createdAt: 'asc' } }),
-      client.groupExpense.aggregate({
-        where: { businessId, date: { gte: periodStart, lte: periodEnd } },
-        _sum: { amount: true },
-      }),
-      // Individual rows, not groupBy's _sum -- a plain sum would net
-      // deposits and returns (negative amounts, see AddContributionModal's
-      // Deposit/Return toggle) into one figure, losing the gross/returned
-      // breakdown the settlement view shows separately.
-      client.groupContribution.findMany({
-        where: { businessId, date: { gte: periodStart, lte: periodEnd } },
-        select: { groupMemberId: true, amount: true },
-      }),
+      client.groupContribution.findMany({ where: { businessId, date: inPeriod }, select: { groupMemberId: true, amount: true } }),
+      client.groupExpense.findMany({ where: { businessId, date: inPeriod }, include: { splits: true } }),
+      client.groupMeal.findMany({ where: { businessId, date: inPeriod } }),
+      client.groupSettings.findUnique({ where: { businessId } }),
     ]);
-    const contributorIds = new Set(contributions.map((c) => c.groupMemberId));
-    const members = allMembers.filter((m) => m.status === 'ACTIVE');
-    const formerMembers = allMembers.filter((m) => m.status !== 'ACTIVE' && contributorIds.has(m.id));
-
-    const totalsByMember = new Map<string, { deposited: Prisma.Decimal; returned: Prisma.Decimal }>();
-    for (const c of contributions) {
-      const amount = new Prisma.Decimal(c.amount);
-      const totals = totalsByMember.get(c.groupMemberId) ?? { deposited: new Prisma.Decimal(0), returned: new Prisma.Decimal(0) };
-      if (amount.isNegative()) {
-        totals.returned = totals.returned.plus(amount.abs());
-      } else {
-        totals.deposited = totals.deposited.plus(amount);
-      }
-      totalsByMember.set(c.groupMemberId, totals);
-    }
-    const totalExpense = new Prisma.Decimal(expenseAgg._sum.amount ?? 0);
-    const memberCount = members.length;
-
-    if (memberCount === 0) {
-      return { periodStart, periodEnd, totalExpense: totalExpense.toFixed(2), memberCount: 0, perMemberShare: '0.00', members: [] };
-    }
-
-    // Equal split, floored to whole paisa per member -- the last member (by
-    // join order) absorbs whatever paisa remainder is left over, so shares
-    // always sum EXACTLY to totalExpense (see the GroupSettlement.
-    // perMemberShare schema comment).
-    const totalCents = totalExpense.times(100);
-    const baseCents = totalCents.dividedBy(memberCount).floor();
-    const remainderCents = totalCents.minus(baseCents.times(memberCount));
-    const baseShare = baseCents.dividedBy(100);
-    const lastShare = baseCents.plus(remainderCents).dividedBy(100);
-
-    const zero = new Prisma.Decimal(0);
-    const rows: SettlementMemberRow[] = [...members, ...formerMembers].map((member, index) => {
-      const totals = totalsByMember.get(member.id) ?? { deposited: new Prisma.Decimal(0), returned: new Prisma.Decimal(0) };
-      const contributed = totals.deposited.minus(totals.returned);
-      const share = index >= memberCount ? zero : index === memberCount - 1 ? lastShare : baseShare;
-      const balance = contributed.minus(share);
-      return {
-        groupMemberId: member.id,
-        name: member.name,
-        grossDeposited: totals.deposited.toFixed(2),
-        returned: totals.returned.toFixed(2),
-        contributed: contributed.toFixed(2),
-        share: share.toFixed(2),
-        balance: balance.toFixed(2),
-      };
+    const units = {
+      breakfast: Number(settings?.breakfastUnits ?? DEFAULT_SETTINGS.breakfastUnits),
+      lunch: Number(settings?.lunchUnits ?? DEFAULT_SETTINGS.lunchUnits),
+      dinner: Number(settings?.dinnerUnits ?? DEFAULT_SETTINGS.dinnerUnits),
+    };
+    const result = settleGroup({
+      start: dayKey(periodStart),
+      end: dayKey(periodEnd),
+      members: members.map((m) => ({ id: m.id, name: m.name, active: m.status === 'ACTIVE', joinedOn: m.joinedOn ? dayKey(m.joinedOn) : null, leftOn: m.leftOn ? dayKey(m.leftOn) : null, shareUnits: Number(m.shareUnits) })),
+      contributions: contributions.map((c) => ({ memberId: c.groupMemberId, amount: Number(c.amount) })),
+      expenses: expenses.map((e) => ({
+        amount: Number(e.amount),
+        date: dayKey(e.date),
+        paidFromPocket: e.paidFrom === 'MEMBER',
+        paidByMemberId: e.paidByMemberId,
+        split: e.split,
+        splits: e.splits.map((sp) => ({ memberId: sp.groupMemberId, units: sp.units === null ? null : Number(sp.units), amount: sp.amount === null ? null : Number(sp.amount) })),
+      })),
+      meals: meals.map((m) => ({ memberId: m.groupMemberId, units: m.breakfast * units.breakfast + m.lunch * units.lunch + m.dinner * units.dinner + Number(m.guests) })),
+      mealsOn: settings?.mealsOn ?? false,
     });
-
+    const money = (value: number) => value.toFixed(2);
     return {
       periodStart,
       periodEnd,
-      totalExpense: totalExpense.toFixed(2),
-      memberCount,
-      perMemberShare: baseShare.toFixed(2),
-      members: rows,
+      totalExpense: money(result.totalExpense),
+      memberCount: result.memberCount,
+      perMemberShare: money(result.perMemberShare),
+      mealExpense: money(result.mealExpense),
+      mealUnits: money(result.mealUnits),
+      mealRate: result.mealRate.toFixed(4),
+      cashInHand: money(result.cashInHand),
+      members: result.rows.map((row) => ({
+        groupMemberId: row.memberId,
+        name: row.name,
+        sharing: row.sharing,
+        grossDeposited: money(row.grossDeposited),
+        returned: money(row.returned),
+        contributed: money(row.contributed),
+        pocketPaid: money(row.pocketPaid),
+        mealUnits: money(row.mealUnits),
+        mealCost: money(row.mealCost),
+        otherShare: money(row.otherShare),
+        share: money(row.share),
+        balance: money(row.balance),
+      })),
     };
   }
 
-  // No from/to given -- defaults to the current Dhaka calendar month (UTC's
-  // is still last month for the first six hours of every month here), as
-  // date-only values like the stored expense and contribution dates.
-  private resolvePeriod(from?: string, to?: string): { periodStart: Date; periodEnd: Date } {
+  // No from/to given -- this group month: from its start day (the 1st
+  // unless the settings say otherwise) in the current Dhaka calendar, to the
+  // day before the next one. Date-only values, like the stored dates.
+  private async resolvePeriod(businessId: string, from?: string, to?: string): Promise<{ periodStart: Date; periodEnd: Date }> {
     if (from && to) {
       return { periodStart: new Date(from), periodEnd: new Date(to) };
     }
-    const { start, end } = dhakaMonthRange();
-    return { periodStart: start, periodEnd: new Date(end.getTime() - DAY_MS) };
+    const settings = await this.prisma.groupSettings.findUnique({ where: { businessId }, select: { monthStartDay: true } });
+    const startDay = settings?.monthStartDay ?? 1;
+    const today = dhakaToday();
+    const month = today.day >= startDay ? today.month - 1 : today.month - 2;
+    const periodStart = new Date(Date.UTC(today.year, month, startDay));
+    const periodEnd = new Date(Date.UTC(today.year, month + 1, startDay) - DAY_MS);
+    return { periodStart, periodEnd };
   }
 
   private async requireMember(businessId: string, id: string) {

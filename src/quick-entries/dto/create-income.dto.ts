@@ -1,4 +1,4 @@
-import { IsDateString, IsNotEmpty, IsOptional, IsString } from 'class-validator';
+import { IsDateString, IsNotEmpty, IsOptional, IsString, IsUUID } from 'class-validator';
 import { IsMoney } from '../../common/dto.js';
 
 export class CreateIncomeDto {
@@ -33,4 +33,10 @@ export class CreateIncomeDto {
   @IsOptional()
   @IsString()
   note?: string;
+
+  // A loan's profit or interest: the bank or person it was received from. It
+  // shows on their loan statement without moving the loan balance.
+  @IsOptional()
+  @IsUUID()
+  contactId?: string;
 }

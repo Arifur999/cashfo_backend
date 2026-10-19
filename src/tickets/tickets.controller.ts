@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Header, Param, ParseUUIDPipe, Patch, Post, Query, Req, StreamableFile, UseGuards } from '@nestjs/common';
 import type { Request } from 'express';
 import { AdminRole } from '../common/roles.js';
 import { CurrentAdmin } from '../admin-auth/decorators/current-admin.decorator.js';
@@ -28,6 +28,15 @@ export class TicketsController {
   @Get()
   list(@Query() query: ListTicketsQueryDto) {
     return this.ticketsService.list(query);
+  }
+
+  // A customer's screenshot. Never cached: it may show their money.
+  @Get('attachments/:attachmentId')
+  @Header('Cache-Control', 'private, no-store')
+  @Header('X-Content-Type-Options', 'nosniff')
+  async attachment(@Param('attachmentId', ParseUUIDPipe) attachmentId: string) {
+    const file = await this.ticketsService.attachment(attachmentId);
+    return new StreamableFile(file.data, { type: file.mimeType, disposition: 'inline' });
   }
 
   @Get(':id')

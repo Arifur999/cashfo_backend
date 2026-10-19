@@ -1,7 +1,11 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { Prisma, TicketStatus } from '@prisma/client';
 import { ADMIN_USER_WHERE, END_USER_WHERE } from '../common/roles.js';
+import { MailService } from '../mail/mail.service.js';
+import { renderSupportReplyEmail } from '../mail/templates/support-reply-email.js';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { pushNotification } from '../user-notifications/push.js';
 import { AddMessageDto } from './dto/add-message.dto.js';
 import { AssignTicketDto } from './dto/assign-ticket.dto.js';
 import { CreateTicketDto } from './dto/create-ticket.dto.js';
@@ -25,7 +29,13 @@ const isStatusGroup = (status: TicketStatusFilter): status is keyof typeof TICKE
 
 @Injectable()
 export class TicketsService {
-  constructor(private readonly prisma: PrismaService) {}
+  private readonly logger = new Logger(TicketsService.name);
+
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly mailService: MailService,
+    private readonly configService: ConfigService,
+  ) {}
 
   async list(query: ListTicketsQueryDto) {
     const page = query.page ?? 1;
@@ -77,7 +87,8 @@ export class TicketsService {
   async getById(id: string) {
     const ticket = await this.prisma.supportTicket.findUnique({
       where: { id },
-      include: { messages: { orderBy: { createdAt: 'asc' } } },
+      // A screenshot by its id and type; its bytes come from attachment().
+      include: { messages: { orderBy: { createdAt: 'asc' }, include: { attachment: { select: { id: true, mimeType: true, size: true } } } } },
     });
     if (!ticket) {
       throw new NotFoundException('Ticket not found');
@@ -171,7 +182,32 @@ export class TicketsService {
       await this.prisma.supportTicket.update({ where: { id }, data: { status: TicketStatus.IN_PROGRESS } });
     }
 
+    await this.tellCustomer(ticket, message.id, dto.message);
     return message;
+  }
+
+  // A screenshot a customer attached (Settings > Help).
+  async attachment(id: string) {
+    const attachment = await this.prisma.ticketAttachment.findUnique({ where: { id }, select: { mimeType: true, data: true } });
+    if (!attachment) {
+      throw new NotFoundException('Attachment not found');
+    }
+    return attachment;
+  }
+
+  // The customer hears about a reply in the app's bell, and by email when
+  // email sending is set up. A legacy PlatformUser requester has no app to
+  // tell; a failed email is logged and never fails the reply.
+  private async tellCustomer(ticket: { id: string; subject: string; platformUserId: string }, messageId: string, reply: string) {
+    const customer = await this.prisma.user.findFirst({ where: { id: ticket.platformUserId, ...END_USER_WHERE }, select: { id: true, name: true, email: true } });
+    if (!customer) return;
+    await pushNotification(this.prisma, customer.id, { key: `support:${messageId}`, type: 'SUPPORT_REPLY', businessId: null, data: { ticketId: ticket.id, subject: ticket.subject } });
+    if (!this.configService.get<string>('RESEND_API_KEY')) return;
+    const appUrl = this.configService.get<string>('USER_FRONTEND_URL') ?? 'http://localhost:3000';
+    const link = `${appUrl}/settings/help?message=${ticket.id}`;
+    this.mailService.sendEmail({ to: customer.email, ...renderSupportReplyEmail(customer.name, ticket.subject, reply, link) }).catch((error: unknown) => {
+      this.logger.warn(`Support reply email for ticket ${ticket.id} failed: ${error instanceof Error ? error.message : String(error)}`);
+    });
   }
 
   async assign(id: string, dto: AssignTicketDto) {

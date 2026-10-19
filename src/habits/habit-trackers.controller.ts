@@ -7,6 +7,7 @@ import { CreateCustomTrackerDto } from './dto/create-custom-tracker.dto.js';
 import { CreateHabitTrackerDto } from './dto/create-habit-tracker.dto.js';
 import { CreateRamadanTrackerDto } from './dto/create-ramadan-tracker.dto.js';
 import { SetHabitTrackerCheckDto } from './dto/set-habit-tracker-check.dto.js';
+import { SetRamadanParasDto } from './dto/set-ramadan-paras.dto.js';
 import { HabitTrackersService } from './habit-trackers.service.js';
 
 // Month-sheet trackers (Namaz's "Create Month" page, Ramadan's "Create
@@ -48,6 +49,11 @@ export class HabitTrackersController {
   @Put(':id/check')
   setCheck(@CurrentUser() user: RequestUser, @Param('id', ParseUUIDPipe) id: string, @Body() dto: SetHabitTrackerCheckDto) {
     return this.habitTrackersService.setCheck(user.id, id, dto);
+  }
+
+  @Put(':id/paras')
+  setParas(@CurrentUser() user: RequestUser, @Param('id', ParseUUIDPipe) id: string, @Body() dto: SetRamadanParasDto) {
+    return this.habitTrackersService.setParas(user.id, id, dto);
   }
 
   @Post(':id/items')

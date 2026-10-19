@@ -363,8 +363,22 @@ model TicketMessage {
   message       String        @db.Text
   attachmentUrl String?
   createdAt     DateTime      @default(now())
+  attachment    TicketAttachment?
 
   @@index([ticketId, createdAt])
+}
+
+// A screenshot a customer attached to a message from Settings > Help. Kept
+// here rather than on the image host: it may show their money, so only the
+// support team and the customer can open it.
+model TicketAttachment {
+  id        String        @id @default(uuid())
+  messageId String        @unique
+  message   TicketMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  mimeType  String
+  size      Int
+  data      Bytes
+  createdAt DateTime      @default(now())
 }
 
 enum SenderType {
@@ -644,6 +658,16 @@ model User {
   avatarUrl           String?
   // No password column: the hash lives on this user's "credential"
   // AuthAccount row, where better-auth reads it (src/auth/credential-account.ts).
+  // When the password was last set (CredentialsService.set); null before
+  // this was recorded, or for a Google-only account.
+  passwordChangedAt   DateTime?
+  // Settings > App > Reminders: which in-app reminders the bell's feed
+  // gets (UserNotificationsService), and when its checks last ran -- they
+  // run when the feed is read, at most every half hour.
+  remindBudget        Boolean              @default(true)
+  remindLoans         Boolean              @default(true)
+  remindSavings       Boolean              @default(false)
+  remindersCheckedAt  DateTime?
   // Shareable short code for this user's own referral link ("Referral
   // Program" menu) -- nullable because pre-existing users only get one
   // lazily backfilled the first time they open that page (see
@@ -696,6 +720,7 @@ model User {
   auditLogs           AuditLog[]
   authSessions        AuthSession[]
   authAccounts        AuthAccount[]
+  notifications       UserNotification[]
 
   // No separate @@index([email]) -- @unique above already creates a unique
   // index covering lookups by email (same reasoning as PlatformUser).
@@ -837,7 +862,15 @@ model VaultEntry {
   holderName         String?
   usernameOrEmail    String?
   passwordCiphertext String
+  // When the password itself last changed (no other field moves it), so the
+  // security checkup's "older than a year" is the password's own age.
+  passwordChangedAt  DateTime           @default(now())
   notes              String?
+  // Starred, for the Favorites view.
+  isFavorite         Boolean            @default(false)
+  // "It's fine" on the security checkup's old-password warning: hidden until
+  // its password changes again.
+  checkupDismissedAt DateTime?
   createdAt          DateTime           @default(now())
   updatedAt          DateTime           @updatedAt
 
@@ -847,9 +880,14 @@ model VaultEntry {
 enum VaultEntryCategory {
   SOCIAL
   BANK
+  // bKash, Nagad, Rocket and the like.
+  MOBILE_BANKING
   EMAIL
   SHOPPING
   WORK
+  WIFI
+  // e-TIN, NID and other government portals.
+  GOVERNMENT
   OTHER
 }
 
@@ -960,6 +998,7 @@ model HabitMonthTracker {
   items     String[]
   createdAt DateTime          @default(now())
   checks    HabitMonthCheck[]
+  paraLogs  RamadanParaLog[]
 
   // month/year are NULL for every Others tracker, and Postgres never treats
   // two NULLs as equal, so this constraint is a no-op for Others (any number
@@ -967,6 +1006,19 @@ model HabitMonthTracker {
   // Namaz sheet per month" / "one Ramadan per year" as before.
   @@unique([userId, category, month, year])
   @@index([userId, category])
+}
+
+// Ramadan: how many paras of the Quran were read on one day of the sheet. A
+// day with none has no row; the Quran khatam card sums them.
+model RamadanParaLog {
+  id        String            @id @default(uuid())
+  trackerId String
+  tracker   HabitMonthTracker @relation(fields: [trackerId], references: [id], onDelete: Cascade)
+  day       Int // 1-30
+  paras     Int // 1-30
+  updatedAt DateTime          @updatedAt
+
+  @@unique([trackerId, day])
 }
 
 // One row per TICKED cell only -- an unticked cell simply has no row, so
@@ -993,13 +1045,29 @@ enum PrayerStatus {
   MISSED
 }
 
-// One person's Namaz settings: the day qaza counting starts from.
+enum AsrSchool {
+  HANAFI
+  SHAFII
+}
+
+// One person's Namaz settings: where and how prayer, Sehri and Iftar times
+// are worked out (the app computes them; nothing here is a time), how the
+// Hijri date is shifted to the moon as seen locally, and the day qaza
+// counting starts from.
 model PrayerSettings {
-  id        String    @id @default(uuid())
-  userId    String    @unique
-  user      User      @relation(fields: [userId], references: [id])
-  qazaSince DateTime? @db.Date
-  updatedAt DateTime  @updatedAt
+  id          String    @id @default(uuid())
+  userId      String    @unique
+  user        User      @relation(fields: [userId], references: [id])
+  city        String    @default("Dhaka")
+  latitude    Float     @default(23.8103)
+  longitude   Float     @default(90.4125)
+  // An adhan calculation method name ("Karachi", "MuslimWorldLeague", ...).
+  method      String    @default("Karachi")
+  asrSchool   AsrSchool @default(HANAFI)
+  // -1, 0 or 1: the Hijri date runs a day earlier or later than calculated.
+  hijriAdjust Int       @default(0)
+  qazaSince   DateTime? @db.Date
+  updatedAt   DateTime  @updatedAt
 }
 
 // Qaza prayers made up ("I prayed a qaza"): which prayer, how many, and when.
@@ -1042,8 +1110,39 @@ model Book {
   finishedAt DateTime?
   createdAt  DateTime   @default(now())
   updatedAt  DateTime   @updatedAt
+  logs       BookLog[]
+  notes      BookNote[]
 
   @@index([userId, status])
+}
+
+// One (Asia/Dhaka) day's reading of a book: how far its current page went up
+// that day. BooksService.update writes it whenever pagesRead changes, so a
+// correction the same day takes the pages back off; a day that ends at 0 has
+// no row. It gives the reading streak and the pages read each day.
+model BookLog {
+  id     String   @id @default(uuid())
+  bookId String
+  book   Book     @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  // The book's owner again, so a person's reading days come from one index.
+  userId String
+  date   DateTime @db.Date
+  pages  Int
+
+  @@unique([bookId, date])
+  @@index([userId, date])
+}
+
+// A note, or a line the reader liked, with the page it came from.
+model BookNote {
+  id        String   @id @default(uuid())
+  bookId    String
+  book      Book     @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  page      Int?
+  text      String
+  createdAt DateTime @default(now())
+
+  @@index([bookId, createdAt])
 }
 
 // "Finish N books this year" -- one target per user per (Asia/Dhaka) year.
@@ -1253,6 +1352,8 @@ model Business {
   groupSettlements            GroupSettlement[]
   groupExpenseCategoryOptions GroupExpenseCategoryOption[]
   groupMonthlyBudgets         GroupMonthlyBudget[]
+  groupSettings               GroupSettings?
+  groupMeals                  GroupMeal[]
 
   @@index([ownerId])
 }
@@ -1379,6 +1480,9 @@ enum ContactType {
   SUPPLIER
   BOTH
   RELATIVE
+  // A bank or an NGO (microfinance) one borrows from or lends to.
+  BANK
+  NGO
   OTHER
 }
 
@@ -1433,6 +1537,10 @@ model Transaction {
   // from the original to find its reversal via a Prisma include (query by
   // reversalOfId directly on the rare occasion it's needed).
   reversalOfId           String?
+  // Set on an entry made by Edit (decision D2): the original it corrects,
+  // which was voided 'Corrected' in the same request. Plain field, like
+  // reversalOfId; at most one correction per original.
+  correctedFromId        String?            @unique
   // Prompt 9: when set on a SALE/PURCHASE, the date it's due -- drives
   // aging/overdue. When set on a PAYMENT, which specific outstanding
   // SALE/PURCHASE this payment targets -- a payment with this left unset
@@ -1801,15 +1909,103 @@ model GroupMember {
   phone         String?
   photoUrl      String?
   status        GroupMemberStatus       @default(ACTIVE)
+  // Their share of costs split "by shares" (a brother with a family of
+  // three takes 3).
+  shareUnits    Decimal                 @default(1) @db.Decimal(6, 2)
+  // When they joined and left: they share only the costs of the days in
+  // between. Null joinedOn = from the start; null leftOn = still here.
+  joinedOn      DateTime?               @db.Date
+  leftOn        DateTime?               @db.Date
   createdAt     DateTime                @default(now())
   updatedAt     DateTime                @updatedAt
   contributions GroupContribution[]
-  // Purely informational reverse relation for GroupExpense.paidByMemberId
-  // (who physically went to the market) -- never affects settlement math.
+  // GroupExpense.paidByMemberId: who paid it -- out of their own pocket
+  // when the expense says so (paidFrom MEMBER), which credits them.
   expensesPaid  GroupExpense[]
   settlements   GroupSettlementMember[]
+  splits        GroupExpenseSplit[]
+  meals         GroupMeal[]
 
   @@index([businessId, status])
+}
+
+// A group's own settings (one row, made when first saved): a family or a
+// mess, the day its month starts, who holds the cash, and meal counting
+// with what each meal counts for.
+model GroupSettings {
+  id                 String    @id @default(uuid())
+  businessId         String    @unique
+  business           Business  @relation(fields: [businessId], references: [id])
+  kind               GroupKind @default(FAMILY)
+  monthStartDay      Int       @default(1) // 1-28
+  cashHolderMemberId String?
+  mealsOn            Boolean   @default(false)
+  breakfastUnits     Decimal   @default(0.5) @db.Decimal(4, 2)
+  lunchUnits         Decimal   @default(1) @db.Decimal(4, 2)
+  dinnerUnits        Decimal   @default(1) @db.Decimal(4, 2)
+  updatedAt          DateTime  @updatedAt
+}
+
+enum GroupKind {
+  FAMILY
+  MESS
+}
+
+// How an expense is shared: equally (everyone that day, or the members it
+// names), by shares, by meals (pooled into one meal rate), or by exact
+// amounts.
+enum GroupSplit {
+  EQUAL
+  SHARES
+  MEALS
+  EXACT
+}
+
+enum GroupPaidFrom {
+  FUND
+  MEMBER
+}
+
+// A deposit, money given back, a settling-up payment between members, or a
+// balance carried into the next month on close. Returns stay negative
+// amounts as before; the kind says which.
+enum GroupContributionKind {
+  DEPOSIT
+  RETURN
+  SETTLE
+  CARRY
+}
+
+// The members an expense names, with their units (by shares) or amounts
+// (exact). An expense with none is shared by everyone in the group that day.
+model GroupExpenseSplit {
+  id            String       @id @default(uuid())
+  expenseId     String
+  expense       GroupExpense @relation(fields: [expenseId], references: [id], onDelete: Cascade)
+  groupMemberId String
+  groupMember   GroupMember  @relation(fields: [groupMemberId], references: [id])
+  units         Decimal?     @db.Decimal(8, 2)
+  amount        Decimal?     @db.Decimal(14, 2)
+
+  @@unique([expenseId, groupMemberId])
+}
+
+// One member's meals on one day: how many of each, and guests' meals.
+model GroupMeal {
+  id            String      @id @default(uuid())
+  businessId    String
+  business      Business    @relation(fields: [businessId], references: [id])
+  groupMemberId String
+  groupMember   GroupMember @relation(fields: [groupMemberId], references: [id])
+  date          DateTime    @db.Date
+  breakfast     Int         @default(0)
+  lunch         Int         @default(0)
+  dinner        Int         @default(0)
+  guests        Decimal     @default(0) @db.Decimal(4, 1)
+  updatedAt     DateTime    @updatedAt
+
+  @@unique([groupMemberId, date])
+  @@index([businessId, date])
 }
 
 enum GroupMemberStatus {
@@ -1823,10 +2019,11 @@ model GroupContribution {
   business      Business    @relation(fields: [businessId], references: [id])
   groupMemberId String
   groupMember   GroupMember @relation(fields: [groupMemberId], references: [id])
-  amount        Decimal     @db.Decimal(14, 2)
-  date          DateTime    @db.Date
+  amount        Decimal               @db.Decimal(14, 2)
+  kind          GroupContributionKind @default(DEPOSIT)
+  date          DateTime              @db.Date
   note          String?
-  createdAt     DateTime    @default(now())
+  createdAt     DateTime              @default(now())
 
   @@index([businessId, date])
   @@index([groupMemberId])
@@ -1846,8 +2043,13 @@ model GroupExpense {
   category       String       @default("Other")
   description    String?
   paidByMemberId String?
-  paidByMember   GroupMember? @relation(fields: [paidByMemberId], references: [id])
-  createdAt      DateTime     @default(now())
+  paidByMember   GroupMember?        @relation(fields: [paidByMemberId], references: [id])
+  // FUND: out of the group's cash. MEMBER: out of paidByMember's pocket,
+  // credited to them.
+  paidFrom       GroupPaidFrom       @default(FUND)
+  split          GroupSplit          @default(EQUAL)
+  splits         GroupExpenseSplit[]
+  createdAt      DateTime            @default(now())
 
   @@index([businessId, date])
 }
@@ -1859,15 +2061,17 @@ model GroupExpense {
 // Other) are seeded once per business the first time its category list is
 // ever requested, editable/deletable after that like any other row.
 model GroupExpenseCategoryOption {
-  id           String   @id @default(uuid())
+  id           String     @id @default(uuid())
   businessId   String
-  business     Business @relation(fields: [businessId], references: [id])
+  business     Business   @relation(fields: [businessId], references: [id])
   name         String
   icon         String?
   color        String
-  displayOrder Int      @default(0)
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  displayOrder Int        @default(0)
+  // How a new expense in this category is shared, to start with.
+  defaultSplit GroupSplit @default(EQUAL)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
 
   @@unique([businessId, name])
 }
@@ -1909,6 +2113,13 @@ model GroupSettlement {
   // GroupSettlementMember.share, since one member absorbs the rounding
   // remainder so shares always sum exactly to totalExpense.
   perMemberShare Decimal                 @db.Decimal(14, 2)
+  // Meals at the time it closed, and the cash then in hand.
+  mealExpense    Decimal                 @default(0) @db.Decimal(14, 2)
+  mealUnits      Decimal                 @default(0) @db.Decimal(10, 2)
+  mealRate       Decimal                 @default(0) @db.Decimal(14, 4)
+  cashInHand     Decimal                 @default(0) @db.Decimal(14, 2)
+  // Each balance was carried into the next month as a CARRY contribution.
+  carriedForward Boolean                 @default(false)
   closedBy       String
   closedAt       DateTime                @default(now())
   members        GroupSettlementMember[]
@@ -1923,10 +2134,43 @@ model GroupSettlementMember {
   groupMemberId String
   groupMember   GroupMember     @relation(fields: [groupMemberId], references: [id])
   contributed   Decimal         @db.Decimal(14, 2)
+  pocketPaid    Decimal         @default(0) @db.Decimal(14, 2)
+  mealUnits     Decimal         @default(0) @db.Decimal(10, 2)
+  mealCost      Decimal         @default(0) @db.Decimal(14, 2)
   share         Decimal         @db.Decimal(14, 2)
   // contributed - share: positive = this member should get money back,
   // negative = this member still owes the pool.
   balance       Decimal         @db.Decimal(14, 2)
 
   @@index([settlementId])
+}
+
+// The bell's feed in the customer app. Written by the reminder checks
+// (budget, loan due dates, savings check-ins) and by announcements; `key`
+// names what a row is about (e.g. "budget:<categoryId>:2026-10:90"), so a
+// check that runs again adds nothing new. The text is built from `data`
+// in the reader's language, never stored.
+model UserNotification {
+  id         String               @id @default(uuid())
+  userId     String
+  user       User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // The workspace it is about; null for an announcement.
+  businessId String?
+  type       UserNotificationType
+  key        String
+  data       Json
+  readAt     DateTime?
+  createdAt  DateTime             @default(now())
+
+  @@unique([userId, key])
+  @@index([userId, createdAt])
+}
+
+enum UserNotificationType {
+  BUDGET
+  LOAN_DUE
+  SAVINGS
+  ANNOUNCEMENT
+  // The support team answered one of the customer's messages.
+  SUPPORT_REPLY
 }

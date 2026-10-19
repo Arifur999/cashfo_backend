@@ -5,6 +5,7 @@ import { SetYearlyGoalDto } from '../common/yearly-goal.js';
 import type { RequestUser } from '../user-auth/interfaces/request-user.interface.js';
 import { BooksService } from './books.service.js';
 import { CreateBookDto } from './dto/create-book.dto.js';
+import { CreateBookNoteDto } from './dto/create-book-note.dto.js';
 import { UpdateBookDto } from './dto/update-book.dto.js';
 
 // Habit Tracker -> Book. User-scoped like HabitsController (no :businessId).
@@ -38,6 +39,16 @@ export class BooksController {
   @Patch(':id')
   update(@CurrentUser() user: RequestUser, @Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateBookDto) {
     return this.booksService.update(user.id, id, dto);
+  }
+
+  @Post(':id/notes')
+  addNote(@CurrentUser() user: RequestUser, @Param('id', ParseUUIDPipe) id: string, @Body() dto: CreateBookNoteDto) {
+    return this.booksService.addNote(user.id, id, dto);
+  }
+
+  @Delete(':id/notes/:noteId')
+  removeNote(@CurrentUser() user: RequestUser, @Param('id', ParseUUIDPipe) id: string, @Param('noteId', ParseUUIDPipe) noteId: string) {
+    return this.booksService.removeNote(user.id, id, noteId);
   }
 
   @Delete(':id')

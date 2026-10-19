@@ -268,7 +268,18 @@ export class TransactionsService {
       throw new NotFoundException('Transaction not found');
     }
     const [withFlag] = await this.withVoidable([transaction]);
-    return withFlag;
+    // An Edit's two ends: the original this entry corrected, and the entry
+    // that corrected this one -- each with its amount, for History.
+    const linked = await this.prisma.transaction.findMany({
+      where: { businessId, OR: [{ correctedFromId: transaction.id }, ...(transaction.correctedFromId ? [{ id: transaction.correctedFromId }] : [])] },
+      select: { id: true, correctedFromId: true, entries: { where: { entryType: EntryType.DEBIT }, select: { amount: true } } },
+    });
+    const summary = (row: (typeof linked)[number] | undefined) => (row ? { id: row.id, amount: row.entries.reduce((sum, entry) => sum.plus(entry.amount), new Prisma.Decimal(0)).toFixed(2) } : null);
+    return {
+      ...withFlag,
+      correctedFrom: summary(linked.find((row) => row.id === transaction.correctedFromId)),
+      correctedBy: summary(linked.find((row) => row.correctedFromId === transaction.id)),
+    };
   }
 
   // `voidable` on every transaction the API returns: whether voidTransaction()

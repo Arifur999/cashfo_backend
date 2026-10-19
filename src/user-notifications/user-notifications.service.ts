@@ -1,0 +1,128 @@
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
+import { AnnouncementsService } from '../announcements/announcements.service.js';
+import { BudgetsService } from '../budgets/budgets.service.js';
+import { dhakaDateOnly, dhakaToday } from '../common/dhaka.js';
+import { PrismaService } from '../prisma/prisma.service.js';
+import { ReceivablesPayablesService } from '../receivables-payables/receivables-payables.service.js';
+import { SavingsGoalsService } from '../savings-goals/savings-goals.service.js';
+import { UpdateReminderPreferencesDto } from './dto/update-reminder-preferences.dto.js';
+import { announcementReminders, budgetReminders, loanReminders, savingsReminders, type ReminderDraft } from './reminders.js';
+
+// The checks run when the feed is read, at most this often per user.
+const CHECK_EVERY_MS = 30 * 60 * 1000;
+// Loan payments are reminded about a day ahead (Settings > Reminders), and
+// on the day itself if the feed wasn't read the day before.
+const LOAN_DAYS = 1;
+const FEED_SIZE = 30;
+// Older rows are cleared when the checks run.
+const KEEP_MS = 90 * 24 * 60 * 60 * 1000;
+
+const FEED_SELECT = { id: true, businessId: true, type: true, data: true, readAt: true, createdAt: true } as const;
+
+// The bell's feed in the customer app. There is no scheduler: reading the
+// feed runs the reminder checks (budget, loan due dates, savings check-ins,
+// announcements) when they are due, and each reminder's key keeps it to
+// one row however often they run.
+@Injectable()
+export class UserNotificationsService {
+  private readonly logger = new Logger(UserNotificationsService.name);
+
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly budgetsService: BudgetsService,
+    private readonly receivablesPayablesService: ReceivablesPayablesService,
+    private readonly savingsGoalsService: SavingsGoalsService,
+    private readonly announcementsService: AnnouncementsService,
+  ) {}
+
+  async feed(userId: string) {
+    await this.refresh(userId);
+    const [data, unreadCount] = await Promise.all([
+      this.prisma.userNotification.findMany({ where: { userId }, orderBy: { createdAt: 'desc' }, take: FEED_SIZE, select: FEED_SELECT }),
+      this.prisma.userNotification.count({ where: { userId, readAt: null } }),
+    ]);
+    return { data, unreadCount };
+  }
+
+  async markRead(userId: string, id: string) {
+    const row = await this.prisma.userNotification.findFirst({ where: { id, userId }, select: { id: true, readAt: true } });
+    if (!row) throw new NotFoundException('Notification not found');
+    if (!row.readAt) await this.prisma.userNotification.update({ where: { id }, data: { readAt: new Date() } });
+    return { success: true };
+  }
+
+  async markAllRead(userId: string) {
+    const { count } = await this.prisma.userNotification.updateMany({ where: { userId, readAt: null }, data: { readAt: new Date() } });
+    return { count };
+  }
+
+  async preferences(userId: string) {
+    const user = await this.prisma.user.findUniqueOrThrow({ where: { id: userId }, select: { remindBudget: true, remindLoans: true, remindSavings: true } });
+    return { budget: user.remindBudget, loans: user.remindLoans, savings: user.remindSavings };
+  }
+
+  // A reminder switched on is checked the next time the feed is read.
+  async setPreferences(userId: string, dto: UpdateReminderPreferencesDto) {
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { remindBudget: dto.budget, remindLoans: dto.loans, remindSavings: dto.savings, remindersCheckedAt: null },
+    });
+    return this.preferences(userId);
+  }
+
+  // Runs the checks if the last run is older than CHECK_EVERY_MS. The run is
+  // claimed first, so two tabs opening at once don't both check; a failed
+  // check never costs the customer their feed and is tried again later.
+  private async refresh(userId: string) {
+    const now = new Date();
+    const claimed = await this.prisma.user.updateMany({
+      where: { id: userId, OR: [{ remindersCheckedAt: null }, { remindersCheckedAt: { lt: new Date(now.getTime() - CHECK_EVERY_MS) } }] },
+      data: { remindersCheckedAt: now },
+    });
+    if (claimed.count === 0) return;
+    try {
+      const drafts = await this.collect(userId, now);
+      if (drafts.length > 0) {
+        await this.prisma.userNotification.createMany({
+          data: drafts.map((draft) => ({ userId, key: draft.key, type: draft.type, businessId: draft.businessId, data: draft.data as Prisma.InputJsonObject, ...(draft.at && { createdAt: draft.at }) })),
+          skipDuplicates: true,
+        });
+      }
+      await this.prisma.userNotification.deleteMany({ where: { userId, createdAt: { lt: new Date(now.getTime() - KEEP_MS) } } });
+    } catch (error) {
+      this.logger.warn(`Reminder checks failed for user ${userId}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  // Every reminder due now across the customer's own workspaces (not group
+  // ones: they have no budget, loans or savings), as the switches allow.
+  private async collect(userId: string, now: Date): Promise<ReminderDraft[]> {
+    const [user, workspaces] = await Promise.all([
+      this.prisma.user.findUniqueOrThrow({ where: { id: userId }, select: { remindBudget: true, remindLoans: true, remindSavings: true } }),
+      this.prisma.business.findMany({ where: { ownerId: userId, deletedAt: null }, select: { id: true, type: true, planId: true } }),
+    ]);
+    const today = dhakaToday();
+    const month = `${today.year}-${String(today.month).padStart(2, '0')}`;
+    const drafts: ReminderDraft[] = [];
+
+    for (const workspace of workspaces.filter((w) => w.type !== 'GROUP')) {
+      if (user.remindBudget) {
+        const overview = await this.budgetsService.getOverview(workspace.id, {});
+        drafts.push(...budgetReminders(workspace.id, month, overview.categories));
+      }
+      if (user.remindLoans) {
+        drafts.push(...loanReminders(workspace.id, await this.receivablesPayablesService.dueWithin(workspace.id, LOAN_DAYS)));
+      }
+      if (user.remindSavings) {
+        const goals = await this.savingsGoalsService.list(workspace.id, 'ACTIVE');
+        drafts.push(...savingsReminders(workspace.id, month, dhakaDateOnly(now), goals));
+      }
+    }
+
+    // Announcements for everyone, or for a plan one of their workspaces is on.
+    const planIds = [...new Set(workspaces.flatMap((w) => (w.planId ? [w.planId] : [])))];
+    drafts.push(...announcementReminders(await this.announcementsService.forCustomer(planIds)));
+    return drafts;
+  }
+}

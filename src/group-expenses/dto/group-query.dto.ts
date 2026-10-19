@@ -37,3 +37,5 @@ export class ListGroupExpensesQueryDto extends DateRangeQueryDto {
 }
 
 export class SettlementQueryDto extends DateRangeQueryDto {}
+
+export class ListGroupMealsQueryDto extends DateRangeQueryDto {}

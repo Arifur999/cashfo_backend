@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Delete, Get, Param, Patch, Post, Query, UploadedFile, UseInterceptors } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, Get, Param, Patch, Post, Put, Query, UploadedFile, UseInterceptors } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { MemberRole } from '@prisma/client';
 import { CloseSettlementDto } from './dto/close-settlement.dto.js';
@@ -7,7 +7,9 @@ import { CreateGroupExpenseCategoryDto } from './dto/create-group-expense-catego
 import { CreateGroupExpenseDto } from './dto/create-group-expense.dto.js';
 import { CreateGroupMemberDto } from './dto/create-group-member.dto.js';
 import { CreateGroupMonthBudgetDto } from './dto/create-group-month-budget.dto.js';
-import { ListGroupContributionsQueryDto, ListGroupExpensesQueryDto, ListGroupMembersQueryDto, SettlementQueryDto } from './dto/group-query.dto.js';
+import { ListGroupContributionsQueryDto, ListGroupExpensesQueryDto, ListGroupMealsQueryDto, ListGroupMembersQueryDto, SettlementQueryDto } from './dto/group-query.dto.js';
+import { SetGroupMealsDto } from './dto/group-meal.dto.js';
+import { UpdateGroupSettingsDto } from './dto/group-settings.dto.js';
 import { UpdateGroupContributionDto } from './dto/update-group-contribution.dto.js';
 import { UpdateGroupExpenseCategoryDto } from './dto/update-group-expense-category.dto.js';
 import { UpdateGroupExpenseDto } from './dto/update-group-expense.dto.js';
@@ -184,6 +186,32 @@ export class GroupExpensesController {
   @Delete('month-budgets/:id')
   deleteMonthBudget(@Param('businessId') businessId: string, @Param('id') id: string) {
     return this.groupExpensesService.deleteMonthBudget(businessId, id);
+  }
+
+  // ---- Settings ----
+
+  @Get('settings')
+  getSettings(@Param('businessId') businessId: string) {
+    return this.groupExpensesService.getSettings(businessId);
+  }
+
+  @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
+  @Put('settings')
+  updateSettings(@Param('businessId') businessId: string, @Body() dto: UpdateGroupSettingsDto) {
+    return this.groupExpensesService.updateSettings(businessId, dto);
+  }
+
+  // ---- Meals ----
+
+  @Get('meals')
+  listMeals(@Param('businessId') businessId: string, @Query() query: ListGroupMealsQueryDto) {
+    return this.groupExpensesService.listMeals(businessId, query);
+  }
+
+  @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
+  @Put('meals')
+  setMeals(@Param('businessId') businessId: string, @Body() dto: SetGroupMealsDto) {
+    return this.groupExpensesService.setMeals(businessId, dto);
   }
 
   // ---- Settlement ----
