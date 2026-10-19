@@ -993,13 +993,29 @@ enum PrayerStatus {
   MISSED
 }
 
-// One person's Namaz settings: the day qaza counting starts from.
+enum AsrSchool {
+  HANAFI
+  SHAFII
+}
+
+// One person's Namaz settings: where and how prayer, Sehri and Iftar times
+// are worked out (the app computes them; nothing here is a time), how the
+// Hijri date is shifted to the moon as seen locally, and the day qaza
+// counting starts from.
 model PrayerSettings {
-  id        String    @id @default(uuid())
-  userId    String    @unique
-  user      User      @relation(fields: [userId], references: [id])
-  qazaSince DateTime? @db.Date
-  updatedAt DateTime  @updatedAt
+  id          String    @id @default(uuid())
+  userId      String    @unique
+  user        User      @relation(fields: [userId], references: [id])
+  city        String    @default("Dhaka")
+  latitude    Float     @default(23.8103)
+  longitude   Float     @default(90.4125)
+  // An adhan calculation method name ("Karachi", "MuslimWorldLeague", ...).
+  method      String    @default("Karachi")
+  asrSchool   AsrSchool @default(HANAFI)
+  // -1, 0 or 1: the Hijri date runs a day earlier or later than calculated.
+  hijriAdjust Int       @default(0)
+  qazaSince   DateTime? @db.Date
+  updatedAt   DateTime  @updatedAt
 }
 
 // Qaza prayers made up ("I prayed a qaza"): which prayer, how many, and when.
