@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { APP_FILTER, APP_GUARD } from '@nestjs/core';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
+import { AccountExportModule } from './account-export/account-export.module.js';
 import { AccountTemplatesModule } from './account-templates/account-templates.module.js';
 import { AccountsModule } from './accounts/accounts.module.js';
 import { AdminAuthModule } from './admin-auth/admin-auth.module.js';
@@ -119,6 +120,7 @@ import { UserNotificationsModule } from './user-notifications/user-notifications
     TodosModule,
     UserNotificationsModule,
     SupportModule,
+    AccountExportModule,
   ],
   controllers: [AppController],
   providers: [AppService, { provide: APP_GUARD, useClass: ThrottlerGuard }, { provide: APP_FILTER, useClass: GlobalExceptionFilter }],
