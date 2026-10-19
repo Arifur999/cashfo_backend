@@ -1,9 +1,11 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { Habit } from '@prisma/client';
+import { dhakaDateKey } from '../common/dhaka.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { CheckInHabitDto } from './dto/check-in-habit.dto.js';
 import { CreateHabitDto } from './dto/create-habit.dto.js';
 import { UpdateHabitDto } from './dto/update-habit.dto.js';
+import { currentStreak } from './streak.js';
 
 function toDateKey(date: Date): string {
   return date.toISOString().slice(0, 10);
@@ -99,7 +101,8 @@ export class HabitsService {
   // render a checklist without a second round trip per habit.
   async getToday(userId: string) {
     const habits = await this.listHabits(userId, false);
-    const todayKey = toDateKey(new Date());
+    // The Asia/Dhaka day, as the app dates every check-in.
+    const todayKey = dhakaDateKey(new Date());
     const today = new Date(todayKey);
     const logs = await this.prisma.habitLog.findMany({
       where: { habitId: { in: habits.map((h) => h.id) }, date: today },
@@ -107,7 +110,7 @@ export class HabitsService {
     const logByHabit = new Map(logs.map((l) => [l.habitId, l]));
     const todayDow = today.getUTCDay();
     const scheduledToday = habits.filter((h) => h.frequencyType !== 'WEEKLY_DAYS' || h.weeklyDays.includes(todayDow));
-    const streaks = await this.computeStreaks(habits.map((h) => h.id));
+    const streaks = await this.computeStreaks(habits);
 
     return scheduledToday.map((h) => ({
       ...h,
@@ -116,15 +119,16 @@ export class HabitsService {
     }));
   }
 
-  // Consecutive completed days counting backward from today -- if today
-  // isn't logged yet, counting starts from yesterday instead so an
-  // unbroken streak doesn't look reset to 0 before the day is even over.
-  private async computeStreaks(habitIds: string[]): Promise<Map<string, number>> {
+  // Each habit's current streak (see streak.ts): days for a daily or
+  // certain-days habit, skipping the days it isn't planned, and weeks for an
+  // N-times-a-week one. Today only counts once done, so an unbroken streak
+  // doesn't look reset before the day is over.
+  private async computeStreaks(habits: Habit[]): Promise<Map<string, number>> {
     const result = new Map<string, number>();
-    if (habitIds.length === 0) return result;
+    if (habits.length === 0) return result;
 
     const logs = await this.prisma.habitLog.findMany({
-      where: { habitId: { in: habitIds }, completed: true },
+      where: { habitId: { in: habits.map((h) => h.id) }, completed: true },
       select: { habitId: true, date: true },
     });
     const dateKeysByHabit = new Map<string, Set<string>>();
@@ -134,22 +138,9 @@ export class HabitsService {
       dateKeysByHabit.set(log.habitId, set);
     }
 
-    for (const habitId of habitIds) {
-      const dateKeys = dateKeysByHabit.get(habitId);
-      if (!dateKeys) {
-        result.set(habitId, 0);
-        continue;
-      }
-      const cursor = new Date(toDateKey(new Date()));
-      if (!dateKeys.has(toDateKey(cursor))) {
-        cursor.setUTCDate(cursor.getUTCDate() - 1);
-      }
-      let streak = 0;
-      while (dateKeys.has(toDateKey(cursor))) {
-        streak++;
-        cursor.setUTCDate(cursor.getUTCDate() - 1);
-      }
-      result.set(habitId, streak);
+    const today = dhakaDateKey(new Date());
+    for (const habit of habits) {
+      result.set(habit.id, currentStreak(habit, dateKeysByHabit.get(habit.id) ?? new Set(), today));
     }
     return result;
   }
@@ -175,9 +166,9 @@ export class HabitsService {
 
   async getStats(userId: string) {
     const habits = await this.listHabits(userId, false);
-    const streaks = await this.computeStreaks(habits.map((h) => h.id));
+    const streaks = await this.computeStreaks(habits);
 
-    const last30From = new Date(toDateKey(new Date()));
+    const last30From = new Date(dhakaDateKey(new Date()));
     last30From.setUTCDate(last30From.getUTCDate() - 29);
     const logs = await this.prisma.habitLog.findMany({
       where: { habitId: { in: habits.map((h) => h.id) }, date: { gte: last30From }, completed: true },
