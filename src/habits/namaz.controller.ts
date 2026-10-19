@@ -2,15 +2,26 @@ import { Body, Controller, Delete, Get, Param, ParseUUIDPipe, Post, Put, UseGuar
 import { CurrentUser } from '../user-auth/decorators/current-user.decorator.js';
 import { UserAuthGuard } from '../user-auth/guards/user-auth.guard.js';
 import type { RequestUser } from '../user-auth/interfaces/request-user.interface.js';
-import { LogQazaDto, SetQazaSinceDto } from './dto/qaza.dto.js';
+import { LogQazaDto, SetQazaSinceDto, UpdatePrayerSettingsDto } from './dto/qaza.dto.js';
 import { NamazService } from './namaz.service.js';
 
-// Namaz beyond the month sheets: the qaza still owed and the ones made up.
-// User-scoped like the habit trackers.
+// Namaz beyond the month sheets: the settings prayer times are worked out
+// from, the qaza still owed and the ones made up. User-scoped like the habit
+// trackers.
 @UseGuards(UserAuthGuard)
 @Controller('api/namaz')
 export class NamazController {
   constructor(private readonly namazService: NamazService) {}
+
+  @Get('settings')
+  settings(@CurrentUser() user: RequestUser) {
+    return this.namazService.settings(user.id);
+  }
+
+  @Put('settings')
+  updateSettings(@CurrentUser() user: RequestUser, @Body() dto: UpdatePrayerSettingsDto) {
+    return this.namazService.updateSettings(user.id, dto);
+  }
 
   @Get('qaza')
   qaza(@CurrentUser() user: RequestUser) {

@@ -1,7 +1,8 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import type { AsrSchool } from '@prisma/client';
 import { dhakaDateOnly } from '../common/dhaka.js';
 import { PrismaService } from '../prisma/prisma.service.js';
-import { LogQazaDto, SetQazaSinceDto } from './dto/qaza.dto.js';
+import { LogQazaDto, SetQazaSinceDto, UpdatePrayerSettingsDto } from './dto/qaza.dto.js';
 import { dayKey, missedSince, type PrayerCounts, zeroCounts } from './qaza.js';
 
 // How many logged qaza come back with the summary.
@@ -26,11 +27,37 @@ export interface QazaView {
   recent: QazaLogView[];
 }
 
+export interface PrayerSettingsView {
+  city: string;
+  latitude: number;
+  longitude: number;
+  method: string;
+  asrSchool: AsrSchool;
+  hijriAdjust: number;
+}
+
+// Before anyone saves their own: Dhaka, the Karachi method most mosques in
+// Bangladesh follow, Hanafi Asr, the Hijri date as calculated.
+const DEFAULT_SETTINGS: PrayerSettingsView = { city: 'Dhaka', latitude: 23.8103, longitude: 90.4125, method: 'Karachi', asrSchool: 'HANAFI', hijriAdjust: 0 };
+
+const settingsView = (row: PrayerSettingsView | null): PrayerSettingsView =>
+  row ? { city: row.city, latitude: row.latitude, longitude: row.longitude, method: row.method, asrSchool: row.asrSchool, hijriAdjust: row.hijriAdjust } : DEFAULT_SETTINGS;
+
 // The qaza a person owes: prayers missed on their Namaz sheets since the
-// counting day, less the ones they logged with "I prayed a qaza".
+// counting day, less the ones they logged with "I prayed a qaza". Also the
+// settings prayer times are worked out from.
 @Injectable()
 export class NamazService {
   constructor(private readonly prisma: PrismaService) {}
+
+  async settings(userId: string): Promise<PrayerSettingsView> {
+    return settingsView(await this.prisma.prayerSettings.findUnique({ where: { userId } }));
+  }
+
+  async updateSettings(userId: string, dto: UpdatePrayerSettingsDto): Promise<PrayerSettingsView> {
+    const row = await this.prisma.prayerSettings.upsert({ where: { userId }, create: { userId, ...dto }, update: dto });
+    return settingsView(row);
+  }
 
   async qaza(userId: string): Promise<QazaView> {
     const today = dhakaDateOnly(new Date());
