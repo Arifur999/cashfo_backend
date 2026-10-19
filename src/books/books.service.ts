@@ -1,19 +1,23 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
-import { BookStatus, type Book } from '@prisma/client';
-import { dhakaYear } from '../common/dhaka.js';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BookStatus, type Book, type BookNote, type Prisma } from '@prisma/client';
+import { dhakaDateKey, dhakaDateOnly, dhakaYear } from '../common/dhaka.js';
 import { compareAndSwap, settleShelf, type ShelfItem, type ShelfMessages } from '../common/shelf.js';
 import { cleanOptionalText, cleanRequiredText } from '../common/text.js';
 import { createWithinCap } from '../common/user-cap.js';
 import { clearYearlyGoal, setYearlyGoal, type SetYearlyGoalDto, type YearlyGoal } from '../common/yearly-goal.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { CreateBookDto } from './dto/create-book.dto.js';
+import { CreateBookNoteDto } from './dto/create-book-note.dto.js';
 import { UpdateBookDto } from './dto/update-book.dto.js';
+import { readingSummary, type ReadingSummary } from './reading.js';
 
 // Per-user cap, enforced by createWithinCap.
 const MAX_BOOKS = 500;
 
 const MAX_TITLE_LENGTH = 120;
 const MAX_AUTHOR_LENGTH = 80;
+const MAX_NOTE_LENGTH = 500;
+const MAX_NOTES_PER_BOOK = 500;
 
 export interface BookView {
   id: string;
@@ -32,10 +36,45 @@ export interface BookView {
   updatedAt: string;
 }
 
+export interface BookNoteView {
+  id: string;
+  bookId: string;
+  page: number | null;
+  text: string;
+  createdAt: string;
+}
+
 export interface BooksOverview {
   year: number; // the current Asia/Dhaka year
   goalTarget: number | null; // this year's "finish N books" goal
   books: BookView[];
+  // The streak, the best run and this week's pages, over every book.
+  reading: ReadingSummary;
+  // Pages read today in each book that has any, by book id.
+  pagesToday: Record<string, number>;
+  // The notes on each book being read, oldest first, by book id.
+  notes: Record<string, BookNoteView[]>;
+}
+
+function toNoteView(note: BookNote): BookNoteView {
+  return { id: note.id, bookId: note.bookId, page: note.page, text: note.text, createdAt: note.createdAt.toISOString() };
+}
+
+// Today's log of a book moves by as much as its page moved: up when reading
+// on, back down when a slip is corrected the same day. A day that ends at 0
+// (or starts with a step back) leaves no row.
+async function logPages(tx: Prisma.TransactionClient, book: Pick<Book, 'id' | 'userId'>, delta: number, now: Date): Promise<void> {
+  if (delta === 0) return;
+  const date = dhakaDateOnly(now);
+  const existing = await tx.bookLog.findUnique({ where: { bookId_date: { bookId: book.id, date } } });
+  const pages = Math.max(0, (existing?.pages ?? 0) + delta);
+  if (pages === 0) {
+    if (existing) await tx.bookLog.delete({ where: { id: existing.id } });
+  } else if (existing) {
+    await tx.bookLog.update({ where: { id: existing.id }, data: { pages } });
+  } else {
+    await tx.bookLog.create({ data: { bookId: book.id, userId: book.userId, date, pages } });
+  }
 }
 
 function toView(book: Book): BookView {
@@ -95,7 +134,22 @@ export class BooksService {
     // this route fail with a 500 every time.
     const books = await this.prisma.book.findMany({ where: { userId }, orderBy: { updatedAt: 'desc' } });
     const goal = await this.prisma.bookGoal.findUnique({ where: { userId_year: { userId, year } } });
-    return { year, goalTarget: goal?.target ?? null, books: books.map(toView) };
+    const now = new Date();
+    const days = await this.prisma.bookLog.groupBy({ by: ['date'], where: { userId }, _sum: { pages: true } });
+    const todayLogs = await this.prisma.bookLog.findMany({ where: { userId, date: dhakaDateOnly(now) }, select: { bookId: true, pages: true } });
+    const reading = books.filter((book) => book.status === BookStatus.READING).map((book) => book.id);
+    const notes = reading.length ? await this.prisma.bookNote.findMany({ where: { bookId: { in: reading } }, orderBy: { createdAt: 'asc' } }) : [];
+    return {
+      year,
+      goalTarget: goal?.target ?? null,
+      books: books.map(toView),
+      reading: readingSummary(
+        days.map((day) => ({ date: day.date.toISOString().slice(0, 10), pages: day._sum.pages ?? 0 })),
+        dhakaDateKey(now),
+      ),
+      pagesToday: Object.fromEntries(todayLogs.map((log) => [log.bookId, log.pages])),
+      notes: Object.fromEntries(reading.map((id) => [id, notes.filter((note) => note.bookId === id).map(toNoteView)])),
+    };
   }
 
   async create(userId: string, dto: CreateBookDto): Promise<BookView> {
@@ -128,12 +182,19 @@ export class BooksService {
   }
 
   // Every column is derived from the row as it was read, so the write only
-  // lands if the row is unchanged (see compareAndSwap).
+  // lands if the row is unchanged (see compareAndSwap). A move of the current
+  // page is logged for today in the same transaction.
   async update(userId: string, id: string, dto: UpdateBookDto): Promise<BookView> {
     return compareAndSwap(async () => {
       const current = await this.requireBook(userId, id);
-      const data = buildUpdate(current, dto, new Date());
-      return toView(await this.prisma.book.update({ where: { id, userId, updatedAt: current.updatedAt }, data }));
+      const now = new Date();
+      const data = buildUpdate(current, dto, now);
+      const book = await this.prisma.$transaction(async (tx) => {
+        const updated = await tx.book.update({ where: { id, userId, updatedAt: current.updatedAt }, data });
+        await logPages(tx, updated, updated.pagesRead - current.pagesRead, now);
+        return updated;
+      });
+      return toView(book);
     }, 'This book was changed elsewhere -- please try again');
   }
 
@@ -141,6 +202,30 @@ export class BooksService {
     const { count } = await this.prisma.book.deleteMany({ where: { id, userId } });
     if (count === 0) throw new NotFoundException('Book not found');
     return { id };
+  }
+
+  async addNote(userId: string, bookId: string, dto: CreateBookNoteDto): Promise<BookNoteView> {
+    const book = await this.requireBook(userId, bookId);
+    const text = cleanRequiredText(dto.text, 'note', MAX_NOTE_LENGTH);
+    if (dto.page !== undefined && dto.page > book.totalPages) {
+      throw new BadRequestException(`This book has ${book.totalPages} pages`);
+    }
+    const note = await createWithinCap(
+      this.prisma,
+      bookId,
+      'book-notes',
+      MAX_NOTES_PER_BOOK,
+      `A book can keep up to ${MAX_NOTES_PER_BOOK} notes`,
+      (tx) => tx.bookNote.count({ where: { bookId } }),
+      (tx) => tx.bookNote.create({ data: { bookId, page: dto.page ?? null, text } }),
+    );
+    return toNoteView(note);
+  }
+
+  async removeNote(userId: string, bookId: string, noteId: string): Promise<{ id: string }> {
+    const { count } = await this.prisma.bookNote.deleteMany({ where: { id: noteId, bookId, book: { userId } } });
+    if (count === 0) throw new NotFoundException('Note not found');
+    return { id: noteId };
   }
 
   setGoal(userId: string, dto: SetYearlyGoalDto): Promise<YearlyGoal> {
