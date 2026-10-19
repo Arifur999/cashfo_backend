@@ -9,6 +9,7 @@ import { CreateCustomTrackerDto } from './dto/create-custom-tracker.dto.js';
 import { CreateHabitTrackerDto } from './dto/create-habit-tracker.dto.js';
 import { CreateRamadanTrackerDto } from './dto/create-ramadan-tracker.dto.js';
 import { SetHabitTrackerCheckDto } from './dto/set-habit-tracker-check.dto.js';
+import { SetRamadanParasDto } from './dto/set-ramadan-paras.dto.js';
 
 // Hijri month number of Ramadan -- what a Ramadan sheet stores in
 // HabitMonthTracker.month (its `year` is the Gregorian year the user typed).
@@ -102,6 +103,16 @@ function lastTickableDay(month: number, year: number): number {
   return todayDayFor(month, year) ?? elapsedDays(month, year);
 }
 
+// What every read of a sheet loads with it: its ticks and, on a Ramadan
+// sheet, the paras read each day.
+const VIEW_INCLUDE = {
+  checks: { select: { day: true, item: true, status: true } },
+  paraLogs: { select: { day: true, paras: true }, orderBy: { day: 'asc' } },
+} satisfies Prisma.HabitMonthTrackerInclude;
+
+// The Ramadan row that logging paras ticks, whatever its case.
+const quranItem = (items: string[]): string | undefined => items.find((item) => item.toLowerCase() === 'quran');
+
 function alreadyExistsMessage(category: string, month: number, year: number): string {
   return configFor(category)?.kind === 'ramadan' ? `Ramadan ${year} already exists` : `A ${category} tracker for ${month}/${year} already exists`;
 }
@@ -118,6 +129,8 @@ export interface HabitTrackerView {
   todayDay: number | null;
   // status only means something on a Namaz sheet.
   checks: { day: number; item: string; status: PrayerStatus }[];
+  // Ramadan only (empty elsewhere): the paras of the Quran read each day.
+  paras: { day: number; paras: number }[];
   // When the sheet was created: a challenge counts its days from here.
   createdAt: string;
 }
@@ -132,7 +145,7 @@ export class HabitTrackersService {
     }
     const trackers = await this.prisma.habitMonthTracker.findMany({
       where: { userId, ...(category && { category }) },
-      include: { checks: { select: { day: true, item: true, status: true } } },
+      include: VIEW_INCLUDE,
       // year/month are both null for every Others tracker. `nulls: 'last'`
       // keeps a category-less call (every Namaz/Ramadan/Others row mixed
       // together) sorted by real date first instead of Postgres's default
@@ -148,7 +161,7 @@ export class HabitTrackersService {
   async get(userId: string, id: string): Promise<HabitTrackerView> {
     const tracker = await this.prisma.habitMonthTracker.findUnique({
       where: { id },
-      include: { checks: { select: { day: true, item: true, status: true } } },
+      include: VIEW_INCLUDE,
     });
     if (!tracker || tracker.userId !== userId) {
       throw new NotFoundException('Tracker not found');
@@ -198,7 +211,7 @@ export class HabitTrackersService {
       (tx) =>
         tx.habitMonthTracker.create({
           data: { userId, category: 'Others', month: null, year: null, name, totalDays: dto.totalDays, items: [] },
-          include: { checks: { select: { day: true, item: true, status: true } } },
+          include: VIEW_INCLUDE,
         }),
     );
     return this.toView(created);
@@ -240,6 +253,32 @@ export class HabitTrackersService {
     return { day: dto.day, item: dto.item, checked: dto.checked, status: dto.checked ? (dto.status ?? null) : null };
   }
 
+  // Ramadan: the paras read on one day (0 clears it). Logging any also ticks
+  // the sheet's Quran row for that day, when it has one; clearing leaves the
+  // tick, which may stand for less than a para.
+  async setParas(userId: string, id: string, dto: SetRamadanParasDto): Promise<{ day: number; paras: number; quranTicked: string | null }> {
+    const tracker = await this.requireTracker(userId, id);
+    if (configFor(tracker.category)?.kind !== 'ramadan') {
+      throw new BadRequestException('Only a Ramadan sheet logs paras');
+    }
+    if (dto.day > sheetDays(tracker)) {
+      throw new BadRequestException(`Day ${dto.day} is outside this sheet`);
+    }
+    if (dto.paras === 0) {
+      await this.prisma.ramadanParaLog.deleteMany({ where: { trackerId: id, day: dto.day } });
+      return { day: dto.day, paras: 0, quranTicked: null };
+    }
+    const item = quranItem(tracker.items) ?? null;
+    await this.prisma.$transaction(async (tx) => {
+      // As in setCheck: insert-or-nothing first, so two simultaneous logs of
+      // the same day can't race into the unique index, then set the count.
+      await tx.ramadanParaLog.createMany({ data: [{ trackerId: id, day: dto.day, paras: dto.paras }], skipDuplicates: true });
+      await tx.ramadanParaLog.updateMany({ where: { trackerId: id, day: dto.day }, data: { paras: dto.paras } });
+      if (item) await tx.habitMonthCheck.createMany({ data: [{ trackerId: id, day: dto.day, item }], skipDuplicates: true });
+    });
+    return { day: dto.day, paras: dto.paras, quranTicked: item };
+  }
+
   // Add a habit column (Ramadan). Names are NFC-normalised and trimmed,
   // unique ignoring case, at most MAX_ITEMS per sheet.
   async addItem(userId: string, id: string, dto: AddTrackerItemDto): Promise<HabitTrackerView> {
@@ -279,9 +318,9 @@ export class HabitTrackersService {
     // a habit that no longer exists. It shows nowhere (toView hides it), so it
     // must not count as "ticked" and block the delete -- clear such rows first.
     await this.prisma.habitMonthCheck.deleteMany({ where: { trackerId: id, item: { notIn: tracker.items } } });
-    const { count } = await this.prisma.habitMonthTracker.deleteMany({ where: { id, userId, checks: { none: {} } } });
+    const { count } = await this.prisma.habitMonthTracker.deleteMany({ where: { id, userId, checks: { none: {} }, paraLogs: { none: {} } } });
     if (count === 0) {
-      throw new BadRequestException('This tracker has ticks -- untick them all before deleting it');
+      throw new BadRequestException('This tracker has ticks or paras logged -- clear them all before deleting it');
     }
     return { id };
   }
@@ -300,7 +339,7 @@ export class HabitTrackersService {
     try {
       const created = await this.prisma.habitMonthTracker.create({
         data: { userId, ...data, items: [...data.items] },
-        include: { checks: { select: { day: true, item: true, status: true } } },
+        include: VIEW_INCLUDE,
       });
       return this.toView(created);
     } catch (error) {
@@ -346,6 +385,7 @@ export class HabitTrackersService {
     totalDays: number | null;
     items: string[];
     checks: { day: number; item: string; status: PrayerStatus }[];
+    paraLogs: { day: number; paras: number }[];
     createdAt: Date;
   }): HabitTrackerView {
     // Ramadan/Others sheets are just Day 1..N -- no start date is known, so
@@ -365,6 +405,7 @@ export class HabitTrackersService {
       // Drop any tick whose habit was removed (a tick landing mid-removal
       // could otherwise leave an orphan row).
       checks: tracker.checks.filter((c) => tracker.items.includes(c.item)),
+      paras: tracker.paraLogs,
       createdAt: tracker.createdAt.toISOString(),
     };
   }
