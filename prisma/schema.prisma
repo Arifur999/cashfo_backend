@@ -684,6 +684,8 @@ model User {
   skillGoals          SkillGoal[]
   todoLists           TodoList[]
   todoRepeats         TodoRepeat[]
+  prayerSettings      PrayerSettings?
+  qazaLogs            QazaLog[]
   // Every Referral row this user created by inviting someone else (as the
   // referrer), vs. the single Referral row recording that this user was
   // THEMSELVES referred by someone else's code at registration.
@@ -975,9 +977,42 @@ model HabitMonthCheck {
   tracker   HabitMonthTracker @relation(fields: [trackerId], references: [id], onDelete: Cascade)
   day       Int // 1-31
   item      String
+  // How a Namaz prayer was prayed (a mark from before statuses reads as
+  // ON_TIME). MISSED is an explicit "not prayed". Ramadan and challenge
+  // ticks keep the default and never read it.
+  status    PrayerStatus      @default(ON_TIME)
 
   @@unique([trackerId, day, item])
   @@index([trackerId])
+}
+
+enum PrayerStatus {
+  JAMAAT
+  ON_TIME
+  QAZA
+  MISSED
+}
+
+// One person's Namaz settings: the day qaza counting starts from.
+model PrayerSettings {
+  id        String    @id @default(uuid())
+  userId    String    @unique
+  user      User      @relation(fields: [userId], references: [id])
+  qazaSince DateTime? @db.Date
+  updatedAt DateTime  @updatedAt
+}
+
+// Qaza prayers made up ("I prayed a qaza"): which prayer, how many, and when.
+model QazaLog {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  prayer    String
+  count     Int      @default(1)
+  date      DateTime @db.Date
+  createdAt DateTime @default(now())
+
+  @@index([userId, date])
 }
 
 // Habit Tracker -> Book: a personal reading list. One row per book the user

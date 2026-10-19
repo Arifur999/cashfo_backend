@@ -1,5 +1,5 @@
 import { BadRequestException, ConflictException, Injectable, InternalServerErrorException, NotFoundException } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import { Prisma, type PrayerStatus } from '@prisma/client';
 import { dhakaToday } from '../common/dhaka.js';
 import { createWithinCap } from '../common/user-cap.js';
 import { cleanRequiredText, UNSAFE_TEXT } from '../common/text.js';
@@ -33,9 +33,12 @@ interface TrackerConfig {
   editableItems: boolean;
 }
 
+// The five daily prayers, the columns of every Namaz sheet.
+export const NAMAZ_PRAYERS = ['Fajr', 'Dhuhr', 'Asr', 'Maghrib', 'Isha'];
+
 // Which habit categories can have a month sheet, and how each behaves.
 const TRACKER_CONFIG: Record<string, TrackerConfig> = {
-  Namaz: { kind: 'gregorian', items: ['Fajr', 'Dhuhr', 'Asr', 'Maghrib', 'Isha'], editableItems: false },
+  Namaz: { kind: 'gregorian', items: NAMAZ_PRAYERS, editableItems: false },
   Ramadan: { kind: 'ramadan', items: ['Roza'], editableItems: true },
   Others: { kind: 'custom', items: [], editableItems: true },
 };
@@ -46,7 +49,7 @@ function configFor(category: string): TrackerConfig | null {
   return Object.hasOwn(TRACKER_CONFIG, category) ? TRACKER_CONFIG[category] : null;
 }
 
-function daysInMonth(month: number, year: number): number {
+export function daysInMonth(month: number, year: number): number {
   return new Date(Date.UTC(year, month, 0)).getUTCDate();
 }
 
@@ -113,7 +116,8 @@ export interface HabitTrackerView {
   totalDays: number;
   elapsedDays: number;
   todayDay: number | null;
-  checks: { day: number; item: string }[];
+  // status only means something on a Namaz sheet.
+  checks: { day: number; item: string; status: PrayerStatus }[];
   // When the sheet was created: a challenge counts its days from here.
   createdAt: string;
 }
@@ -128,7 +132,7 @@ export class HabitTrackersService {
     }
     const trackers = await this.prisma.habitMonthTracker.findMany({
       where: { userId, ...(category && { category }) },
-      include: { checks: { select: { day: true, item: true } } },
+      include: { checks: { select: { day: true, item: true, status: true } } },
       // year/month are both null for every Others tracker. `nulls: 'last'`
       // keeps a category-less call (every Namaz/Ramadan/Others row mixed
       // together) sorted by real date first instead of Postgres's default
@@ -144,7 +148,7 @@ export class HabitTrackersService {
   async get(userId: string, id: string): Promise<HabitTrackerView> {
     const tracker = await this.prisma.habitMonthTracker.findUnique({
       where: { id },
-      include: { checks: { select: { day: true, item: true } } },
+      include: { checks: { select: { day: true, item: true, status: true } } },
     });
     if (!tracker || tracker.userId !== userId) {
       throw new NotFoundException('Tracker not found');
@@ -194,7 +198,7 @@ export class HabitTrackersService {
       (tx) =>
         tx.habitMonthTracker.create({
           data: { userId, category: 'Others', month: null, year: null, name, totalDays: dto.totalDays, items: [] },
-          include: { checks: { select: { day: true, item: true } } },
+          include: { checks: { select: { day: true, item: true, status: true } } },
         }),
     );
     return this.toView(created);
@@ -202,8 +206,11 @@ export class HabitTrackersService {
 
   // Idempotent by design (explicit `checked`, not a toggle) so a double-fired
   // or retried request can never flip a cell the wrong way.
-  async setCheck(userId: string, id: string, dto: SetHabitTrackerCheckDto): Promise<{ day: number; item: string; checked: boolean }> {
+  async setCheck(userId: string, id: string, dto: SetHabitTrackerCheckDto): Promise<{ day: number; item: string; checked: boolean; status: PrayerStatus | null }> {
     const tracker = await this.requireTracker(userId, id);
+    if (dto.status !== undefined && tracker.category !== 'Namaz') {
+      throw new BadRequestException('Only a Namaz mark takes a status');
+    }
     if (!tracker.items.includes(dto.item)) {
       throw new BadRequestException(`Unknown item "${dto.item}" for this tracker`);
     }
@@ -222,13 +229,15 @@ export class HabitTrackersService {
       // NOTHING, so two simultaneous identical ticks can't race into a
       // unique-constraint error the way find-then-create/upsert can.
       await this.prisma.habitMonthCheck.createMany({
-        data: [{ trackerId: id, day: dto.day, item: dto.item }],
+        data: [{ trackerId: id, day: dto.day, item: dto.item, ...(dto.status && { status: dto.status }) }],
         skipDuplicates: true,
       });
+      // The mark was already there: a new status replaces its old one.
+      if (dto.status) await this.prisma.habitMonthCheck.updateMany({ where: { trackerId: id, day: dto.day, item: dto.item }, data: { status: dto.status } });
     } else {
       await this.prisma.habitMonthCheck.deleteMany({ where: { trackerId: id, day: dto.day, item: dto.item } });
     }
-    return { day: dto.day, item: dto.item, checked: dto.checked };
+    return { day: dto.day, item: dto.item, checked: dto.checked, status: dto.checked ? (dto.status ?? null) : null };
   }
 
   // Add a habit column (Ramadan). Names are NFC-normalised and trimmed,
@@ -291,7 +300,7 @@ export class HabitTrackersService {
     try {
       const created = await this.prisma.habitMonthTracker.create({
         data: { userId, ...data, items: [...data.items] },
-        include: { checks: { select: { day: true, item: true } } },
+        include: { checks: { select: { day: true, item: true, status: true } } },
       });
       return this.toView(created);
     } catch (error) {
@@ -336,7 +345,7 @@ export class HabitTrackersService {
     name: string | null;
     totalDays: number | null;
     items: string[];
-    checks: { day: number; item: string }[];
+    checks: { day: number; item: string; status: PrayerStatus }[];
     createdAt: Date;
   }): HabitTrackerView {
     // Ramadan/Others sheets are just Day 1..N -- no start date is known, so

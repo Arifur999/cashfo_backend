@@ -4,10 +4,12 @@ import { HabitTrackersController } from './habit-trackers.controller.js';
 import { HabitTrackersService } from './habit-trackers.service.js';
 import { HabitsController } from './habits.controller.js';
 import { HabitsService } from './habits.service.js';
+import { NamazController } from './namaz.controller.js';
+import { NamazService } from './namaz.service.js';
 
 @Module({
   imports: [UserAuthModule],
-  controllers: [HabitsController, HabitTrackersController],
-  providers: [HabitsService, HabitTrackersService],
+  controllers: [HabitsController, HabitTrackersController, NamazController],
+  providers: [HabitsService, HabitTrackersService, NamazService],
 })
 export class HabitsModule {}
