@@ -960,6 +960,7 @@ model HabitMonthTracker {
   items     String[]
   createdAt DateTime          @default(now())
   checks    HabitMonthCheck[]
+  paraLogs  RamadanParaLog[]
 
   // month/year are NULL for every Others tracker, and Postgres never treats
   // two NULLs as equal, so this constraint is a no-op for Others (any number
@@ -967,6 +968,19 @@ model HabitMonthTracker {
   // Namaz sheet per month" / "one Ramadan per year" as before.
   @@unique([userId, category, month, year])
   @@index([userId, category])
+}
+
+// Ramadan: how many paras of the Quran were read on one day of the sheet. A
+// day with none has no row; the Quran khatam card sums them.
+model RamadanParaLog {
+  id        String            @id @default(uuid())
+  trackerId String
+  tracker   HabitMonthTracker @relation(fields: [trackerId], references: [id], onDelete: Cascade)
+  day       Int // 1-30
+  paras     Int // 1-30
+  updatedAt DateTime          @updatedAt
+
+  @@unique([trackerId, day])
 }
 
 // One row per TICKED cell only -- an unticked cell simply has no row, so
