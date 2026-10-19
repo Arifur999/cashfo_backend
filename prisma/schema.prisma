@@ -644,6 +644,9 @@ model User {
   avatarUrl           String?
   // No password column: the hash lives on this user's "credential"
   // AuthAccount row, where better-auth reads it (src/auth/credential-account.ts).
+  // When the password was last set (CredentialsService.set); null before
+  // this was recorded, or for a Google-only account.
+  passwordChangedAt   DateTime?
   // Shareable short code for this user's own referral link ("Referral
   // Program" menu) -- nullable because pre-existing users only get one
   // lazily backfilled the first time they open that page (see

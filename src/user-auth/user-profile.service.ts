@@ -38,6 +38,7 @@ export class UserProfileService {
       avatarUrl: user.avatarUrl,
       preferredLanguage: user.preferredLanguage,
       emailVerifiedAt: user.emailVerifiedAt,
+      passwordChangedAt: user.passwordChangedAt,
       businesses: memberships.map((m) => ({
         id: m.business.id,
         name: m.business.name,

@@ -26,8 +26,9 @@ export class CredentialsService {
     return !!account?.password;
   }
 
-  // Sets or replaces the password. Pass a transaction client to make it part
-  // of a larger write, e.g. creating the user it belongs to.
+  // Sets or replaces the password, and notes when (Settings says "Last
+  // changed 4 months ago"). Pass a transaction client to make it part of a
+  // larger write, e.g. creating the user it belongs to.
   async set(userId: string, password: string, db: Db = this.prisma): Promise<void> {
     const passwordHash = await hashPassword(password);
     await db.authAccount.upsert({
@@ -35,5 +36,6 @@ export class CredentialsService {
       create: credentialAccountData(userId, passwordHash),
       update: { password: passwordHash },
     });
+    await db.user.update({ where: { id: userId }, data: { passwordChangedAt: new Date() } });
   }
 }
