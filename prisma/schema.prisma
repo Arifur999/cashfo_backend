@@ -1440,6 +1440,9 @@ enum ContactType {
   SUPPLIER
   BOTH
   RELATIVE
+  // A bank or an NGO (microfinance) one borrows from or lends to.
+  BANK
+  NGO
   OTHER
 }
 
