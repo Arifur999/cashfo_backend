@@ -363,8 +363,22 @@ model TicketMessage {
   message       String        @db.Text
   attachmentUrl String?
   createdAt     DateTime      @default(now())
+  attachment    TicketAttachment?
 
   @@index([ticketId, createdAt])
+}
+
+// A screenshot a customer attached to a message from Settings > Help. Kept
+// here rather than on the image host: it may show their money, so only the
+// support team and the customer can open it.
+model TicketAttachment {
+  id        String        @id @default(uuid())
+  messageId String        @unique
+  message   TicketMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  mimeType  String
+  size      Int
+  data      Bytes
+  createdAt DateTime      @default(now())
 }
 
 enum SenderType {
@@ -2157,4 +2171,6 @@ enum UserNotificationType {
   LOAN_DUE
   SAVINGS
   ANNOUNCEMENT
+  // The support team answered one of the customer's messages.
+  SUPPORT_REPLY
 }

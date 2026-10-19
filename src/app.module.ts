@@ -47,6 +47,7 @@ import { SettingsModule } from './settings/settings.module.js';
 import { SignInModule } from './sign-in/sign-in.module.js';
 import { SubscriptionPlansModule } from './subscription-plans/subscription-plans.module.js';
 import { GlobalExceptionFilter } from './system/filters/global-exception.filter.js';
+import { SupportModule } from './support/support.module.js';
 import { SystemModule } from './system/system.module.js';
 import { TicketsModule } from './tickets/tickets.module.js';
 import { TodosModule } from './todos/todos.module.js';
@@ -117,6 +118,7 @@ import { UserNotificationsModule } from './user-notifications/user-notifications
     SkillsModule,
     TodosModule,
     UserNotificationsModule,
+    SupportModule,
   ],
   controllers: [AppController],
   providers: [AppService, { provide: APP_GUARD, useClass: ThrottlerGuard }, { provide: APP_FILTER, useClass: GlobalExceptionFilter }],
