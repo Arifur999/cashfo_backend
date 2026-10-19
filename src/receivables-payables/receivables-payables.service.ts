@@ -81,6 +81,12 @@ export interface DueSoonRow {
   daysUntilDue: number;
 }
 
+// A due-soon row for the bell's loan reminders: either way, any contact.
+export interface DueReminderRow extends DueSoonRow {
+  contactCategory: Contact['category'];
+  direction: Direction;
+}
+
 export type LoanBalanceDirection = 'DENA' | 'PAWNA' | 'SETTLED';
 
 export interface LoanDashboardRow {
@@ -580,6 +586,45 @@ export class ReceivablesPayablesService {
     }
 
     rows.sort((a, b) => a.daysUntilDue - b.daysUntilDue || a.dueDate.getTime() - b.dueDate.getTime());
+    return rows;
+  }
+
+  // What falls due in the next `days` days, today included, either way and
+  // with any kind of contact (Dena-Pawna's and Loan Management's alike): the
+  // bell's loan reminders. Only the contacts with such an entry are worked
+  // out.
+  async dueWithin(businessId: string, days: number): Promise<DueReminderRow[]> {
+    const today = todayUtcMidnight();
+    const horizon = today.getTime() + days * DAY_MS;
+    const due = await this.prisma.transaction.findMany({
+      where: { businessId, transactionType: { in: ['SALE', 'PURCHASE'] }, status: 'POSTED', reversalOfId: null, contactId: { not: null }, dueDate: { gte: today, lte: new Date(horizon) } },
+      select: { contactId: true },
+      distinct: ['contactId'],
+    });
+    if (due.length === 0) return [];
+    const contacts = await this.prisma.contact.findMany({ where: { businessId, id: { in: due.map((row) => row.contactId as string) } } });
+
+    const rows: DueReminderRow[] = [];
+    for (const contact of contacts) {
+      for (const direction of ['RECEIVABLE', 'PAYABLE'] as const) {
+        const breakdown = await this.computeDirection(businessId, contact, direction);
+        for (const t of breakdown.transactions) {
+          if (!t.dueDate || t.isOverdue || t.dueDate.getTime() > horizon) continue;
+          if (new Prisma.Decimal(t.remainingAmount).lessThanOrEqualTo(0)) continue;
+          rows.push({
+            contactId: contact.id,
+            contactName: contact.name,
+            contactCategory: contact.category,
+            direction,
+            transactionId: t.transactionId,
+            description: t.description,
+            remainingAmount: t.remainingAmount,
+            dueDate: t.dueDate,
+            daysUntilDue: Math.round((t.dueDate.getTime() - today.getTime()) / DAY_MS),
+          });
+        }
+      }
+    }
     return rows;
   }
 
