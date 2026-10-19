@@ -1,4 +1,4 @@
-import { IsDateString } from 'class-validator';
+import { IsBoolean, IsDateString, IsOptional } from 'class-validator';
 
 export class CloseSettlementDto {
   @IsDateString()
@@ -6,4 +6,10 @@ export class CloseSettlementDto {
 
   @IsDateString()
   periodEnd: string;
+
+  // Carry each balance into the next month, as a CARRY contribution dated
+  // the day after the period.
+  @IsOptional()
+  @IsBoolean()
+  carryForward?: boolean;
 }
