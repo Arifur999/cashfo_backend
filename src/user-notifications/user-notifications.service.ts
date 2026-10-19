@@ -11,8 +11,9 @@ import { announcementReminders, budgetReminders, loanReminders, savingsReminders
 
 // The checks run when the feed is read, at most this often per user.
 const CHECK_EVERY_MS = 30 * 60 * 1000;
-// Loan payments are reminded about this many days ahead.
-const LOAN_DAYS = 3;
+// Loan payments are reminded about a day ahead (Settings > Reminders), and
+// on the day itself if the feed wasn't read the day before.
+const LOAN_DAYS = 1;
 const FEED_SIZE = 30;
 // Older rows are cleared when the checks run.
 const KEEP_MS = 90 * 24 * 60 * 60 * 1000;
