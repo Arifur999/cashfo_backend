@@ -76,6 +76,18 @@ export class PasswordVaultController {
   }
 
   @UseGuards(VaultAccessGuard)
+  @Get('checkup')
+  checkup(@CurrentUser() user: RequestUser) {
+    return this.passwordVaultService.checkup(user.id);
+  }
+
+  @UseGuards(VaultAccessGuard)
+  @Post('entries/:id/checkup-dismiss')
+  dismissCheckup(@CurrentUser() user: RequestUser, @Param('id') id: string) {
+    return this.passwordVaultService.dismissCheckup(user.id, id);
+  }
+
+  @UseGuards(VaultAccessGuard)
   @Get('entries/:id/reveal')
   reveal(@CurrentUser() user: RequestUser, @Param('id') id: string) {
     return this.passwordVaultService.reveal(user.id, id);

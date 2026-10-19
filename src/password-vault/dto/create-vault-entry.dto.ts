@@ -1,4 +1,4 @@
-import { IsEnum, IsNotEmpty, IsOptional, IsString } from 'class-validator';
+import { IsBoolean, IsEnum, IsNotEmpty, IsOptional, IsString } from 'class-validator';
 import { VaultEntryCategory } from '@prisma/client';
 
 export class CreateVaultEntryDto {
@@ -28,4 +28,8 @@ export class CreateVaultEntryDto {
   @IsOptional()
   @IsString()
   notes?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  isFavorite?: boolean;
 }

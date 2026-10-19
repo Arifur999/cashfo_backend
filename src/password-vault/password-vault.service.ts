@@ -9,6 +9,7 @@ import { ResetVaultDto } from './dto/reset-vault.dto.js';
 import { SetVaultPasswordDto } from './dto/set-vault-password.dto.js';
 import { UnlockVaultDto } from './dto/unlock-vault.dto.js';
 import { UpdateVaultEntryDto } from './dto/update-vault-entry.dto.js';
+import { securityCheckup, type Checkup } from './vault-checkup.js';
 import { decryptVaultSecret, encryptVaultSecret, isSealedVaultText, openVaultText, sealVaultText, vaultPasswordFingerprint } from './vault-crypto.js';
 
 type StoredEntry = { id: string; usernameOrEmail: string | null; holderName: string | null; notes: string | null; passwordCiphertext: string };
@@ -134,8 +135,11 @@ export class PasswordVaultService {
   }
 
   async update(userId: string, id: string, dto: UpdateVaultEntryDto) {
-    await this.assertOwnership(userId, id);
+    const current = await this.assertOwnership(userId, id);
     const { password, usernameOrEmail, holderName, notes, ...rest } = dto;
+    // Only a new password moves its age (and brings back any checkup
+    // warning marked fine); the same one saved again is no change.
+    const changed = !!password && password !== decryptVaultSecret(current.passwordCiphertext);
     const entry = await this.prisma.vaultEntry.update({
       where: { id },
       data: {
@@ -143,9 +147,30 @@ export class PasswordVaultService {
         ...(usernameOrEmail !== undefined && { usernameOrEmail: sealVaultText(usernameOrEmail) }),
         ...(holderName !== undefined && { holderName: sealVaultText(holderName) }),
         ...(notes !== undefined && { notes: sealVaultText(notes) }),
-        ...(password ? { passwordCiphertext: encryptVaultSecret(password) } : {}),
+        ...(changed && password ? { passwordCiphertext: encryptVaultSecret(password), passwordChangedAt: new Date() } : {}),
       },
     });
+    return this.toSummary(entry);
+  }
+
+  // The security checkup: the ids of the logins whose password is weak,
+  // used for more than one login, or over a year old. The passwords are
+  // compared here and never sent.
+  async checkup(userId: string): Promise<Checkup> {
+    const user = await this.prisma.user.findUniqueOrThrow({ where: { id: userId }, select: { name: true, phone: true } });
+    const entries = await this.prisma.vaultEntry.findMany({ where: { userId }, select: { id: true, passwordCiphertext: true, passwordChangedAt: true, checkupDismissedAt: true } });
+    return securityCheckup(
+      entries.map((entry) => ({ id: entry.id, password: decryptVaultSecret(entry.passwordCiphertext), passwordChangedAt: entry.passwordChangedAt, checkupDismissedAt: entry.checkupDismissedAt })),
+      user,
+      new Date(),
+    );
+  }
+
+  // "It's fine": the checkup stops flagging this login until its password
+  // changes.
+  async dismissCheckup(userId: string, id: string) {
+    await this.assertOwnership(userId, id);
+    const entry = await this.prisma.vaultEntry.update({ where: { id }, data: { checkupDismissedAt: new Date() } });
     return this.toSummary(entry);
   }
 
