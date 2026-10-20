@@ -1,5 +1,5 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
-import { Account, EntryType, Prisma } from '@prisma/client';
+import { Account, EntryType, Prisma, TransactionType } from '@prisma/client';
 import { AccountBalanceService } from '../accounts/account-balance.service.js';
 import { REFERRAL_BONUS_INCOME_SUBTYPE } from '../accounts/accounts.service.js';
 import { dhakaDateOnly } from '../common/dhaka.js';
@@ -7,6 +7,9 @@ import { PrismaService } from '../prisma/prisma.service.js';
 import { CreateTransactionDto } from './dto/create-transaction.dto.js';
 import { CreateTransactionEntryDto } from './dto/create-transaction-entry.dto.js';
 import { ListTransactionsQueryDto } from './dto/list-transactions-query.dto.js';
+
+// Still counts: neither a voided original nor the reversal that undid it.
+const STANDING_TRANSACTION = { status: 'POSTED', reversalOfId: null } satisfies Prisma.TransactionWhereInput;
 
 @Injectable()
 export class TransactionsService {
@@ -314,7 +317,61 @@ export class TransactionsService {
   async listTransactions(businessId: string, filters: ListTransactionsQueryDto) {
     const page = filters.page ?? 1;
     const limit = filters.limit ?? 20;
+    const where = this.listWhere(businessId, filters);
 
+    const [data, total] = await Promise.all([
+      this.prisma.transaction.findMany({
+        where,
+        // entries.account: same shape as getTransaction()'s single-record
+        // include -- the Balance Transfer page (and any other list-level UI
+        // that needs to show which accounts were involved, not just an
+        // amount) needs entry.account.name without a second round trip per
+        // row. contact: the Loan Management Transactions page needs the
+        // Bank/Person name per row too.
+        include: {
+          entries: { include: { account: { select: { id: true, name: true, accountType: true, accountSubtype: true } } } },
+          contact: { select: { id: true, name: true } },
+        },
+        orderBy: [{ transactionDate: 'desc' }, { createdAt: 'desc' }],
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      this.prisma.transaction.count({ where }),
+    ]);
+
+    return { data: await this.withVoidable(data), meta: { page, limit, total, totalPages: Math.ceil(total / limit) } };
+  }
+
+  // The figures above the Transactions list, over every page the list's
+  // filters match rather than the page on screen. `count` is what the list
+  // calls `meta.total`; `voided` is how many of those are voided originals;
+  // `totals` sums each standing transaction's debit side (its amount), so a
+  // voided entry and its reversal both drop out, as in every other total.
+  async summarizeTransactions(businessId: string, filters: ListTransactionsQueryDto) {
+    const where = this.listWhere(businessId, filters);
+    // AND rather than a spread, so a status or type the visitor filtered on
+    // narrows these figures instead of being overwritten by them.
+    const totalOf = (transactionType: TransactionType) =>
+      this.prisma.transactionEntry.aggregate({
+        where: { entryType: EntryType.DEBIT, transaction: { AND: [where, STANDING_TRANSACTION, { transactionType }] } },
+        _sum: { amount: true },
+      });
+
+    const [count, voided, income, expense, transfer] = await Promise.all([
+      this.prisma.transaction.count({ where }),
+      this.prisma.transaction.count({ where: { AND: [where, { status: 'VOIDED', reversalOfId: null }] } }),
+      totalOf('INCOME'),
+      totalOf('EXPENSE'),
+      totalOf('TRANSFER'),
+    ]);
+
+    const money = (sum: { _sum: { amount: Prisma.Decimal | null } }) => new Prisma.Decimal(sum._sum.amount ?? 0).toFixed(2);
+    return { count, voided, totals: { INCOME: money(income), EXPENSE: money(expense), TRANSFER: money(transfer) } };
+  }
+
+  // One filter for the list and its summary, so the figures always describe
+  // exactly the rows the list pages through.
+  private listWhere(businessId: string, filters: ListTransactionsQueryDto): Prisma.TransactionWhereInput {
     const where: Prisma.TransactionWhereInput = { businessId };
 
     if (filters.dateFrom || filters.dateTo) {
@@ -342,28 +399,7 @@ export class TransactionsService {
         { entries: { some: { categoryId: contains } } },
       ];
     }
-
-    const [data, total] = await Promise.all([
-      this.prisma.transaction.findMany({
-        where,
-        // entries.account: same shape as getTransaction()'s single-record
-        // include -- the Balance Transfer page (and any other list-level UI
-        // that needs to show which accounts were involved, not just an
-        // amount) needs entry.account.name without a second round trip per
-        // row. contact: the Loan Management Transactions page needs the
-        // Bank/Person name per row too.
-        include: {
-          entries: { include: { account: { select: { id: true, name: true, accountType: true, accountSubtype: true } } } },
-          contact: { select: { id: true, name: true } },
-        },
-        orderBy: [{ transactionDate: 'desc' }, { createdAt: 'desc' }],
-        skip: (page - 1) * limit,
-        take: limit,
-      }),
-      this.prisma.transaction.count({ where }),
-    ]);
-
-    return { data: await this.withVoidable(data), meta: { page, limit, total, totalPages: Math.ceil(total / limit) } };
+    return where;
   }
 
   // Defensive re-validation of what CreateTransactionEntryDto's decorators

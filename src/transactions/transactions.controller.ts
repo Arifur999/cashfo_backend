@@ -22,6 +22,13 @@ export class TransactionsController {
     return this.transactionsService.listTransactions(businessId, query);
   }
 
+  // Declared before ':id' so "summary" isn't read as a transaction id.
+  // Takes the list's own filters; page and limit are ignored.
+  @Get('summary')
+  summary(@Param('businessId') businessId: string, @Query() query: ListTransactionsQueryDto) {
+    return this.transactionsService.summarizeTransactions(businessId, query);
+  }
+
   @Get(':id')
   getOne(@Param('businessId') businessId: string, @Param('id') id: string) {
     return this.transactionsService.getTransaction(businessId, id);
