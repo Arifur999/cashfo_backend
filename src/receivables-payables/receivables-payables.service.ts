@@ -4,6 +4,8 @@ import { MONEY_ACCOUNT_SUBTYPES } from '../accounts/accounts.service.js';
 import { dhakaDateOnly, dhakaYear } from '../common/dhaka.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { TransactionsService } from '../transactions/transactions.service.js';
+import { contactStatement, STATEMENT_TRANSACTION_TYPES, type ContactStatement } from './contact-statement.js';
+import { ContactStatementQueryDto } from './dto/contact-statement-query.dto.js';
 import { CreatePayableDto } from './dto/create-payable.dto.js';
 import { CreateReceivableDto } from './dto/create-receivable.dto.js';
 import { PayPaymentDto } from './dto/pay-payment.dto.js';
@@ -163,6 +165,26 @@ function todayUtcMidnight(): Date {
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+
+// A statement's dateFrom..dateTo as a transactionDate filter, both days
+// included; undefined when neither is set.
+function transactionDateWindow(filters: { dateFrom?: string; dateTo?: string }): Prisma.DateTimeFilter | undefined {
+  if (!filters.dateFrom && !filters.dateTo) return undefined;
+  return { ...(filters.dateFrom && { gte: new Date(filters.dateFrom) }), ...(filters.dateTo && { lte: new Date(filters.dateTo) }) };
+}
+
+// What a contact statement reads of each posting (see contact-statement.ts).
+const STATEMENT_POSTING_SELECT = {
+  id: true,
+  transactionType: true,
+  transactionDate: true,
+  createdAt: true,
+  referenceNo: true,
+  description: true,
+  status: true,
+  reversalOfId: true,
+  entries: { select: { entryType: true, amount: true, account: { select: { name: true, accountSubtype: true } } } },
+} satisfies Prisma.TransactionSelect;
 
 // The whole point of this module (per the product blueprint): Receivable/
 // Payable are NOT a parallel data structure -- they're the "Accounts
@@ -402,10 +424,7 @@ export class ReceivablesPayablesService {
       }
     }
 
-    const dateFilter: Prisma.DateTimeFilter = {};
-    if (filters.dateFrom) dateFilter.gte = new Date(filters.dateFrom);
-    if (filters.dateTo) dateFilter.lte = new Date(filters.dateTo);
-    const hasDateFilter = Object.keys(dateFilter).length > 0;
+    const dateFilter = transactionDateWindow(filters);
 
     const entries =
       accountIds.length === 0
@@ -413,7 +432,7 @@ export class ReceivablesPayablesService {
         : await this.prisma.transactionEntry.findMany({
             where: {
               accountId: { in: accountIds },
-              transaction: { contactId, ...(hasDateFilter && { transactionDate: dateFilter }) },
+              transaction: { contactId, ...(dateFilter && { transactionDate: dateFilter }) },
             },
             include: { transaction: true },
             orderBy: [{ transaction: { transactionDate: 'asc' } }, { transaction: { createdAt: 'asc' } }],
@@ -422,7 +441,7 @@ export class ReceivablesPayablesService {
     // Profit or interest paid to or received from them: an expense or an
     // income with this contact (never a reversal, which only undoes one).
     const profits = await this.prisma.transaction.findMany({
-      where: { businessId, contactId, transactionType: { in: ['INCOME', 'EXPENSE'] }, reversalOfId: null, ...(hasDateFilter && { transactionDate: dateFilter }) },
+      where: { businessId, contactId, transactionType: { in: ['INCOME', 'EXPENSE'] }, reversalOfId: null, ...(dateFilter && { transactionDate: dateFilter }) },
       include: { entries: { where: { entryType: 'DEBIT' }, select: { amount: true } } },
     });
 
@@ -460,6 +479,42 @@ export class ReceivablesPayablesService {
       balanceBroughtForward: balanceBroughtForward.toFixed(2),
       rows,
       closingBalance: rows.length > 0 ? rows[rows.length - 1].runningPrincipal : balanceBroughtForward.toFixed(2),
+    };
+  }
+
+  // Books' customer/supplier statement: every sale, purchase and payment
+  // oldest first, a page at a time, with the running balance carried over
+  // the contact's whole history -- page 2 opens where page 1 closed, and the
+  // closing balance is the period's on every page. The rules live in
+  // contact-statement.ts; this only fetches. Unlike getLoanStatement(), a
+  // voided posting and its reversal never move the balance (both are shown,
+  // flagged), which is how this statement has always read. A row's amount is
+  // its receivable or payable line, as computeDirection() counts it, so with
+  // no dates closingBalance is Contact.currentBalance. That differs from the
+  // browser only on postings sent to the raw transactions API: a sale of
+  // Dr Cash 600 / Dr Receivable 400 / Cr Sales 1000 reads 400, not 600 (see
+  // contact-statement.ts for the other case).
+  async getContactStatement(businessId: string, contactId: string, filters: ContactStatementQueryDto = {}): Promise<ContactStatement> {
+    const contact = await this.requireContact(businessId, contactId);
+    // Otherwise "before the period" would take in postings after it.
+    if (filters.dateFrom && filters.dateTo && filters.dateFrom > filters.dateTo) {
+      throw new BadRequestException('dateFrom must be on or before dateTo');
+    }
+
+    const where: Prisma.TransactionWhereInput = { businessId, contactId, transactionType: { in: STATEMENT_TRANSACTION_TYPES } };
+    const orderBy: Prisma.TransactionOrderByWithRelationInput[] = [{ transactionDate: 'asc' }, { createdAt: 'asc' }];
+    // Before the period only to carry its balance forward. Sequential, for
+    // the connection-pool reason getContactBalanceDetail() gives.
+    const prior = filters.dateFrom
+      ? await this.prisma.transaction.findMany({ where: { ...where, transactionDate: { lt: new Date(filters.dateFrom) } }, select: STATEMENT_POSTING_SELECT, orderBy })
+      : [];
+    const periodDates = transactionDateWindow(filters);
+    const period = await this.prisma.transaction.findMany({ where: { ...where, ...(periodDates && { transactionDate: periodDates }) }, select: STATEMENT_POSTING_SELECT, orderBy });
+
+    return {
+      contactId,
+      contactName: contact.name,
+      ...contactStatement({ openingBalance: contact.openingBalance, prior, period, page: filters.page ?? 1, limit: filters.limit ?? 50 }),
     };
   }
 
