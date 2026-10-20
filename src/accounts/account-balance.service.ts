@@ -83,10 +83,16 @@ export class AccountBalanceService {
   //
   // - dateFrom/dateTo only narrow which entries are DISPLAYED -- they never
   //   change what the running balance starts from. balanceBroughtForward is
-  //   openingBalance + every entry strictly BEFORE dateFrom (computed
-  //   separately, in full, regardless of pagination), so the displayed
-  //   running balance is always the TRUE cumulative figure, never a false
-  //   restart at zero just because the view is filtered.
+  //   openingBalance + every entry strictly BEFORE dateFrom (two SUM
+  //   aggregates, regardless of pagination), so the displayed running
+  //   balance is always the TRUE cumulative figure, never a false restart
+  //   at zero just because the view is filtered.
+  // - closingBalance is the PERIOD's closing figure: brought forward plus
+  //   every entry in the range, also summed by aggregate, so it's the same
+  //   on every page. pageOpeningBalance/pageClosingBalance are the running
+  //   balance just before the page's first row and after its last one, for
+  //   a "carried over" line between pages. A page past the end has no rows
+  //   and sits after the period's last entry, so both equal closingBalance.
   // - Pagination: fetches every entry from the start of the (possibly
   //   date-filtered) range through the END of the requested page, computes
   //   the running balance over that whole prefix in order, then slices out
@@ -108,19 +114,6 @@ export class AccountBalanceService {
     const page = filters.page ?? 1;
     const limit = filters.limit ?? 50;
 
-    let balanceBroughtForward = new Prisma.Decimal(account.openingBalance);
-    if (filters.dateFrom) {
-      const priorEntries = await this.prisma.transactionEntry.findMany({
-        where: { accountId, transaction: { transactionDate: { lt: new Date(filters.dateFrom) } } },
-        select: { entryType: true, amount: true },
-      });
-      for (const entry of priorEntries) {
-        const amount = new Prisma.Decimal(entry.amount);
-        const delta = entry.entryType === 'DEBIT' ? (debitPositive ? amount : amount.negated()) : debitPositive ? amount.negated() : amount;
-        balanceBroughtForward = balanceBroughtForward.plus(delta);
-      }
-    }
-
     const dateFilter: Prisma.DateTimeFilter = {};
     if (filters.dateFrom) dateFilter.gte = new Date(filters.dateFrom);
     if (filters.dateTo) dateFilter.lte = new Date(filters.dateTo);
@@ -131,15 +124,25 @@ export class AccountBalanceService {
       ...(hasDateFilter && { transaction: { transactionDate: dateFilter } }),
     };
 
-    const [total, entriesUpToPageEnd] = await Promise.all([
+    const [priorMovement, periodMovement, total, entriesUpToPageEnd] = await Promise.all([
+      filters.dateFrom
+        ? this.netMovement({ accountId, transaction: { transactionDate: { lt: new Date(filters.dateFrom) } } }, debitPositive)
+        : new Prisma.Decimal(0),
+      this.netMovement(where, debitPositive),
       this.prisma.transactionEntry.count({ where }),
       this.prisma.transactionEntry.findMany({
         where,
         include: { transaction: true },
-        orderBy: [{ transaction: { transactionDate: 'asc' } }, { transaction: { createdAt: 'asc' } }],
+        // The entry id breaks ties (one date holds many transactions, and a
+        // transaction can touch the account twice) so every request sees the
+        // same order and a row never shows on two pages or none.
+        orderBy: [{ transaction: { transactionDate: 'asc' } }, { transaction: { createdAt: 'asc' } }, { id: 'asc' }],
         take: page * limit,
       }),
     ]);
+
+    const balanceBroughtForward = new Prisma.Decimal(account.openingBalance).plus(priorMovement);
+    const closingBalance = balanceBroughtForward.plus(periodMovement);
 
     let running = balanceBroughtForward;
     const allRows = entriesUpToPageEnd.map((entry) => {
@@ -162,7 +165,14 @@ export class AccountBalanceService {
       };
     });
 
-    const pageRows = allRows.slice((page - 1) * limit, page * limit);
+    const pageStart = (page - 1) * limit;
+    const pageRows = allRows.slice(pageStart, pageStart + limit);
+    let pageOpeningBalance = closingBalance;
+    let pageClosingBalance = closingBalance;
+    if (pageRows.length > 0) {
+      pageOpeningBalance = pageStart > 0 ? allRows[pageStart - 1].runningBalance : balanceBroughtForward;
+      pageClosingBalance = pageRows[pageRows.length - 1].runningBalance;
+    }
 
     return {
       accountId,
@@ -170,12 +180,27 @@ export class AccountBalanceService {
       openingBalance: account.openingBalance,
       balanceBroughtForward: balanceBroughtForward.toFixed(2),
       entries: pageRows,
-      // Balance at the end of the LAST row actually returned in this page --
-      // not necessarily the account's true current balance if a dateTo
-      // filter or earlier page cuts off before the most recent activity.
-      closingBalance: (pageRows.length > 0 ? pageRows[pageRows.length - 1].runningBalance : balanceBroughtForward).toFixed(2),
+      // The whole period's closing figure, whichever page this is -- not
+      // necessarily the account's current balance if dateTo cuts off before
+      // the most recent activity.
+      closingBalance: closingBalance.toFixed(2),
+      pageOpeningBalance: pageOpeningBalance.toFixed(2),
+      pageClosingBalance: pageClosingBalance.toFixed(2),
       meta: { page, limit, total, totalPages: Math.ceil(total / limit) },
     };
+  }
+
+  // Net movement of the entries `where` matches, signed the way this
+  // account's type grows (see isDebitPositive()). Two SUM aggregates, so the
+  // cost doesn't grow with the number of entries.
+  private async netMovement(where: Prisma.TransactionEntryWhereInput, debitPositive: boolean) {
+    const [debitAgg, creditAgg] = await Promise.all([
+      this.prisma.transactionEntry.aggregate({ where: { ...where, entryType: 'DEBIT' }, _sum: { amount: true } }),
+      this.prisma.transactionEntry.aggregate({ where: { ...where, entryType: 'CREDIT' }, _sum: { amount: true } }),
+    ]);
+    const debitTotal = new Prisma.Decimal(debitAgg._sum.amount ?? 0);
+    const creditTotal = new Prisma.Decimal(creditAgg._sum.amount ?? 0);
+    return debitPositive ? debitTotal.minus(creditTotal) : creditTotal.minus(debitTotal);
   }
 
   // Quick stats for the account detail page header (and the Ledger page's
