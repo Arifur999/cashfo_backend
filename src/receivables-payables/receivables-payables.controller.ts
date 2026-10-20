@@ -1,5 +1,6 @@
 import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
 import { MemberRole } from '@prisma/client';
+import { ContactStatementQueryDto } from './dto/contact-statement-query.dto.js';
 import { CreatePayableDto } from './dto/create-payable.dto.js';
 import { CreateReceivableDto } from './dto/create-receivable.dto.js';
 import { DueSoonQueryDto } from './dto/due-soon-query.dto.js';
@@ -87,5 +88,12 @@ export class ReceivablesPayablesController {
   @Get('contacts/:id/loan-statement')
   loanStatement(@Param('businessId') businessId: string, @Param('id') id: string, @Query() query: LoanStatementQueryDto) {
     return this.service.getLoanStatement(businessId, id, query);
+  }
+
+  // Books' customer/supplier statement, paged, with the running balance
+  // worked out over the whole history.
+  @Get('contacts/:id/statement')
+  statement(@Param('businessId') businessId: string, @Param('id') id: string, @Query() query: ContactStatementQueryDto) {
+    return this.service.getContactStatement(businessId, id, query);
   }
 }
