@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import type { WorkspaceType } from '@prisma/client';
 import { END_USER_WHERE } from '../common/roles.js';
 import { PrismaService } from '../prisma/prisma.service.js';
-import { ListWorkspaceOverviewQueryDto } from './dto/list-workspace-overview-query.dto.js';
+import { ListWorkspaceOverviewQueryDto, type WorkspaceOverviewSort } from './dto/list-workspace-overview-query.dto.js';
 
 interface OwnerRow {
   id: string;
@@ -39,6 +39,20 @@ const byAddOnDesc = (a: WorkspaceOverviewItem, b: WorkspaceOverviewItem) =>
   b.additionalWorkspaces - a.additionalWorkspaces ||
   a.name.localeCompare(b.name);
 
+type ItemOrder = (a: WorkspaceOverviewItem, b: WorkspaceOverviewItem) => number;
+
+// Each order the list offers (?sort=). Ties fall back to the default order,
+// so a page stays the same between requests whichever order is picked; an
+// owner without a plan comes after every plan.
+const ORDERS: Record<WorkspaceOverviewSort, ItemOrder> = {
+  addOn: byAddOnDesc,
+  workspaces: (a, b) => b.totalWorkspaces - a.totalWorkspaces || byAddOnDesc(a, b),
+  extra: (a, b) => b.additionalWorkspaces - a.additionalWorkspaces || byAddOnDesc(a, b),
+  name: (a, b) => a.name.localeCompare(b.name) || a.email.localeCompare(b.email),
+  plan: (a, b) =>
+    Number(a.planName === null) - Number(b.planName === null) || (a.planName ?? '').localeCompare(b.planName ?? '') || byAddOnDesc(a, b),
+};
+
 @Injectable()
 export class AdminWorkspacesService {
   constructor(private readonly prisma: PrismaService) {}
@@ -47,8 +61,9 @@ export class AdminWorkspacesService {
   // the page lists and counts as "people with extra workspaces". (Every
   // signup owns a personal workspace, so without isDefault: false this was
   // simply every registered user.) The add-on fee is computed, so the sort
-  // and the page happen in memory over every matching owner, which the
-  // summary and the spread need in full anyway; fine at expected volumes.
+  // (biggest add-on first unless ?sort= picks another order) and the page
+  // happen in memory over every matching owner, which the summary and the
+  // spread need in full anyway; fine at expected volumes.
   async overview(query: ListWorkspaceOverviewQueryDto) {
     const page = query.page ?? 1;
     const limit = query.limit ?? 20;
@@ -65,7 +80,7 @@ export class AdminWorkspacesService {
       this.prisma.user.count({ where: { ...END_USER_WHERE, ownedBusinesses: { some: { deletedAt: null } } } }),
     ]);
 
-    const all = owners.map((user) => this.summarizeUser(user)).sort(byAddOnDesc);
+    const all = owners.map((user) => this.summarizeUser(user)).sort(ORDERS[query.sort ?? 'addOn']);
 
     let totalAdditionalWorkspaces = 0;
     let totalEstimatedMonthlyAddOnRevenue = 0;
