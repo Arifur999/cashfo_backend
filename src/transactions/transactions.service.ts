@@ -345,6 +345,7 @@ export class TransactionsService {
   // The figures above the Transactions list, over every page the list's
   // filters match rather than the page on screen. `count` is what the list
   // calls `meta.total`; `voided` is how many of those are voided originals;
+  // `standing` is how many still stand (neither voided nor a reversal);
   // `totals` sums each standing transaction's debit side (its amount), so a
   // voided entry and its reversal both drop out, as in every other total.
   async summarizeTransactions(businessId: string, filters: ListTransactionsQueryDto) {
@@ -357,16 +358,17 @@ export class TransactionsService {
         _sum: { amount: true },
       });
 
-    const [count, voided, income, expense, transfer] = await Promise.all([
+    const [count, voided, standing, income, expense, transfer] = await Promise.all([
       this.prisma.transaction.count({ where }),
       this.prisma.transaction.count({ where: { AND: [where, { status: 'VOIDED', reversalOfId: null }] } }),
+      this.prisma.transaction.count({ where: { AND: [where, STANDING_TRANSACTION] } }),
       totalOf('INCOME'),
       totalOf('EXPENSE'),
       totalOf('TRANSFER'),
     ]);
 
     const money = (sum: { _sum: { amount: Prisma.Decimal | null } }) => new Prisma.Decimal(sum._sum.amount ?? 0).toFixed(2);
-    return { count, voided, totals: { INCOME: money(income), EXPENSE: money(expense), TRANSFER: money(transfer) } };
+    return { count, voided, standing, totals: { INCOME: money(income), EXPENSE: money(expense), TRANSFER: money(transfer) } };
   }
 
   // One filter for the list and its summary, so the figures always describe

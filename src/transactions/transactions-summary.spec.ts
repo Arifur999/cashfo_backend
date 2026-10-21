@@ -53,11 +53,13 @@ const setup = () => {
 const filters = (overrides: Partial<ListTransactionsQueryDto> = {}) => overrides as ListTransactionsQueryDto;
 
 describe('TransactionsService.summarizeTransactions', () => {
-  it('counts every matching transaction and the voided originals among them', async () => {
+  it('counts every matching transaction, the voided originals among them and those that still stand', async () => {
     const { service } = setup();
     const summary = await service.summarizeTransactions('biz-1', filters());
     expect(summary.count).toBe(6);
     expect(summary.voided).toBe(1);
+    // The income, expense, transfer and sale; not the voided one or its reversal.
+    expect(summary.standing).toBe(4);
   });
 
   it("totals each type's standing transactions, leaving out a voided entry and its reversal", async () => {
@@ -77,13 +79,13 @@ describe('TransactionsService.summarizeTransactions', () => {
   it('narrows to a type filter instead of overriding it', async () => {
     const { service } = setup();
     const summary = await service.summarizeTransactions('biz-1', filters({ transactionType: 'EXPENSE' }));
-    expect(summary).toEqual({ count: 1, voided: 0, totals: { INCOME: '0.00', EXPENSE: '250.50', TRANSFER: '0.00' } });
+    expect(summary).toEqual({ count: 1, voided: 0, standing: 1, totals: { INCOME: '0.00', EXPENSE: '250.50', TRANSFER: '0.00' } });
   });
 
   it('narrows to a status filter instead of overriding it', async () => {
     const { service } = setup();
     const voidedOnly = await service.summarizeTransactions('biz-1', filters({ status: 'VOIDED' }));
-    expect(voidedOnly).toEqual({ count: 1, voided: 1, totals: { INCOME: '0.00', EXPENSE: '0.00', TRANSFER: '0.00' } });
+    expect(voidedOnly).toEqual({ count: 1, voided: 1, standing: 0, totals: { INCOME: '0.00', EXPENSE: '0.00', TRANSFER: '0.00' } });
     const postedOnly = await service.summarizeTransactions('biz-1', filters({ status: 'POSTED' }));
     expect(postedOnly.voided).toBe(0);
     expect(postedOnly.totals.INCOME).toBe('1000.00');
