@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { AccountType, Prisma, WorkspaceType } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { dayWindow, entryTotals, LIVE_TRANSACTION, periodFigures, type EntryTotals } from './account-figures.js';
 import { CreateAccountDto } from './dto/create-account.dto.js';
 import { UpdateAccountDto } from './dto/update-account.dto.js';
 
@@ -101,13 +102,29 @@ export class AccountsService {
     }
   }
 
-  async list(businessId: string) {
+  // With dateFrom and/or dateTo (Dhaka calendar days, both included), every
+  // account -- children too -- also carries periodDebit, periodCredit and
+  // periodNet: what its standing entries (POSTED, not a reversal) in the
+  // period add up to, its own and not its children's, for every account from
+  // one groupBy. periodNet is signed the way the account grows, as
+  // getAccountSummary() signs totalIn less totalOut; transfers count too, so
+  // for a wallet it is that plus the summary's adjustment. Books' accounts
+  // page read one summary per income and expense account for it.
+  async list(businessId: string, filters: { dateFrom?: string; dateTo?: string } = {}) {
+    // Otherwise the period would hold nothing and every account read as quiet.
+    if (filters.dateFrom && filters.dateTo && filters.dateFrom > filters.dateTo) {
+      throw new BadRequestException('dateFrom must be on or before dateTo');
+    }
+
     const accounts = await this.prisma.account.findMany({
       where: { businessId },
       orderBy: [{ accountType: 'asc' }, { displayOrder: 'asc' }],
     });
 
-    const byId = new Map(accounts.map((a) => [a.id, { ...a, children: [] as (typeof accounts)[number][] }]));
+    const dates = dayWindow(filters);
+    const period = dates ? await this.periodTotals(businessId, accounts, dates) : null;
+
+    const byId = new Map(accounts.map((a) => [a.id, { ...a, ...(period && periodFigures(a.accountType, period.get(a.id))), children: [] as (typeof accounts)[number][] }]));
     const roots: (typeof accounts)[number][] = [];
     for (const account of accounts) {
       const node = byId.get(account.id)!;
@@ -356,6 +373,18 @@ export class AccountsService {
       await this.prisma.account.update({ where: { id }, data: { status: 'ARCHIVED' } });
     }
     return { deleted: false };
+  }
+
+  // Debit and credit totals of every account's standing entries dated within
+  // `dates`, in one groupBy whatever the number of accounts.
+  private async periodTotals(businessId: string, accounts: { id: string }[], dates: Prisma.DateTimeFilter): Promise<Map<string, EntryTotals>> {
+    if (accounts.length === 0) return new Map();
+    const sums = await this.prisma.transactionEntry.groupBy({
+      by: ['accountId', 'entryType'],
+      where: { accountId: { in: accounts.map((a) => a.id) }, transaction: { businessId, ...LIVE_TRANSACTION, transactionDate: dates } },
+      _sum: { amount: true },
+    });
+    return entryTotals(sums);
   }
 
   private refuseReservedSubtype(accountSubtype: string | null | undefined) {
