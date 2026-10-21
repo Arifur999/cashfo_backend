@@ -178,9 +178,12 @@ export class TicketsService {
       data: { ticketId: id, senderType: 'ADMIN', senderId: adminId, message: dto.message, attachmentUrl: dto.attachmentUrl },
     });
 
-    if (ticket.status === TicketStatus.OPEN) {
-      await this.prisma.supportTicket.update({ where: { id }, data: { status: TicketStatus.IN_PROGRESS } });
-    }
+    // A reply is activity on the ticket: "in progress for over 24 hours"
+    // reads updatedAt, which a new message alone doesn't move.
+    await this.prisma.supportTicket.update({
+      where: { id },
+      data: { updatedAt: new Date(), ...(ticket.status === TicketStatus.OPEN && { status: TicketStatus.IN_PROGRESS }) },
+    });
 
     await this.tellCustomer(ticket, message.id, dto.message);
     return message;
@@ -235,7 +238,7 @@ export class TicketsService {
     const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
     const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     const monthAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
-    const [byStatusRaw, unassignedOpenCount, inProgressOver24hCount, urgentCount, solvedThisWeekCount, byCategoryRaw, byPriorityRaw, resolvedTickets, recentTickets] =
+    const [byStatusRaw, unassignedOpenCount, inProgressOver24hCount, urgentCount, solvedThisWeekCount, byCategoryRaw, byPriorityRaw, resolvedTickets, recentTickets, unsolved] =
       await Promise.all([
         this.prisma.supportTicket.groupBy({ by: ['status'], _count: true }),
         this.prisma.supportTicket.count({ where: { status: 'OPEN', assignedToAdminId: null } }),
@@ -253,6 +256,11 @@ export class TicketsService {
           where: { createdAt: { gte: monthAgo } },
           select: { createdAt: true, messages: { where: { senderType: 'ADMIN' }, orderBy: { createdAt: 'asc' }, take: 1, select: { createdAt: true } } },
         }),
+        // Who wrote last on each unsolved ticket: the list's "waiting on us".
+        this.prisma.supportTicket.findMany({
+          where: { status: { notIn: ['RESOLVED', 'CLOSED'] } },
+          select: { createdAt: true, messages: { orderBy: { createdAt: 'desc' }, take: 1, select: { senderType: true, createdAt: true } } },
+        }),
       ]);
 
     const hours = (ms: number) => ms / (1000 * 60 * 60);
@@ -262,6 +270,12 @@ export class TicketsService {
     const avgFirstReplyHours =
       answered.length > 0 ? hours(answered.reduce((sum, t) => sum + (t.messages[0].createdAt.getTime() - t.createdAt.getTime()), 0) / answered.length) : 0;
 
+    // The customer wrote last (or only opened it): the team owes a reply,
+    // whatever the status says, and since when.
+    const owedSince = unsolved.flatMap((t) => (t.messages.length === 0 ? [t.createdAt] : t.messages[0].senderType === 'USER' ? [t.messages[0].createdAt] : []));
+    const needsReplyCount = owedSince.length;
+    const needsReplyOver24hCount = owedSince.filter((since) => since < dayAgo).length;
+
     const statusCounts = Object.fromEntries(Object.values(TicketStatus).map((status) => [status, 0])) as Record<TicketStatus, number>;
     for (const row of byStatusRaw) statusCounts[row.status] = row._count;
 
@@ -270,6 +284,8 @@ export class TicketsService {
       unassignedOpenCount,
       inProgressCount: statusCounts.IN_PROGRESS,
       inProgressOver24hCount,
+      needsReplyCount,
+      needsReplyOver24hCount,
       waitingOnUserCount: statusCounts.WAITING_ON_USER,
       urgentCount,
       solvedThisWeekCount,

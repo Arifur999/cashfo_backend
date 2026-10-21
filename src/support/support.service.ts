@@ -72,6 +72,8 @@ export class SupportService {
     const updated = await this.prisma.supportTicket.update({
       where: { id: ticketId },
       data: {
+        // Said outright: the queue's staleness reads updatedAt.
+        updatedAt: new Date(),
         ...(REOPENED_BY_REPLY.includes(ticket.status) && { status: TicketStatus.OPEN, resolvedAt: null }),
         messages: { create: { senderType: 'USER', senderId: userId, message: dto.message } },
       },
