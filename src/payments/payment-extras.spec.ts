@@ -1,5 +1,5 @@
 import { PaymentStatus } from '@prisma/client';
-import { duplicateOf } from './payment-extras.js';
+import { duplicateOf, paymentIdPrefix } from './payment-extras.js';
 
 const at = (minutes: number) => new Date(Date.UTC(2026, 9, 1, 4, minutes));
 const paid = (id: string, minutes: number, overrides: Partial<{ platformUserId: string; planId: string; status: PaymentStatus }> = {}) => ({
@@ -31,5 +31,18 @@ describe('duplicateOf', () => {
   it('names the earliest when several came in a row', () => {
     const third = paid('PAY-20932', 16);
     expect(duplicateOf(third, [first, second, third])).toBe('PAY-20930');
+  });
+});
+
+describe('paymentIdPrefix', () => {
+  it('reads the id as the app prints it, with or without PAY-', () => {
+    expect(paymentIdPrefix('PAY-3F2A1C9B')).toBe('3f2a1c9b');
+    expect(paymentIdPrefix(' pay-3f2a ')).toBe('3f2a');
+    expect(paymentIdPrefix('3F2A1C9B')).toBe('3f2a1c9b');
+  });
+
+  it('has nothing to match when only PAY- was typed', () => {
+    expect(paymentIdPrefix('PAY-')).toBeNull();
+    expect(paymentIdPrefix('  ')).toBeNull();
   });
 });
