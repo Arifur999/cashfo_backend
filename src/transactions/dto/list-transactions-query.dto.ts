@@ -1,5 +1,5 @@
 import { Transform, Type } from 'class-transformer';
-import { IsArray, IsIn, IsInt, IsISO8601, IsOptional, IsString, Max, Min } from 'class-validator';
+import { IsArray, IsBoolean, IsIn, IsInt, IsISO8601, IsOptional, IsString, Max, Min } from 'class-validator';
 import { ContactCategory, TransactionStatus, TransactionType } from '@prisma/client';
 
 export class ListTransactionsQueryDto {
@@ -58,6 +58,13 @@ export class ListTransactionsQueryDto {
   @IsOptional()
   @IsIn(Object.values(TransactionStatus))
   status?: TransactionStatus;
+
+  // Leaves out what a savings goal moved (any entry on a savings wallet):
+  // Wallets › Transfer lists money moved between wallets, not into savings.
+  @IsOptional()
+  @Transform(({ value }) => (value === 'true' || value === '1' ? true : value === 'false' || value === '0' ? false : value))
+  @IsBoolean()
+  excludeSavings?: boolean;
 
   @IsOptional()
   @IsString()
