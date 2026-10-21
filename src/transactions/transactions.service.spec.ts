@@ -1,4 +1,5 @@
 import { BadRequestException, NotFoundException } from '@nestjs/common';
+import type { ListTransactionsQueryDto } from './dto/list-transactions-query.dto.js';
 import { TransactionsService } from './transactions.service.js';
 
 const original = {
@@ -70,5 +71,48 @@ describe('TransactionsService.voidTransaction', () => {
     const { service, tx } = setup({ claimed: 0 });
     await expect(service.voidTransaction('biz-1', 'tx-1', 'reason', 'user-1')).rejects.toThrow(BadRequestException);
     expect(tx.transaction.create).not.toHaveBeenCalled();
+  });
+});
+
+describe("TransactionsService entries' accounts", () => {
+  // A wallet the app names itself, and an account its owner named in Bangla.
+  const cash = { id: 'cash', name: 'Cash', nameBn: null, accountType: 'ASSET', accountSubtype: 'cash' };
+  const rent = { id: 'rent', name: 'Rent Expense', nameBn: 'ভাড়া খরচ', accountType: 'EXPENSE', accountSubtype: null };
+  const posted = {
+    ...original,
+    entries: [
+      { ...original.entries[0], account: cash },
+      { ...original.entries[1], account: rent },
+    ],
+  };
+  const accountSelect = { id: true, name: true, nameBn: true, accountType: true, accountSubtype: true };
+
+  const reads = () => {
+    const prisma = {
+      transaction: {
+        // The list's page; getTransaction() reads its corrections through it too.
+        findMany: vi.fn().mockResolvedValue([posted]),
+        findUnique: vi.fn().mockResolvedValue(posted),
+        count: vi.fn().mockResolvedValue(1),
+      },
+      savingsGoalEntry: { findMany: vi.fn().mockResolvedValue([]) },
+      asset: { findMany: vi.fn().mockResolvedValue([]) },
+    };
+    return { service: new TransactionsService(prisma as never, {} as never), prisma };
+  };
+
+  it("names each entry's account in Bangla too, on every row of the list", async () => {
+    const { service, prisma } = reads();
+    const { data } = await service.listTransactions('biz-1', {} as ListTransactionsQueryDto);
+    expect(prisma.transaction.findMany.mock.calls[0][0].include.entries).toEqual({ include: { account: { select: accountSelect } } });
+    expect(data[0].entries.map((entry) => entry.account.nameBn)).toEqual([null, 'ভাড়া খরচ']);
+  });
+
+  it('names them the same way on a single transaction', async () => {
+    const { service, prisma } = reads();
+    prisma.transaction.findMany.mockResolvedValue([]);
+    const transaction = await service.getTransaction('biz-1', 'tx-1');
+    expect(prisma.transaction.findUnique.mock.calls[0][0].include.entries).toEqual({ include: { account: { select: accountSelect } } });
+    expect(transaction.entries.map((entry) => entry.account.nameBn)).toEqual([null, 'ভাড়া খরচ']);
   });
 });

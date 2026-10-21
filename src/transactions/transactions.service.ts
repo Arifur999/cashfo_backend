@@ -11,6 +11,10 @@ import { ListTransactionsQueryDto } from './dto/list-transactions-query.dto.js';
 // Still counts: neither a voided original nor the reversal that undid it.
 const STANDING_TRANSACTION = { status: 'POSTED', reversalOfId: null } satisfies Prisma.TransactionWhereInput;
 
+// The account each entry names, alike in the list and a single transaction:
+// nameBn is the account's Bangla name, null where it has none.
+const ENTRY_ACCOUNT_SELECT = { id: true, name: true, nameBn: true, accountType: true, accountSubtype: true } satisfies Prisma.AccountSelect;
+
 @Injectable()
 export class TransactionsService {
   constructor(
@@ -265,7 +269,7 @@ export class TransactionsService {
   async getTransaction(businessId: string, transactionId: string) {
     const transaction = await this.prisma.transaction.findUnique({
       where: { id: transactionId },
-      include: { entries: { include: { account: { select: { id: true, name: true, accountType: true, accountSubtype: true } } } } },
+      include: { entries: { include: { account: { select: ENTRY_ACCOUNT_SELECT } } } },
     });
     if (!transaction || transaction.businessId !== businessId) {
       throw new NotFoundException('Transaction not found');
@@ -329,7 +333,7 @@ export class TransactionsService {
         // row. contact: the Loan Management Transactions page needs the
         // Bank/Person name per row too.
         include: {
-          entries: { include: { account: { select: { id: true, name: true, accountType: true, accountSubtype: true } } } },
+          entries: { include: { account: { select: ENTRY_ACCOUNT_SELECT } } },
           contact: { select: { id: true, name: true } },
         },
         orderBy: [{ transactionDate: 'desc' }, { createdAt: 'desc' }],
