@@ -79,13 +79,19 @@ export class ReferralsService {
       pendingEarnings: pendingEarnings.toFixed(2),
       availableBalance: availableBalance.toFixed(2),
       referralCount: referrals.length,
+      // Friends whose reward is still waiting out its 30 days.
+      pendingCount: referrals.filter((r) => r.status === 'PENDING').length,
       rewardAmountPerReferral: new Prisma.Decimal(settings.referralRewardAmount).toFixed(2),
-      recentReferrals: referrals.slice(0, 10).map((r) => ({
+      // Every friend, newest first (the page pages them); it held only the
+      // newest 10, so anyone with more couldn't see who else joined.
+      recentReferrals: referrals.map((r) => ({
         id: r.id,
         name: r.referredUser.name,
         status: r.status,
         rewardAmount: new Prisma.Decimal(r.rewardAmount).toFixed(2),
         createdAt: r.createdAt.toISOString(),
+        confirmedAt: r.confirmedAt?.toISOString() ?? null,
+        withdrawnAt: r.withdrawnAt?.toISOString() ?? null,
       })),
     };
   }
