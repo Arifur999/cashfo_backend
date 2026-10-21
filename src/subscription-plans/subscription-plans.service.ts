@@ -35,25 +35,51 @@ export class SubscriptionPlansService {
     return { ...plan, userCount };
   }
 
-  async create(dto: CreatePlanDto) {
+  async create(dto: CreatePlanDto, adminId: string, ipAddress?: string) {
     const existing = await this.prisma.subscriptionPlan.findUnique({ where: { slug: dto.slug } });
     if (existing) {
       throw new ConflictException('A plan with this slug already exists');
     }
+    const displayOrder = dto.displayOrder ?? (await this.nextDisplayOrder());
 
-    return this.prisma.subscriptionPlan.create({
-      data: {
-        name: dto.name,
-        slug: dto.slug,
-        billingCycle: dto.billingCycle,
-        price: dto.price,
-        currency: dto.currency ?? 'BDT',
-        trialDays: dto.trialDays ?? 0,
-        isActive: dto.isActive ?? true,
-        displayOrder: dto.displayOrder ?? 0,
-        featureLimits: dto.featureLimits as unknown as Prisma.InputJsonValue,
-      },
+    // The plan and its audit row are saved together, as update, archive and
+    // remove do. The answer is still the plan itself.
+    return this.prisma.$transaction(async (tx) => {
+      const plan = await tx.subscriptionPlan.create({
+        data: {
+          name: dto.name,
+          slug: dto.slug,
+          billingCycle: dto.billingCycle,
+          price: dto.price,
+          currency: dto.currency ?? 'BDT',
+          trialDays: dto.trialDays ?? 0,
+          isActive: dto.isActive ?? true,
+          displayOrder,
+          featureLimits: dto.featureLimits as unknown as Prisma.InputJsonValue,
+        },
+      });
+
+      await tx.auditLog.create({
+        data: {
+          adminUserId: adminId,
+          action: 'PLAN_CREATED',
+          entityType: 'SubscriptionPlan',
+          entityId: plan.id,
+          newValue: plan as unknown as Prisma.InputJsonValue,
+          ipAddress,
+        },
+      });
+
+      return plan;
     });
+  }
+
+  // A plan made without a place in the order goes after every other plan
+  // (the very first one gets 0). Archived plans count too: one made active
+  // again keeps its place ahead of the new plan.
+  private async nextDisplayOrder() {
+    const { _max } = await this.prisma.subscriptionPlan.aggregate({ _max: { displayOrder: true } });
+    return _max.displayOrder === null ? 0 : _max.displayOrder + 1;
   }
 
   async update(id: string, dto: UpdatePlanDto, adminId: string, ipAddress?: string) {

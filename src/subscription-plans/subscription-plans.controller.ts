@@ -32,8 +32,8 @@ export class SubscriptionPlansController {
 
   @Roles(AdminRole.SUPER_ADMIN, AdminRole.FINANCE_ADMIN)
   @Post()
-  create(@Body() dto: CreatePlanDto) {
-    return this.subscriptionPlansService.create(dto);
+  create(@Body() dto: CreatePlanDto, @CurrentAdmin() admin: RequestAdminUser, @Req() req: Request) {
+    return this.subscriptionPlansService.create(dto, admin.id, req.ip);
   }
 
   @Roles(AdminRole.SUPER_ADMIN, AdminRole.FINANCE_ADMIN)
