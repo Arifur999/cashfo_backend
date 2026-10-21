@@ -9,6 +9,7 @@ import { CreateAssetPurchaseDto } from './dto/create-asset-purchase.dto.js';
 import { SellAssetDto } from './dto/sell-asset.dto.js';
 import { UpdateAssetCategoryDto } from './dto/update-asset-category.dto.js';
 import { UpdateAssetValueDto } from './dto/update-asset-value.dto.js';
+import { UpdateAssetDto } from './dto/update-asset.dto.js';
 
 const VALUE_HISTORY_ORDER = { recordedAt: 'desc' as const };
 
@@ -248,6 +249,77 @@ export class AssetsService {
         data: isToday ? { currentValue: dto.value } : {},
         include: { valueHistory: { orderBy: VALUE_HISTORY_ORDER } },
       });
+    });
+  }
+
+  // Corrects an asset's name, type and notes. The purchase date changes
+  // only on an asset no wallet paid for (a paid purchase keeps its
+  // posting's date), and only while nothing has happened to it since:
+  // its first value moves to the new day with it.
+  async update(businessId: string, id: string, dto: UpdateAssetDto) {
+    const asset = await this.requireAsset(businessId, id);
+    const newDate = dto.purchaseDate !== undefined && dto.purchaseDate.slice(0, 10) !== asset.purchaseDate.toISOString().slice(0, 10) ? new Date(dto.purchaseDate) : null;
+    if (newDate) {
+      if (asset.purchaseTransactionId) {
+        throw new BadRequestException('A purchase paid from a wallet keeps its date. Delete the asset and add it again to change it.');
+      }
+      const history = await this.prisma.assetValueHistory.count({ where: { assetId: id } });
+      if (asset.status === 'SOLD' || history > 1) {
+        throw new BadRequestException('The purchase date can only change before the asset is revalued or sold.');
+      }
+    }
+    return this.prisma.$transaction(async (tx) => {
+      if (newDate) await tx.assetValueHistory.updateMany({ where: { assetId: id }, data: { recordedAt: newDate } });
+      return tx.asset.update({
+        where: { id },
+        data: {
+          ...(dto.name !== undefined && { name: dto.name }),
+          ...(dto.category !== undefined && { category: dto.category }),
+          ...(dto.notes !== undefined && { notes: dto.notes?.trim() || null }),
+          ...(newDate && { purchaseDate: newDate }),
+        },
+        include: { valueHistory: { orderBy: VALUE_HISTORY_ORDER } },
+      });
+    });
+  }
+
+  // Takes away an asset entered by mistake. A purchase paid from a wallet is
+  // voided in the same commit, so the money is back in the wallet; a sold
+  // asset needs its sale undone first.
+  async remove(businessId: string, id: string, userId: string) {
+    return this.transactionsService.withLocks([`asset:${id}`, `fixed-assets:${businessId}`], async (tx) => {
+      const asset = await this.requireAsset(businessId, id, tx);
+      if (asset.status === 'SOLD') {
+        throw new BadRequestException('Undo the sale first, then delete the asset.');
+      }
+      await tx.assetValueHistory.deleteMany({ where: { assetId: id } });
+      await tx.asset.delete({ where: { id } });
+      // The asset is gone first, so the void finds no asset owning the
+      // posting (voids of asset postings are refused anywhere else).
+      if (asset.purchaseTransactionId) {
+        await this.transactionsService.voidTransaction(businessId, asset.purchaseTransactionId, `Asset deleted: ${asset.name}`, userId, tx);
+      }
+      return { id };
+    });
+  }
+
+  // Undoes a sale recorded by mistake: the sale's income is voided and the
+  // asset is owned again, at the value it had before.
+  async undoSale(businessId: string, id: string, userId: string) {
+    return this.transactionsService.withLocks([`asset:${id}`, `fixed-assets:${businessId}`], async (tx) => {
+      const asset = await this.requireAsset(businessId, id, tx);
+      if (asset.status !== 'SOLD') {
+        throw new BadRequestException('This asset has not been sold.');
+      }
+      const restored = await tx.asset.update({
+        where: { id },
+        data: { status: 'ACTIVE', soldAt: null, soldPrice: null, soldAccountId: null, soldTransactionId: null },
+        include: { valueHistory: { orderBy: VALUE_HISTORY_ORDER } },
+      });
+      if (asset.soldTransactionId) {
+        await this.transactionsService.voidTransaction(businessId, asset.soldTransactionId, `Sale undone: ${asset.name}`, userId, tx);
+      }
+      return restored;
     });
   }
 
