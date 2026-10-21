@@ -9,6 +9,7 @@ import { CreateGroupMemberDto } from './dto/create-group-member.dto.js';
 import { CreateGroupMonthBudgetDto } from './dto/create-group-month-budget.dto.js';
 import { ListGroupContributionsQueryDto, ListGroupExpensesQueryDto, ListGroupMealsQueryDto, ListGroupMembersQueryDto, SettlementQueryDto } from './dto/group-query.dto.js';
 import { SetGroupMealsDto } from './dto/group-meal.dto.js';
+import { SettleUpDto } from './dto/settle-up.dto.js';
 import { UpdateGroupSettingsDto } from './dto/group-settings.dto.js';
 import { UpdateGroupContributionDto } from './dto/update-group-contribution.dto.js';
 import { UpdateGroupExpenseCategoryDto } from './dto/update-group-expense-category.dto.js';
@@ -92,6 +93,12 @@ export class GroupExpensesController {
   @Post('contributions')
   createContribution(@Param('businessId') businessId: string, @Body() dto: CreateGroupContributionDto) {
     return this.groupExpensesService.createContribution(businessId, dto);
+  }
+
+  @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
+  @Post('settle-up')
+  settleUp(@Param('businessId') businessId: string, @Body() dto: SettleUpDto) {
+    return this.groupExpensesService.settleUp(businessId, dto);
   }
 
   @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)

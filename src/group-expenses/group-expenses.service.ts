@@ -16,6 +16,7 @@ import { UpdateGroupMonthBudgetDto } from './dto/update-group-month-budget.dto.j
 import { GroupExpenseSplitDto } from './dto/group-expense-split.dto.js';
 import { SetGroupMealsDto } from './dto/group-meal.dto.js';
 import { UpdateGroupSettingsDto } from './dto/group-settings.dto.js';
+import { SettleUpDto } from './dto/settle-up.dto.js';
 import { settleGroup } from './group-settlement.js';
 
 export interface SettlementMemberRow {
@@ -171,6 +172,25 @@ export class GroupExpensesService {
         note: dto.note,
       },
     });
+  }
+
+  // A payment from one member to another: the payer's SETTLE in and the
+  // receiver's SETTLE out, in one commit. Recorded as two calls, the first
+  // could save and the second fail, leaving half a payment.
+  async settleUp(businessId: string, dto: SettleUpDto) {
+    if (dto.fromMemberId === dto.toMemberId) {
+      throw new BadRequestException('Pick two different members.');
+    }
+    if (!(Number(dto.amount) > 0)) {
+      throw new BadRequestException('The amount must be more than zero.');
+    }
+    await this.requireMember(businessId, dto.fromMemberId);
+    await this.requireMember(businessId, dto.toMemberId);
+    const date = new Date(dto.date);
+    return this.prisma.$transaction([
+      this.prisma.groupContribution.create({ data: { businessId, groupMemberId: dto.fromMemberId, amount: dto.amount, kind: 'SETTLE', date, note: dto.payerNote } }),
+      this.prisma.groupContribution.create({ data: { businessId, groupMemberId: dto.toMemberId, amount: `-${dto.amount}`, kind: 'SETTLE', date, note: dto.receiverNote } }),
+    ]);
   }
 
   async updateContribution(businessId: string, id: string, dto: UpdateGroupContributionDto) {
