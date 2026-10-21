@@ -42,14 +42,6 @@ export class ContactsService {
       this.prisma.contact.count({ where }),
     ]);
 
-    // currentBalance = openingBalance + outstanding receivable - outstanding
-    // payable (see ReceivablesPayablesService.getContactCurrentBalance()).
-    // Sequential, not Promise.all -- each call does several queries of its
-    // own, and firing all of them for every contact on the page at once
-    // multiplies concurrent DB connection demand for no real benefit at
-    // this app's realistic contact-list-page size. O(page size), same
-    // "acceptable at this app's scale" tradeoff as Prompt 7's ledger
-    // pagination -- just spread over time instead of all at once.
     // The newest posting with each contact on the page, for the list's
     // "last activity" column.
     const latest = await this.prisma.transaction.groupBy({
@@ -59,10 +51,15 @@ export class ContactsService {
     });
     const lastActivity = new Map(latest.map((row) => [row.contactId, row._max.transactionDate]));
 
-    const withBalance: (Prisma.ContactGetPayload<object> & { currentBalance: Prisma.Decimal; lastActivityAt: Date | null })[] = [];
-    for (const c of data) {
-      withBalance.push({ ...c, currentBalance: await this.receivablesPayablesService.getContactCurrentBalance(businessId, c), lastActivityAt: lastActivity.get(c.id) ?? null });
-    }
+    // currentBalance = openingBalance + outstanding receivable - outstanding
+    // payable, for the whole page in a few queries
+    // (ReceivablesPayablesService.getContactCurrentBalances()).
+    const balances = await this.receivablesPayablesService.getContactCurrentBalances(businessId, data);
+    const withBalance: (Prisma.ContactGetPayload<object> & { currentBalance: Prisma.Decimal; lastActivityAt: Date | null })[] = data.map((c) => ({
+      ...c,
+      currentBalance: balances.get(c.id)!,
+      lastActivityAt: lastActivity.get(c.id) ?? null,
+    }));
 
     return {
       data: withBalance,

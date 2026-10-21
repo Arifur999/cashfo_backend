@@ -11,38 +11,11 @@ import { CreateReceivableDto } from './dto/create-receivable.dto.js';
 import { PayPaymentDto } from './dto/pay-payment.dto.js';
 import { ReceivePaymentDto } from './dto/receive-payment.dto.js';
 import { profitTotals } from './loan-profit.js';
+import { directionBreakdown, type Direction, type DirectionBreakdown, type DirectionPosting } from './direction-breakdown.js';
 import { loanStatementRows, type LoanStatementItem, type LoanStatementRow } from './loan-statement.js';
 
+export type { Direction, DirectionBreakdown, InvoiceBreakdown } from './direction-breakdown.js';
 export type { LoanStatementRow } from './loan-statement.js';
-
-export type Direction = 'RECEIVABLE' | 'PAYABLE';
-
-export interface InvoiceBreakdown {
-  transactionId: string;
-  date: Date;
-  description: string | null;
-  originalAmount: string;
-  amountPaid: string;
-  remainingAmount: string;
-  dueDate: Date | null;
-  isOverdue: boolean;
-}
-
-export interface DirectionBreakdown {
-  totalInvoiced: string;
-  totalPaid: string;
-  // What the invoices still owe, after general payments settled the opening
-  // balance first (it is the oldest amount owed). Negative when overpaid.
-  remaining: string;
-  // The contact's opening balance owed in this direction, and what of it is
-  // still unpaid.
-  openingOwed: string;
-  openingRemaining: string;
-  // Invoices minus payments: this direction's change to the contact's
-  // balance, which adds the opening balance once on top.
-  balance: string;
-  transactions: InvoiceBreakdown[];
-}
 
 export interface AgingBucketRow {
   contactId: string;
@@ -500,8 +473,9 @@ export class ReceivablesPayablesService {
     const today = todayUtcMidnight();
     const rows: AgingBucketRow[] = [];
 
+    const breakdowns = await this.computeDirections(businessId, contacts, direction);
     for (const contact of contacts) {
-      const breakdown = await this.computeDirection(businessId, contact, direction);
+      const breakdown = breakdowns.get(contact.id)!;
       if (new Prisma.Decimal(breakdown.remaining).lessThanOrEqualTo(0)) continue;
 
       const rowBuckets: Record<AgingBucket, Prisma.Decimal> = {
@@ -551,8 +525,9 @@ export class ReceivablesPayablesService {
 
     const today = todayUtcMidnight();
     const rows: OverdueRow[] = [];
+    const breakdowns = await this.computeDirections(businessId, contacts, direction);
     for (const contact of contacts) {
-      const breakdown = await this.computeDirection(businessId, contact, direction);
+      const breakdown = breakdowns.get(contact.id)!;
       for (const t of breakdown.transactions) {
         if (!t.isOverdue || !t.dueDate) continue;
         const daysOverdue = Math.floor((today.getTime() - t.dueDate.getTime()) / DAY_MS);
@@ -585,8 +560,9 @@ export class ReceivablesPayablesService {
     const today = todayUtcMidnight();
     const horizon = today.getTime() + days * DAY_MS;
     const rows: DueSoonRow[] = [];
+    const breakdowns = await this.computeDirections(businessId, contacts, direction);
     for (const contact of contacts) {
-      const breakdown = await this.computeDirection(businessId, contact, direction);
+      const breakdown = breakdowns.get(contact.id)!;
       for (const t of breakdown.transactions) {
         if (!t.dueDate || t.isOverdue || t.dueDate.getTime() > horizon) continue;
         if (new Prisma.Decimal(t.remainingAmount).lessThanOrEqualTo(0)) continue;
@@ -622,9 +598,10 @@ export class ReceivablesPayablesService {
     const contacts = await this.prisma.contact.findMany({ where: { businessId, id: { in: due.map((row) => row.contactId as string) } } });
 
     const rows: DueReminderRow[] = [];
+    const sides = { RECEIVABLE: await this.computeDirections(businessId, contacts, 'RECEIVABLE'), PAYABLE: await this.computeDirections(businessId, contacts, 'PAYABLE') };
     for (const contact of contacts) {
       for (const direction of ['RECEIVABLE', 'PAYABLE'] as const) {
-        const breakdown = await this.computeDirection(businessId, contact, direction);
+        const breakdown = sides[direction].get(contact.id)!;
         for (const t of breakdown.transactions) {
           if (!t.dueDate || t.isOverdue || t.dueDate.getTime() > horizon) continue;
           if (new Prisma.Decimal(t.remainingAmount).lessThanOrEqualTo(0)) continue;
@@ -647,10 +624,8 @@ export class ReceivablesPayablesService {
 
   // Loan Management's dashboard -- same engine as Dena-Pawna
   // (computeDirection() against the same Accounts Receivable/Payable
-  // accounts). Not filtered by category or type: every contact in the
-  // business is one shared list, and Dena-Pawna / Loan Management are just
-  // two different lenses over it (aging-by-type vs combined Dena/Pawna
-  // totals) rather than two separate contact pools. "Record Sale on
+  // accounts), over the workspace's loan contacts, as the loan pages list
+  // them. "Record Sale on
   // Credit" = give a loan (Pawna, they owe you); "Record Purchase on
   // Credit" = take a loan (Dena, you owe them); the existing payment
   // endpoints settle either side -- no new write path needed, this is
@@ -684,9 +659,11 @@ export class ReceivablesPayablesService {
     let totalReceived = new Prisma.Decimal(0);
     const rows: LoanDashboardRow[] = [];
 
+    const receivables = await this.computeDirections(businessId, contacts, 'RECEIVABLE');
+    const payables = await this.computeDirections(businessId, contacts, 'PAYABLE');
     for (const contact of contacts) {
-      const receivable = await this.computeDirection(businessId, contact, 'RECEIVABLE');
-      const payable = await this.computeDirection(businessId, contact, 'PAYABLE');
+      const receivable = receivables.get(contact.id)!;
+      const payable = payables.get(contact.id)!;
       const opening = new Prisma.Decimal(contact.openingBalance);
       const currentBalance = opening.plus(receivable.balance).minus(payable.balance);
 
@@ -734,18 +711,8 @@ export class ReceivablesPayablesService {
   // ---------------------------------------------------------------------
   // Part B: the core remaining-balance calculation. For a contact and a
   // direction (RECEIVABLE reads SALE transactions against the Accounts
-  // Receivable account; PAYABLE reads PURCHASE against Accounts Payable):
-  //
-  // 1. Payments with `appliedToTransactionId` set reduce that specific
-  //    invoice's remaining balance directly.
-  // 2. Payments without a target are pooled and allocated FIFO -- oldest
-  //    outstanding invoice first -- until the pool is exhausted.
-  //
-  // This is entirely a read-time computation. TransactionEntry rows are
-  // never split or rewritten to reflect an allocation -- the ledger/trial
-  // balance (Prompt 7) only ever sees the original, simple 2-entry
-  // transactions, so those stay correct regardless of how payments get
-  // allocated here.
+  // Receivable account; PAYABLE reads PURCHASE against Accounts Payable),
+  // the allocation rules are in direction-breakdown.ts.
   // ---------------------------------------------------------------------
   async computeDirection(
     businessId: string,
@@ -753,118 +720,74 @@ export class ReceivablesPayablesService {
     direction: Direction,
     client: Prisma.TransactionClient = this.prisma,
   ): Promise<DirectionBreakdown> {
-    const contactId = contact.id;
+    const breakdowns = await this.computeDirections(businessId, [contact], direction, client);
+    return breakdowns.get(contact.id)!;
+  }
+
+  // The same for many contacts at once: three queries whatever their
+  // number, where one contact at a time cost three each (the loan
+  // dashboard and the contact lists did that for every contact, six with
+  // both sides, one after another).
+  async computeDirections(
+    businessId: string,
+    contacts: Pick<Contact, 'id' | 'openingBalance'>[],
+    direction: Direction,
+    client: Prisma.TransactionClient = this.prisma,
+  ): Promise<Map<string, DirectionBreakdown>> {
     const invoiceType = direction === 'RECEIVABLE' ? 'SALE' : 'PURCHASE';
     const subtype = direction === 'RECEIVABLE' ? 'receivable' : 'payable';
     const accountType: AccountType = direction === 'RECEIVABLE' ? 'ASSET' : 'LIABILITY';
-    // Pawna (positive) is owed on the receivable side, Dena (negative) on
-    // the payable side.
-    const opening = new Prisma.Decimal(contact.openingBalance);
-    const openingOwed = Prisma.Decimal.max(0, direction === 'RECEIVABLE' ? opening : opening.negated());
-
     const account = await this.findSystemAccount(client, businessId, subtype, accountType);
-    if (!account) {
-      return {
-        totalInvoiced: '0.00',
-        totalPaid: '0.00',
-        remaining: '0.00',
-        openingOwed: openingOwed.toFixed(2),
-        openingRemaining: openingOwed.toFixed(2),
-        balance: '0.00',
-        transactions: [],
-      };
+    const contactIds = contacts.map((contact) => contact.id);
+
+    // Sequential, not Promise.all -- this local dev Postgres has been prone
+    // to dropping connections under concurrent query load.
+    let invoices: DirectionPosting[] = [];
+    let payments: (DirectionPosting & { contactId: string | null })[] = [];
+    if (account && contactIds.length > 0) {
+      invoices = await client.transaction.findMany({
+        where: { businessId, contactId: { in: contactIds }, transactionType: invoiceType, status: 'POSTED', reversalOfId: null },
+        include: { entries: true },
+        orderBy: [{ transactionDate: 'asc' }, { createdAt: 'asc' }],
+      });
+      payments = await client.transaction.findMany({
+        where: { businessId, contactId: { in: contactIds }, transactionType: 'PAYMENT', status: 'POSTED', reversalOfId: null },
+        include: { entries: true },
+      });
     }
 
-    // Sequential, not Promise.all -- this local dev Postgres (prisma dev's
-    // built-in server) has grown increasingly prone to dropping connections
-    // under concurrent query load over the course of long sessions; with
-    // getLoanDashboard() now calling this twice (RECEIVABLE + PAYABLE) per
-    // contact in a loop, removing this last bit of internal concurrency is
-    // worth the small latency cost.
-    const invoices = await client.transaction.findMany({
-      where: { businessId, contactId, transactionType: invoiceType, status: 'POSTED', reversalOfId: null },
-      include: { entries: true },
-      orderBy: [{ transactionDate: 'asc' }, { createdAt: 'asc' }],
-    });
-    const payments = await client.transaction.findMany({
-      where: { businessId, contactId, transactionType: 'PAYMENT', status: 'POSTED', reversalOfId: null },
-      include: { entries: true },
-    });
-
-    // A contact of type BOTH can have both a receivable and a payable
-    // relationship -- only count payments that actually touch THIS
-    // direction's account, so the two pools never mix.
-    const relevantPayments = payments.filter((p) => p.entries.some((e) => e.accountId === account.id));
-
-    const originalAmount = new Map<string, Prisma.Decimal>();
-    for (const inv of invoices) {
-      const entry = inv.entries.find((e) => e.accountId === account.id);
-      originalAmount.set(inv.id, entry ? new Prisma.Decimal(entry.amount) : new Prisma.Decimal(0));
-    }
-
-    const amountPaid = new Map<string, Prisma.Decimal>(invoices.map((inv) => [inv.id, new Prisma.Decimal(0)]));
-
-    let generalPool = new Prisma.Decimal(0);
-    for (const p of relevantPayments) {
-      const entry = p.entries.find((e) => e.accountId === account.id);
-      const amt = entry ? new Prisma.Decimal(entry.amount) : new Prisma.Decimal(0);
-      if (p.appliedToTransactionId && amountPaid.has(p.appliedToTransactionId)) {
-        amountPaid.set(p.appliedToTransactionId, amountPaid.get(p.appliedToTransactionId)!.plus(amt));
-      } else {
-        generalPool = generalPool.plus(amt);
+    // Each contact's own postings, oldest invoice first as the query gave them.
+    const byContact = <T extends { contactId?: string | null }>(rows: T[]) => {
+      const grouped = new Map<string, T[]>();
+      for (const row of rows) {
+        if (!row.contactId) continue;
+        const list = grouped.get(row.contactId);
+        if (list) list.push(row);
+        else grouped.set(row.contactId, [row]);
       }
-    }
-
-    // The opening balance is the oldest amount owed, so general payments
-    // settle it first -- otherwise collecting it would mark later invoices
-    // paid, hiding them from aging and overdue and refusing payments
-    // applied to them.
-    const openingPaid = Prisma.Decimal.min(generalPool, openingOwed);
-    generalPool = generalPool.minus(openingPaid);
-
-    // FIFO: invoices are already ordered oldest-first from the query above.
-    for (const inv of invoices) {
-      if (generalPool.lessThanOrEqualTo(0)) break;
-      const remaining = originalAmount.get(inv.id)!.minus(amountPaid.get(inv.id)!);
-      if (remaining.lessThanOrEqualTo(0)) continue;
-      const take = Prisma.Decimal.min(remaining, generalPool);
-      amountPaid.set(inv.id, amountPaid.get(inv.id)!.plus(take));
-      generalPool = generalPool.minus(take);
-    }
+      return grouped;
+    };
+    const invoicesOf = byContact(invoices as (DirectionPosting & { contactId: string | null })[]);
+    const paymentsOf = byContact(payments);
 
     const today = todayUtcMidnight();
-    const transactions: InvoiceBreakdown[] = invoices.map((inv) => {
-      const original = originalAmount.get(inv.id)!;
-      const paid = amountPaid.get(inv.id)!;
-      const remaining = Prisma.Decimal.max(0, original.minus(paid));
-      const isOverdue = !!inv.dueDate && inv.dueDate.getTime() < today.getTime() && remaining.greaterThan(0);
-      return {
-        transactionId: inv.id,
-        date: inv.transactionDate,
-        description: inv.description,
-        originalAmount: original.toFixed(2),
-        amountPaid: paid.toFixed(2),
-        remainingAmount: remaining.toFixed(2),
-        dueDate: inv.dueDate,
-        isOverdue,
-      };
-    });
+    return new Map(
+      contacts.map((contact) => [
+        contact.id,
+        directionBreakdown(contact.openingBalance, direction, account?.id ?? null, invoicesOf.get(contact.id) ?? [], paymentsOf.get(contact.id) ?? [], today),
+      ]),
+    );
+  }
 
-    const totalInvoiced = transactions.reduce((sum, t) => sum.plus(t.originalAmount), new Prisma.Decimal(0));
-    const totalPaid = relevantPayments.reduce((sum, p) => {
-      const entry = p.entries.find((e) => e.accountId === account.id);
-      return sum.plus(entry ? entry.amount : 0);
-    }, new Prisma.Decimal(0));
-
-    return {
-      totalInvoiced: totalInvoiced.toFixed(2),
-      totalPaid: totalPaid.toFixed(2),
-      remaining: totalInvoiced.minus(totalPaid.minus(openingPaid)).toFixed(2),
-      openingOwed: openingOwed.toFixed(2),
-      openingRemaining: openingOwed.minus(openingPaid).toFixed(2),
-      balance: totalInvoiced.minus(totalPaid).toFixed(2),
-      transactions,
-    };
+  // Every contact's balance: their opening balance plus what they owe on the
+  // receivable side, minus the payable side -- getContactCurrentBalance()
+  // for a whole list in six queries.
+  async getContactCurrentBalances(businessId: string, contacts: Pick<Contact, 'id' | 'openingBalance'>[]): Promise<Map<string, Prisma.Decimal>> {
+    const receivable = await this.computeDirections(businessId, contacts, 'RECEIVABLE');
+    const payable = await this.computeDirections(businessId, contacts, 'PAYABLE');
+    return new Map(
+      contacts.map((contact) => [contact.id, new Prisma.Decimal(contact.openingBalance).plus(receivable.get(contact.id)!.balance).minus(payable.get(contact.id)!.balance)]),
+    );
   }
 
   private bucketFor(dueDate: Date | null, today: Date): AgingBucket {
