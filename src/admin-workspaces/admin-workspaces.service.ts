@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import type { WorkspaceType } from '@prisma/client';
 import { END_USER_WHERE } from '../common/roles.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { ListWorkspaceOverviewQueryDto } from './dto/list-workspace-overview-query.dto.js';
@@ -8,9 +9,10 @@ interface OwnerRow {
   name: string;
   email: string;
   ownedBusinesses: Array<{
+    id: string;
     name: string;
     isDefault: boolean;
-    type: string;
+    type: WorkspaceType;
     plan: { name: string; price: unknown; billingCycle: string } | null;
   }>;
 }
@@ -20,6 +22,9 @@ export interface WorkspaceOverviewItem {
   name: string;
   email: string;
   workspaceNames: string[];
+  // The same workspaces, oldest first, with what kind each is: the personal
+  // one is isDefault, whatever it is named.
+  workspaces: { id: string; name: string; type: WorkspaceType; isDefault: boolean }[];
   planName: string | null;
   planPrice: string | null;
   totalWorkspaces: number;
@@ -103,6 +108,7 @@ export class AdminWorkspacesService {
       name: user.name,
       email: user.email,
       workspaceNames: user.ownedBusinesses.map((b) => b.name),
+      workspaces: user.ownedBusinesses.map((b) => ({ id: b.id, name: b.name, type: b.type, isDefault: b.isDefault })),
       planName: defaultBusiness?.plan?.name ?? null,
       planPrice: planPrice !== null ? planPrice.toFixed(2) : null,
       totalWorkspaces: user.ownedBusinesses.length,
