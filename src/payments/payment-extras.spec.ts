@@ -1,5 +1,5 @@
 import { PaymentStatus } from '@prisma/client';
-import { duplicateOf, paymentIdPrefix } from './payment-extras.js';
+import { countByStatus, duplicateOf, paymentIdPrefix } from './payment-extras.js';
 
 const at = (minutes: number) => new Date(Date.UTC(2026, 9, 1, 4, minutes));
 const paid = (id: string, minutes: number, overrides: Partial<{ platformUserId: string; planId: string; status: PaymentStatus }> = {}) => ({
@@ -31,6 +31,21 @@ describe('duplicateOf', () => {
   it('names the earliest when several came in a row', () => {
     const third = paid('PAY-20932', 16);
     expect(duplicateOf(third, [first, second, third])).toBe('PAY-20930');
+  });
+});
+
+describe('countByStatus', () => {
+  it('names every status, 0 for one no payment has', () => {
+    expect(
+      countByStatus([
+        { status: PaymentStatus.SUCCESS, _count: 1912 },
+        { status: PaymentStatus.FAILED, _count: 38 },
+      ]),
+    ).toEqual({ PENDING: 0, SUCCESS: 1912, FAILED: 38, REFUNDED: 0 });
+  });
+
+  it('is all zeros when nothing matched', () => {
+    expect(countByStatus([])).toEqual({ PENDING: 0, SUCCESS: 0, FAILED: 0, REFUNDED: 0 });
   });
 });
 
