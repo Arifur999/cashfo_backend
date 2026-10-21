@@ -7,11 +7,12 @@ import { UpdateFeatureRequestDto } from './dto/update-feature-request.dto.js';
 export class FeatureRequestsService {
   constructor(private readonly prisma: PrismaService) {}
 
-  list(query: ListFeatureRequestsQueryDto) {
-    return this.prisma.featureRequest.findMany({
+  async list(query: ListFeatureRequestsQueryDto) {
+    const requests = await this.prisma.featureRequest.findMany({
       where: query.status ? { status: query.status } : undefined,
       orderBy: { voteCount: 'desc' },
     });
+    return this.withRequesters(requests);
   }
 
   async getById(id: string) {
@@ -19,7 +20,24 @@ export class FeatureRequestsService {
     if (!request) {
       throw new NotFoundException('Feature request not found');
     }
-    return request;
+    const [withRequester] = await this.withRequesters([request]);
+    return withRequester;
+  }
+
+  // Who asked, so the team can follow up: a customer's account (ideas sent
+  // from the app's Help page), or an older request's legacy platform user.
+  // Null when neither exists any more.
+  private async withRequesters<T extends { platformUserId: string }>(requests: T[]) {
+    const ids = [...new Set(requests.map((request) => request.platformUserId))];
+    const [users, platformUsers] = await Promise.all([
+      this.prisma.user.findMany({ where: { id: { in: ids } }, select: { id: true, name: true, email: true } }),
+      this.prisma.platformUser.findMany({ where: { id: { in: ids } }, select: { id: true, name: true, email: true } }),
+    ]);
+    const byId = new Map([...platformUsers, ...users].map((person) => [person.id, person]));
+    return requests.map((request) => {
+      const person = byId.get(request.platformUserId);
+      return { ...request, requester: person ? { id: person.id, name: person.name, email: person.email, isCustomer: users.some((user) => user.id === person.id) } : null };
+    });
   }
 
   async updateStatus(id: string, dto: UpdateFeatureRequestDto) {
