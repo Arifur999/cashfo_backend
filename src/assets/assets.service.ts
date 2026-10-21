@@ -3,11 +3,13 @@ import { Account, Asset, Prisma } from '@prisma/client';
 import { FIXED_ASSETS_ACCOUNT_SUBTYPE, MONEY_ACCOUNT_SUBTYPES } from '../accounts/accounts.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { TransactionsService } from '../transactions/transactions.service.js';
+import { isBeforePurchase, isNewestValuation } from './asset-dates.js';
 import { CreateAssetCategoryDto } from './dto/create-asset-category.dto.js';
 import { CreateAssetPurchaseDto } from './dto/create-asset-purchase.dto.js';
 import { SellAssetDto } from './dto/sell-asset.dto.js';
 import { UpdateAssetCategoryDto } from './dto/update-asset-category.dto.js';
 import { UpdateAssetValueDto } from './dto/update-asset-value.dto.js';
+import { UpdateAssetDto } from './dto/update-asset.dto.js';
 
 const VALUE_HISTORY_ORDER = { recordedAt: 'desc' as const };
 
@@ -62,20 +64,28 @@ export class AssetsService {
   }
 
   async updateCategory(businessId: string, id: string, dto: UpdateAssetCategoryDto) {
-    await this.requireCategory(businessId, id);
+    const category = await this.requireCategory(businessId, id);
     if (dto.name !== undefined) {
       const clash = await this.prisma.assetCategoryOption.findUnique({ where: { businessId_name: { businessId, name: dto.name } } });
       if (clash && clash.id !== id) {
         throw new ConflictException(`An asset category named "${dto.name}" already exists`);
       }
     }
-    return this.prisma.assetCategoryOption.update({
-      where: { id },
-      data: {
-        ...(dto.name !== undefined && { name: dto.name }),
-        ...(dto.icon !== undefined && { icon: dto.icon }),
-        ...(dto.color !== undefined && { color: dto.color }),
-      },
+    // An asset names its type by the type's name, so a rename takes the
+    // type's assets along in the same commit; before, they kept the old
+    // name and dropped out of the type.
+    return this.prisma.$transaction(async (tx) => {
+      if (dto.name !== undefined && dto.name !== category.name) {
+        await tx.asset.updateMany({ where: { businessId, category: category.name }, data: { category: dto.name } });
+      }
+      return tx.assetCategoryOption.update({
+        where: { id },
+        data: {
+          ...(dto.name !== undefined && { name: dto.name }),
+          ...(dto.icon !== undefined && { icon: dto.icon }),
+          ...(dto.color !== undefined && { color: dto.color }),
+        },
+      });
     });
   }
 
@@ -181,6 +191,9 @@ export class AssetsService {
       if (asset.status === 'SOLD') {
         throw new BadRequestException('This asset has already been sold.');
       }
+      if (isBeforePurchase(dto.date, asset.purchaseDate)) {
+        throw new BadRequestException('An asset can\'t be sold before the day it was bought.');
+      }
       const depositAccount = await this.requirePaymentAccount(businessId, dto.soldAccountId, tx);
       const fixedAssetsAccount = await this.requireOrCreateFixedAssetsAccount(businessId, tx);
 
@@ -222,11 +235,91 @@ export class AssetsService {
     if (asset.status === 'SOLD') {
       throw new BadRequestException('Cannot update the value of a sold asset.');
     }
-    await this.prisma.assetValueHistory.create({ data: { assetId: id, value: dto.value, note: dto.note, recordedAt: new Date(dto.date) } });
-    return this.prisma.asset.update({
-      where: { id },
-      data: { currentValue: dto.value },
-      include: { valueHistory: { orderBy: VALUE_HISTORY_ORDER } },
+    if (isBeforePurchase(dto.date, asset.purchaseDate)) {
+      throw new BadRequestException('A value can\'t be dated before the day the asset was bought.');
+    }
+    // A value for an earlier day fills in the history; only the newest one
+    // is what the asset is worth today.
+    const newest = await this.prisma.assetValueHistory.findFirst({ where: { assetId: id }, orderBy: VALUE_HISTORY_ORDER, select: { recordedAt: true } });
+    const isToday = isNewestValuation(dto.date, newest?.recordedAt ?? null);
+    return this.prisma.$transaction(async (tx) => {
+      await tx.assetValueHistory.create({ data: { assetId: id, value: dto.value, note: dto.note, recordedAt: new Date(dto.date) } });
+      return tx.asset.update({
+        where: { id },
+        data: isToday ? { currentValue: dto.value } : {},
+        include: { valueHistory: { orderBy: VALUE_HISTORY_ORDER } },
+      });
+    });
+  }
+
+  // Corrects an asset's name, type and notes. The purchase date changes
+  // only on an asset no wallet paid for (a paid purchase keeps its
+  // posting's date), and only while nothing has happened to it since:
+  // its first value moves to the new day with it.
+  async update(businessId: string, id: string, dto: UpdateAssetDto) {
+    const asset = await this.requireAsset(businessId, id);
+    const newDate = dto.purchaseDate !== undefined && dto.purchaseDate.slice(0, 10) !== asset.purchaseDate.toISOString().slice(0, 10) ? new Date(dto.purchaseDate) : null;
+    if (newDate) {
+      if (asset.purchaseTransactionId) {
+        throw new BadRequestException('A purchase paid from a wallet keeps its date. Delete the asset and add it again to change it.');
+      }
+      const history = await this.prisma.assetValueHistory.count({ where: { assetId: id } });
+      if (asset.status === 'SOLD' || history > 1) {
+        throw new BadRequestException('The purchase date can only change before the asset is revalued or sold.');
+      }
+    }
+    return this.prisma.$transaction(async (tx) => {
+      if (newDate) await tx.assetValueHistory.updateMany({ where: { assetId: id }, data: { recordedAt: newDate } });
+      return tx.asset.update({
+        where: { id },
+        data: {
+          ...(dto.name !== undefined && { name: dto.name }),
+          ...(dto.category !== undefined && { category: dto.category }),
+          ...(dto.notes !== undefined && { notes: dto.notes?.trim() || null }),
+          ...(newDate && { purchaseDate: newDate }),
+        },
+        include: { valueHistory: { orderBy: VALUE_HISTORY_ORDER } },
+      });
+    });
+  }
+
+  // Takes away an asset entered by mistake. A purchase paid from a wallet is
+  // voided in the same commit, so the money is back in the wallet; a sold
+  // asset needs its sale undone first.
+  async remove(businessId: string, id: string, userId: string) {
+    return this.transactionsService.withLocks([`asset:${id}`, `fixed-assets:${businessId}`], async (tx) => {
+      const asset = await this.requireAsset(businessId, id, tx);
+      if (asset.status === 'SOLD') {
+        throw new BadRequestException('Undo the sale first, then delete the asset.');
+      }
+      await tx.assetValueHistory.deleteMany({ where: { assetId: id } });
+      await tx.asset.delete({ where: { id } });
+      // The asset is gone first, so the void finds no asset owning the
+      // posting (voids of asset postings are refused anywhere else).
+      if (asset.purchaseTransactionId) {
+        await this.transactionsService.voidTransaction(businessId, asset.purchaseTransactionId, `Asset deleted: ${asset.name}`, userId, tx);
+      }
+      return { id };
+    });
+  }
+
+  // Undoes a sale recorded by mistake: the sale's income is voided and the
+  // asset is owned again, at the value it had before.
+  async undoSale(businessId: string, id: string, userId: string) {
+    return this.transactionsService.withLocks([`asset:${id}`, `fixed-assets:${businessId}`], async (tx) => {
+      const asset = await this.requireAsset(businessId, id, tx);
+      if (asset.status !== 'SOLD') {
+        throw new BadRequestException('This asset has not been sold.');
+      }
+      const restored = await tx.asset.update({
+        where: { id },
+        data: { status: 'ACTIVE', soldAt: null, soldPrice: null, soldAccountId: null, soldTransactionId: null },
+        include: { valueHistory: { orderBy: VALUE_HISTORY_ORDER } },
+      });
+      if (asset.soldTransactionId) {
+        await this.transactionsService.voidTransaction(businessId, asset.soldTransactionId, `Sale undone: ${asset.name}`, userId, tx);
+      }
+      return restored;
     });
   }
 

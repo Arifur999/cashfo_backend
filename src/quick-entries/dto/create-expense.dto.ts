@@ -21,6 +21,11 @@ export class CreateExpenseDto {
   @IsString()
   description?: string;
 
+  // A receipt, cheque or slip number; shown in the Reference column.
+  @IsOptional()
+  @IsString()
+  referenceNo?: string;
+
   // Category table doesn't exist until a later prompt -- stored as a plain
   // string on TransactionEntry.categoryId for now (see Prompt 5's schema).
   @IsOptional()

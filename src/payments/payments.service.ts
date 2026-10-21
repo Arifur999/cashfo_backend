@@ -3,7 +3,7 @@ import { PaymentStatus, Prisma } from '@prisma/client';
 import { dhakaDateKey, dhakaMonthStart, dhakaToday } from '../common/dhaka.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { ListPaymentsQueryDto } from './dto/list-payments-query.dto.js';
-import { DUPLICATE_WINDOW_MS, duplicateOf, type DuplicateCandidate } from './payment-extras.js';
+import { DUPLICATE_WINDOW_MS, duplicateOf, paymentIdPrefix, type DuplicateCandidate } from './payment-extras.js';
 import { RefundPaymentDto } from './dto/refund-payment.dto.js';
 import { SimulatePaymentDto } from './dto/simulate-payment.dto.js';
 
@@ -35,13 +35,15 @@ export class PaymentsService {
         },
         select: { id: true },
       });
-      // The list shows the first part of a payment's id, so typing that
-      // finds it too, as does the gateway's own reference.
+      // The list shows the first part of a payment's id ("PAY-3F2A1C9B"),
+      // so typing that, with or without PAY-, finds it too, as does the
+      // gateway's own reference.
+      const idPrefix = paymentIdPrefix(search);
       where.OR = [
         { platformUserId: { in: matchingUsers.map((u) => u.id) } },
         { invoice: { invoiceNumber: { contains: search, mode: 'insensitive' } } },
         { gatewayReferenceId: { contains: search, mode: 'insensitive' } },
-        { id: { startsWith: search.toLowerCase() } },
+        ...(idPrefix ? [{ id: { startsWith: idPrefix } }] : []),
       ];
     }
 

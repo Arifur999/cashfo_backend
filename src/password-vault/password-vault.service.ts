@@ -25,12 +25,16 @@ export class PasswordVaultService {
 
   // Whether the vault is set up, and how many logins it holds (Home shows
   // the count on the vault card; the entries themselves stay locked).
+  // hasAccountPassword: setting up or resetting the vault asks for the
+  // account password, which a Google-only account doesn't have -- the app
+  // says so before the form instead of after it.
   async getStatus(userId: string) {
-    const [user, entryCount] = await Promise.all([
+    const [user, entryCount, hasAccountPassword] = await Promise.all([
       this.prisma.user.findUniqueOrThrow({ where: { id: userId }, select: { vaultPasswordHash: true } }),
       this.prisma.vaultEntry.count({ where: { userId } }),
+      this.credentials.has(userId),
     ]);
-    return { hasVaultPassword: user.vaultPasswordHash !== null, entryCount };
+    return { hasVaultPassword: user.vaultPasswordHash !== null, entryCount, hasAccountPassword };
   }
 
   // Sets the first vault password, or changes it. Changing needs the

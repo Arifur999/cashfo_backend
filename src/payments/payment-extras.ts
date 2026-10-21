@@ -27,3 +27,11 @@ export function duplicateOf(payment: DuplicateCandidate, candidates: DuplicateCa
   }
   return earlier?.id ?? null;
 }
+
+// The start of a payment's id from what an admin typed: the app prints
+// ids as "PAY-" and the first 8 characters, upper case ("PAY-3F2A1C9B"),
+// and stored ids are lower case. Null when nothing is left to match.
+export function paymentIdPrefix(search: string): string | null {
+  const prefix = search.trim().replace(/^pay-/i, '').toLowerCase();
+  return prefix.length > 0 ? prefix : null;
+}

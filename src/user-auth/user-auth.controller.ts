@@ -7,6 +7,7 @@ import {
   Param,
   Patch,
   Post,
+  Query,
   Req,
   UploadedFile,
   UseFilters,
@@ -24,6 +25,7 @@ import { LoginDto } from './dto/login.dto.js';
 import { RefreshDto } from './dto/refresh.dto.js';
 import { RegisterDto } from './dto/register.dto.js';
 import { SessionExchangeDto } from './dto/session-exchange.dto.js';
+import { CheckResetTokenDto } from './dto/check-reset-token.dto.js';
 import { ResetPasswordDto } from './dto/reset-password.dto.js';
 import { UpdateLanguageDto } from './dto/update-language.dto.js';
 import { UpdateProfileDto } from './dto/update-profile.dto.js';
@@ -91,6 +93,14 @@ export class UserAuthController {
   @Post('forgot-password')
   forgotPassword(@Body() dto: ForgotPasswordDto) {
     return this.userAuthService.forgotPassword(dto.email);
+  }
+
+  // Opening the reset page asks this first; the budget allows a few
+  // reloads but no probing.
+  @Throttle({ default: { limit: 20, ttl: 15 * 60 * 1000 } })
+  @Get('reset-password/check')
+  checkResetToken(@Query() dto: CheckResetTokenDto) {
+    return this.userAuthService.checkResetToken(dto.token);
   }
 
   @Throttle({ default: { limit: 5, ttl: 15 * 60 * 1000 } })

@@ -10,6 +10,7 @@ import { CreateAssetPurchaseDto } from './dto/create-asset-purchase.dto.js';
 import { SellAssetDto } from './dto/sell-asset.dto.js';
 import { UpdateAssetCategoryDto } from './dto/update-asset-category.dto.js';
 import { UpdateAssetValueDto } from './dto/update-asset-value.dto.js';
+import { UpdateAssetDto } from './dto/update-asset.dto.js';
 
 @RequireBusinessMembership()
 @Controller('api/businesses/:businessId/assets')
@@ -60,5 +61,23 @@ export class AssetsController {
   @Post(':id/value')
   updateValue(@Param('businessId') businessId: string, @Param('id') id: string, @Body() dto: UpdateAssetValueDto) {
     return this.assetsService.updateValue(businessId, id, dto);
+  }
+
+  @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
+  @Patch(':id')
+  update(@Param('businessId') businessId: string, @Param('id') id: string, @Body() dto: UpdateAssetDto) {
+    return this.assetsService.update(businessId, id, dto);
+  }
+
+  @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
+  @Delete(':id')
+  remove(@Param('businessId') businessId: string, @Param('id') id: string, @CurrentUser() user: RequestUser) {
+    return this.assetsService.remove(businessId, id, user.id);
+  }
+
+  @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
+  @Post(':id/undo-sale')
+  undoSale(@Param('businessId') businessId: string, @Param('id') id: string, @CurrentUser() user: RequestUser) {
+    return this.assetsService.undoSale(businessId, id, user.id);
   }
 }

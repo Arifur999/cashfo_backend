@@ -225,7 +225,7 @@ export class SavingsGoalsService {
 
   async update(businessId: string, id: string, dto: UpdateSavingsGoalDto) {
     await this.requireGoal(businessId, id);
-    return this.prisma.savingsGoal.update({
+    const updated = await this.prisma.savingsGoal.update({
       where: { id },
       data: {
         ...(dto.name !== undefined && { name: dto.name }),
@@ -237,6 +237,9 @@ export class SavingsGoalsService {
         ...(dto.description !== undefined && { description: dto.description }),
       },
     });
+    // A new target can finish the goal or give a finished one more to save.
+    if (dto.targetAmount === undefined) return updated;
+    return this.maybeReopen(await this.maybeMarkCompleted(updated));
   }
 
   async updateStatus(businessId: string, id: string, dto: UpdateSavingsGoalStatusDto) {
@@ -368,9 +371,25 @@ export class SavingsGoalsService {
       ];
       return { result, toGoal };
     });
-    // Only the receiving side can newly reach its target from a transfer.
+    // The receiving side can reach its target; the giving side, if it was
+    // finished, has something to save again.
     await this.maybeMarkCompleted(toGoal);
+    await this.maybeReopen(await this.requireGoal(businessId, dto.fromGoalId));
     return result;
+  }
+
+  // A COMPLETED goal back under its target -- its target raised, or money
+  // moved to another goal -- is ACTIVE again, so it shows where saving
+  // continues instead of staying "Completed" below 100%. Only after those
+  // two changes, never on a read: a goal the customer marked complete by
+  // hand stays so. Conditional, so a withdrawal that committed meanwhile is
+  // never turned back.
+  private async maybeReopen(goal: SavingsGoal): Promise<SavingsGoal> {
+    if (goal.status !== 'COMPLETED') return goal;
+    const amount = await this.computeCurrentAmount(goal.id);
+    if (amount.greaterThanOrEqualTo(goal.targetAmount)) return goal;
+    await this.prisma.savingsGoal.updateMany({ where: { id: goal.id, status: 'COMPLETED' }, data: { status: 'ACTIVE' } });
+    return this.prisma.savingsGoal.findUniqueOrThrow({ where: { id: goal.id } });
   }
 
   // "Cash out" a completed (or any) goal -- takes its ENTIRE current saved
