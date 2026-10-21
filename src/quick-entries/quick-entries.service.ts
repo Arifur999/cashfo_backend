@@ -31,6 +31,7 @@ export class QuickEntriesService {
         transactionType: 'INCOME',
         transactionDate: dto.date,
         description: dto.description,
+        referenceNo: dto.referenceNo,
         contactId: dto.contactId,
         entries: [
           { accountId: toAccount.id, entryType: 'DEBIT', amount: dto.amount },
@@ -52,6 +53,7 @@ export class QuickEntriesService {
         transactionType: 'EXPENSE',
         transactionDate: dto.date,
         description: dto.description,
+        referenceNo: dto.referenceNo,
         contactId: dto.contactId,
         entries: [
           { accountId: expenseAccount.id, entryType: 'DEBIT', amount: dto.amount, categoryId: dto.categoryId, note: dto.note },

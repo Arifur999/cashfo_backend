@@ -262,6 +262,7 @@ export class ReceivablesPayablesService {
           transactionType: 'PAYMENT',
           transactionDate: dto.date,
           description: dto.description,
+          referenceNo: dto.referenceNo,
           contactId: contact.id,
           appliedToTransactionId: dto.appliedToTransactionId,
           entries: [
@@ -291,6 +292,7 @@ export class ReceivablesPayablesService {
           transactionType: 'PAYMENT',
           transactionDate: dto.date,
           description: dto.description,
+          referenceNo: dto.referenceNo,
           contactId: contact.id,
           appliedToTransactionId: dto.appliedToTransactionId,
           entries: [

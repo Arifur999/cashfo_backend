@@ -21,6 +21,11 @@ export class ReceivePaymentDto {
   @IsString()
   description?: string;
 
+  // A receipt, cheque or slip number; shown in the Reference column.
+  @IsOptional()
+  @IsString()
+  referenceNo?: string;
+
   // If set, applies directly against this specific outstanding SALE
   // transaction (validated to not exceed its remaining balance). If unset,
   // applied as a general payment, allocated FIFO across the contact's
