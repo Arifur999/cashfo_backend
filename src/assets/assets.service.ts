@@ -62,20 +62,28 @@ export class AssetsService {
   }
 
   async updateCategory(businessId: string, id: string, dto: UpdateAssetCategoryDto) {
-    await this.requireCategory(businessId, id);
+    const category = await this.requireCategory(businessId, id);
     if (dto.name !== undefined) {
       const clash = await this.prisma.assetCategoryOption.findUnique({ where: { businessId_name: { businessId, name: dto.name } } });
       if (clash && clash.id !== id) {
         throw new ConflictException(`An asset category named "${dto.name}" already exists`);
       }
     }
-    return this.prisma.assetCategoryOption.update({
-      where: { id },
-      data: {
-        ...(dto.name !== undefined && { name: dto.name }),
-        ...(dto.icon !== undefined && { icon: dto.icon }),
-        ...(dto.color !== undefined && { color: dto.color }),
-      },
+    // An asset names its type by the type's name, so a rename takes the
+    // type's assets along in the same commit; before, they kept the old
+    // name and dropped out of the type.
+    return this.prisma.$transaction(async (tx) => {
+      if (dto.name !== undefined && dto.name !== category.name) {
+        await tx.asset.updateMany({ where: { businessId, category: category.name }, data: { category: dto.name } });
+      }
+      return tx.assetCategoryOption.update({
+        where: { id },
+        data: {
+          ...(dto.name !== undefined && { name: dto.name }),
+          ...(dto.icon !== undefined && { icon: dto.icon }),
+          ...(dto.color !== undefined && { color: dto.color }),
+        },
+      });
     });
   }
 
