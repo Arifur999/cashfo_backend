@@ -22,8 +22,35 @@ describe('AnalyticsService.geography', () => {
         { country: 'United States', eventCount: 1, userCount: 1 },
         { country: 'Unknown', eventCount: 3, userCount: 3 },
       ],
+      totalUsers: 6,
       cities: [],
     });
+  });
+
+  it('counts a customer seen in two countries once in the total', async () => {
+    const prisma = {
+      userSession: {
+        findMany: vi.fn().mockResolvedValue([
+          { userId: 'a', ipAddress: '103.4.145.1' },
+          { userId: 'a', ipAddress: '8.8.8.8' },
+          { userId: 'a', ipAddress: '10.0.0.1' },
+          { userId: 'b', ipAddress: '103.4.145.2' },
+        ]),
+      },
+    };
+    const geography = await new AnalyticsService(prisma as never).geography();
+    expect(geography.countries.map((entry) => [entry.country, entry.userCount])).toEqual([
+      ['Bangladesh', 2],
+      ['United States', 1],
+      ['Unknown', 1],
+    ]);
+    // The countries' userCounts add up to 4; there are two people.
+    expect(geography.totalUsers).toBe(2);
+  });
+
+  it('has a total of 0 before anyone signs in', async () => {
+    const prisma = { userSession: { findMany: vi.fn().mockResolvedValue([]) } };
+    await expect(new AnalyticsService(prisma as never).geography()).resolves.toEqual({ countries: [], totalUsers: 0, cities: [] });
   });
 });
 

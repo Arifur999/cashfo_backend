@@ -213,19 +213,23 @@ export class AnalyticsService {
 
   // Where customers sign in from: the country of every sign-in's address
   // (UserSession, recorded at each customer sign-in), looked up offline.
-  // eventCount is sign-ins, userCount distinct customers. Country level
-  // only: a city database is many times the size and much less accurate,
-  // so cities stays empty.
+  // eventCount is sign-ins, userCount distinct customers. totalUsers is the
+  // distinct customers across every country, Unknown included: someone seen
+  // in two countries is in both their userCounts but counts once here.
+  // Country level only: a city database is many times the size and much
+  // less accurate, so cities stays empty.
   async geography() {
     const sessions = await this.prisma.userSession.findMany({ select: { userId: true, ipAddress: true } });
 
     const byCountry = new Map<string, { eventCount: number; userIds: Set<string> }>();
+    const everyone = new Set<string>();
     for (const session of sessions) {
       const country = countryOfIp(session.ipAddress);
       const entry = byCountry.get(country) ?? { eventCount: 0, userIds: new Set<string>() };
       entry.eventCount += 1;
       entry.userIds.add(session.userId);
       byCountry.set(country, entry);
+      everyone.add(session.userId);
     }
 
     const countries = [...byCountry.entries()]
@@ -233,7 +237,7 @@ export class AnalyticsService {
       // Places first, most customers first; the addresses no country claims last.
       .sort((a, b) => Number(a.country === 'Unknown') - Number(b.country === 'Unknown') || b.userCount - a.userCount || b.eventCount - a.eventCount);
 
-    return { countries, cities: [] as { city: string; country: string; eventCount: number; userCount: number }[] };
+    return { countries, totalUsers: everyone.size, cities: [] as { city: string; country: string; eventCount: number; userCount: number }[] };
   }
 
   // Real device signal -- classifies every real UserSession.userAgent
