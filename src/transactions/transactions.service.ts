@@ -390,6 +390,7 @@ export class TransactionsService {
     }
     if (filters.contactId) where.contactId = filters.contactId;
     if (filters.contactCategory) where.contact = { category: filters.contactCategory };
+    if (filters.excludeSavings) where.NOT = { entries: { some: { account: { accountSubtype: 'savings' } } } };
     if (filters.search) {
       // Quick entries keep what the customer typed on the entry (its note
       // and category), not on the transaction's description.

@@ -106,6 +106,7 @@ describe('TransactionsService.summarizeTransactions', () => {
       categoryId: 'Food',
       contactId: 'contact-1',
       contactCategory: 'LOAN',
+      excludeSavings: true,
       search: 'lunch',
     });
 
@@ -121,6 +122,7 @@ describe('TransactionsService.summarizeTransactions', () => {
       entries: { some: { accountId: 'cash', categoryId: 'Food' } },
       contactId: 'contact-1',
       contact: { category: 'LOAN' },
+      NOT: { entries: { some: { account: { accountSubtype: 'savings' } } } },
       OR: expect.arrayContaining([{ description: { contains: 'lunch', mode: 'insensitive' } }]),
     });
     const [countCall, voidedCall] = prisma.transaction.count.mock.calls.slice(1);
