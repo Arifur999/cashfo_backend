@@ -1,4 +1,5 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { CredentialsService } from '../auth/credentials.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { UpdateLanguageDto } from './dto/update-language.dto.js';
 import { UpdateProfileDto } from './dto/update-profile.dto.js';
@@ -7,7 +8,10 @@ import { UpdateProfileDto } from './dto/update-profile.dto.js';
 // workspaces, and the profile fields Settings lets them change.
 @Injectable()
 export class UserProfileService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly credentials: CredentialsService,
+  ) {}
 
   // impersonatedBy: the admin behind a read-only "View as customer"
   // session, named so the app can say whose view it is.
@@ -39,6 +43,9 @@ export class UserProfileService {
       preferredLanguage: user.preferredLanguage,
       emailVerifiedAt: user.emailVerifiedAt,
       passwordChangedAt: user.passwordChangedAt,
+      // False for a Google-only account: Settings offers to set a password
+      // instead of changing one.
+      hasPassword: await this.credentials.has(user.id),
       businesses: memberships.map((m) => ({
         id: m.business.id,
         name: m.business.name,
