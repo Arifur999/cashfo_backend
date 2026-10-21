@@ -5,7 +5,7 @@ import { PrismaService } from '../prisma/prisma.service.js';
 import { CheckInHabitDto } from './dto/check-in-habit.dto.js';
 import { CreateHabitDto } from './dto/create-habit.dto.js';
 import { UpdateHabitDto } from './dto/update-habit.dto.js';
-import { currentStreak } from './streak.js';
+import { bestStreak, currentStreak } from './streak.js';
 
 function toDateKey(date: Date): string {
   return date.toISOString().slice(0, 10);
@@ -124,25 +124,28 @@ export class HabitsService {
   // N-times-a-week one. Today only counts once done, so an unbroken streak
   // doesn't look reset before the day is over.
   private async computeStreaks(habits: Habit[]): Promise<Map<string, number>> {
-    const result = new Map<string, number>();
-    if (habits.length === 0) return result;
+    const doneByHabit = await this.doneDays(habits);
+    const today = dhakaDateKey(new Date());
+    return new Map(habits.map((h) => [h.id, currentStreak(h, doneByHabit.get(h.id) ?? new Set(), today)]));
+  }
+
+  // Every day each habit was done, as 'YYYY-MM-DD' keys, read in ONE query
+  // for all of the habits (no query per habit). Unbounded: a best streak
+  // looks at a habit's whole history.
+  private async doneDays(habits: Habit[]): Promise<Map<string, Set<string>>> {
+    const byHabit = new Map<string, Set<string>>();
+    if (habits.length === 0) return byHabit;
 
     const logs = await this.prisma.habitLog.findMany({
       where: { habitId: { in: habits.map((h) => h.id) }, completed: true },
       select: { habitId: true, date: true },
     });
-    const dateKeysByHabit = new Map<string, Set<string>>();
     for (const log of logs) {
-      const set = dateKeysByHabit.get(log.habitId) ?? new Set<string>();
+      const set = byHabit.get(log.habitId) ?? new Set<string>();
       set.add(toDateKey(log.date));
-      dateKeysByHabit.set(log.habitId, set);
+      byHabit.set(log.habitId, set);
     }
-
-    const today = dhakaDateKey(new Date());
-    for (const habit of habits) {
-      result.set(habit.id, currentStreak(habit, dateKeysByHabit.get(habit.id) ?? new Set(), today));
-    }
-    return result;
+    return byHabit;
   }
 
   // ---- Calendar / History ----
@@ -164,30 +167,37 @@ export class HabitsService {
 
   // ---- Stats ----
 
+  // One row per active habit. The logs are read in one query for all the
+  // habits, and both streaks and the 30-day count come from that read.
+  // bestStreak is in currentStreak's unit (weeks for an N-times-a-week habit,
+  // days otherwise), over the habit's whole history up to today.
   async getStats(userId: string) {
     const habits = await this.listHabits(userId, false);
-    const streaks = await this.computeStreaks(habits);
+    const doneByHabit = await this.doneDays(habits);
+    const today = dhakaDateKey(new Date());
 
-    const last30From = new Date(dhakaDateKey(new Date()));
+    // The 30 Dhaka days ending today. No upper bound, as before: a day
+    // logged ahead of today still counts here.
+    const last30From = new Date(today);
     last30From.setUTCDate(last30From.getUTCDate() - 29);
-    const logs = await this.prisma.habitLog.findMany({
-      where: { habitId: { in: habits.map((h) => h.id) }, date: { gte: last30From }, completed: true },
-      select: { habitId: true },
-    });
-    const countByHabit = new Map<string, number>();
-    for (const log of logs) {
-      countByHabit.set(log.habitId, (countByHabit.get(log.habitId) ?? 0) + 1);
-    }
+    const last30FromKey = toDateKey(last30From);
 
-    return habits.map((h) => ({
-      habitId: h.id,
-      name: h.name,
-      icon: h.icon,
-      color: h.color,
-      currentStreak: streaks.get(h.id) ?? 0,
-      last30DaysCompleted: countByHabit.get(h.id) ?? 0,
-      completionRate: Math.round(((countByHabit.get(h.id) ?? 0) / 30) * 100),
-    }));
+    return habits.map((h) => {
+      const done = doneByHabit.get(h.id) ?? new Set<string>();
+      // One log per habit per day (@@unique), so counting days counts logs.
+      let last30DaysCompleted = 0;
+      for (const day of done) if (day >= last30FromKey) last30DaysCompleted++;
+      return {
+        habitId: h.id,
+        name: h.name,
+        icon: h.icon,
+        color: h.color,
+        currentStreak: currentStreak(h, done, today),
+        bestStreak: bestStreak(h, done, today),
+        last30DaysCompleted,
+        completionRate: Math.round((last30DaysCompleted / 30) * 100),
+      };
+    });
   }
 
   private async requireHabit(userId: string, id: string): Promise<Habit> {
