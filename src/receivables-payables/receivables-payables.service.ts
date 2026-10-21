@@ -694,14 +694,16 @@ export class ReceivablesPayablesService {
   // endpoints settle either side -- no new write path needed, this is
   // purely a themed read view over the same data.
   async getLoanDashboard(businessId: string): Promise<LoanDashboard> {
+    // Loan contacts only: a workspace's trade customers and suppliers
+    // belong to Books, and opening one from here showed an empty statement.
     const contacts = await this.prisma.contact.findMany({
-      where: { businessId },
+      where: { businessId, category: 'LOAN' },
       orderBy: { name: 'asc' },
     });
 
-    // Profit or interest with any contact, posted and not undone.
+    // Profit or interest with a loan contact, posted and not undone.
     const profitPostings = await this.prisma.transaction.findMany({
-      where: { businessId, contactId: { not: null }, transactionType: { in: ['INCOME', 'EXPENSE'] }, status: 'POSTED', reversalOfId: null },
+      where: { businessId, contactId: { not: null }, contact: { category: 'LOAN' }, transactionType: { in: ['INCOME', 'EXPENSE'] }, status: 'POSTED', reversalOfId: null },
       select: { contactId: true, transactionDate: true, transactionType: true, entries: { where: { entryType: 'DEBIT' }, select: { amount: true } } },
     });
     const profit = profitTotals(
