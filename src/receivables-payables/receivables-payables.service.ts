@@ -175,7 +175,10 @@ export class ReceivablesPayablesService {
   // this was.
   async recordSale(businessId: string, dto: CreateReceivableDto, userId: string) {
     const contact = await this.requireContact(businessId, dto.contactId);
-    if (contact.type !== 'CUSTOMER' && contact.type !== 'BOTH') {
+    // The Customer/Supplier rule is for trade contacts only: a loan can be
+    // given to (or taken from) any kind of loan contact, a Bank, an NGO or
+    // a Relative included.
+    if (contact.category !== 'LOAN' && contact.type !== 'CUSTOMER' && contact.type !== 'BOTH') {
       throw new BadRequestException('This contact must be a Customer (or Customer & Supplier) to record a credit sale');
     }
     const arAccount = await this.requireSystemAccount(businessId, 'receivable', 'ASSET', 'Accounts Receivable');
@@ -219,7 +222,8 @@ export class ReceivablesPayablesService {
   // none of it an expense: Dr the money account / Cr Accounts Payable).
   async recordPurchase(businessId: string, dto: CreatePayableDto, userId: string) {
     const contact = await this.requireContact(businessId, dto.contactId);
-    if (contact.type !== 'SUPPLIER' && contact.type !== 'BOTH') {
+    // Trade contacts only, as in recordSale().
+    if (contact.category !== 'LOAN' && contact.type !== 'SUPPLIER' && contact.type !== 'BOTH') {
       throw new BadRequestException('This contact must be a Supplier (or Customer & Supplier) to record a credit purchase');
     }
     const apAccount = await this.requireSystemAccount(businessId, 'payable', 'LIABILITY', 'Accounts Payable');
