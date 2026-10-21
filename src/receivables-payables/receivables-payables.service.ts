@@ -1,5 +1,5 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
-import { Account, AccountType, Contact, Prisma, TransactionStatus } from '@prisma/client';
+import { Account, AccountType, Contact, Prisma } from '@prisma/client';
 import { MONEY_ACCOUNT_SUBTYPES } from '../accounts/accounts.service.js';
 import { dhakaDateOnly, dhakaYear } from '../common/dhaka.js';
 import { PrismaService } from '../prisma/prisma.service.js';
@@ -11,6 +11,9 @@ import { CreateReceivableDto } from './dto/create-receivable.dto.js';
 import { PayPaymentDto } from './dto/pay-payment.dto.js';
 import { ReceivePaymentDto } from './dto/receive-payment.dto.js';
 import { profitTotals } from './loan-profit.js';
+import { loanStatementRows, type LoanStatementItem, type LoanStatementRow } from './loan-statement.js';
+
+export type { LoanStatementRow } from './loan-statement.js';
 
 export type Direction = 'RECEIVABLE' | 'PAYABLE';
 
@@ -123,28 +126,6 @@ export interface LoanDashboard {
   profitPaidThisYear: string;
   topProfit: { contactId: string; contactName: string; monthly: string } | null;
   rows: LoanDashboardRow[];
-}
-
-export interface LoanStatementRow {
-  transactionId: string;
-  date: Date;
-  referenceNo: string | null;
-  description: string | null;
-  category: string;
-  // DEBIT on the AR/AP side of a transaction always mirrors a CREDIT on
-  // that same transaction's money-account side (double-entry) -- which is
-  // exactly the "cash left the business" case (a loan given out, or a
-  // payment made on money borrowed). So debit here means "Paid" and
-  // credit means "Received", regardless of whether the entry happens to
-  // sit on the Accounts Receivable or the Accounts Payable account.
-  debit: string | null;
-  credit: string | null;
-  // A Profit row: what was paid or received. Its runningPrincipal is the
-  // balance it left untouched.
-  profitPaid: string | null;
-  profitReceived: string | null;
-  runningPrincipal: string;
-  status: TransactionStatus;
 }
 
 export interface LoanStatement {
@@ -415,7 +396,7 @@ export class ReceivablesPayablesService {
     let balanceBroughtForward = new Prisma.Decimal(contact.openingBalance);
     if (filters.dateFrom && accountIds.length > 0) {
       const priorEntries = await this.prisma.transactionEntry.findMany({
-        where: { accountId: { in: accountIds }, transaction: { contactId, transactionDate: { lt: new Date(filters.dateFrom) } } },
+        where: { accountId: { in: accountIds }, transaction: { contactId, status: 'POSTED', reversalOfId: null, transactionDate: { lt: new Date(filters.dateFrom) } } },
       });
       for (const entry of priorEntries) {
         const amount = new Prisma.Decimal(entry.amount);
@@ -445,32 +426,13 @@ export class ReceivablesPayablesService {
       include: { entries: { where: { entryType: 'DEBIT' }, select: { amount: true } } },
     });
 
-    // Principal and profit in date order; only principal moves the balance.
-    const items = [
+    // Principal and profit in date order; only principal that still stands
+    // moves the balance (loan-statement.ts).
+    const items: LoanStatementItem[] = [
       ...entries.map((entry) => ({ transaction: entry.transaction, principal: entry })),
-      ...profits.map((transaction) => ({ transaction, principal: null })),
-    ].sort((a, b) => a.transaction.transactionDate.getTime() - b.transaction.transactionDate.getTime() || a.transaction.createdAt.getTime() - b.transaction.createdAt.getTime());
-
-    let running = balanceBroughtForward;
-    const rows: LoanStatementRow[] = items.map(({ transaction, principal }) => {
-      const base = { transactionId: transaction.id, date: transaction.transactionDate, referenceNo: transaction.referenceNo, description: transaction.description, status: transaction.status };
-      if (!principal) {
-        const amount = (transaction as (typeof profits)[number]).entries.reduce((sum, entry) => sum.plus(entry.amount), new Prisma.Decimal(0)).toFixed(2);
-        const paid = transaction.transactionType === 'EXPENSE';
-        return { ...base, category: 'Profit', debit: null, credit: null, profitPaid: paid ? amount : null, profitReceived: paid ? null : amount, runningPrincipal: running.toFixed(2) };
-      }
-      const amount = new Prisma.Decimal(principal.amount);
-      running = running.plus(principal.entryType === 'DEBIT' ? amount : amount.negated());
-      return {
-        ...base,
-        category: 'Principal',
-        debit: principal.entryType === 'DEBIT' ? amount.toFixed(2) : null,
-        credit: principal.entryType === 'CREDIT' ? amount.toFixed(2) : null,
-        profitPaid: null,
-        profitReceived: null,
-        runningPrincipal: running.toFixed(2),
-      };
-    });
+      ...profits.map((transaction) => ({ transaction, principal: null, profit: transaction.entries.reduce((sum, entry) => sum.plus(entry.amount), new Prisma.Decimal(0)) })),
+    ];
+    const rows: LoanStatementRow[] = loanStatementRows(items, balanceBroughtForward);
 
     return {
       contactId,
