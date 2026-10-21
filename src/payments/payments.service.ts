@@ -48,7 +48,9 @@ export class PaymentsService {
     const [payments, total] = await Promise.all([
       this.prisma.payment.findMany({
         where,
-        orderBy: { createdAt: 'desc' },
+        // The id breaks ties, so a page never repeats or skips a payment
+        // that shares its timestamp (the all-pages export reads every page).
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
         skip: (page - 1) * limit,
         take: limit,
         include: {

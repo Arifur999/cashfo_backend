@@ -25,7 +25,8 @@ export class InvoicesService {
     const [data, total] = await Promise.all([
       this.prisma.invoice.findMany({
         where,
-        orderBy: { createdAt: 'desc' },
+        // The id breaks ties for invoices made in the same instant.
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
         skip: (page - 1) * limit,
         take: limit,
         include: { payment: { select: { id: true, platformUserId: true, planId: true } } },

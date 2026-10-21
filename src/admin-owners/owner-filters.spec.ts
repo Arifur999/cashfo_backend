@@ -33,7 +33,7 @@ describe('ownerOrderBy', () => {
   });
 
   it('can order by joining or by name', () => {
-    expect(ownerOrderBy('joined')).toEqual([{ createdAt: 'desc' }]);
+    expect(ownerOrderBy('joined')).toEqual([{ createdAt: 'desc' }, { id: 'desc' }]);
     expect(ownerOrderBy('name')[0]).toEqual({ name: 'asc' });
   });
 });
