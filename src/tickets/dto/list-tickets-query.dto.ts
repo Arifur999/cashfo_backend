@@ -18,8 +18,10 @@ export const UNASSIGNED = 'none';
 
 // queue: today's order (unassigned first, then priority, then newest), the
 // same as leaving sort out; a sort menu needs a name for it to send.
-// waiting: the most urgent first, then whoever has waited longest for the
-// team.
+// waiting: the tickets that owe the customer a reply (what awaitingReply
+// keeps) before the rest, then the most urgent, then whoever has waited
+// longest for the team. Without awaitingReply the answered, waiting-on-user
+// and solved tickets follow, oldest activity first.
 export const TICKET_SORTS = ['queue', 'waiting'] as const;
 export type TicketSort = (typeof TICKET_SORTS)[number];
 

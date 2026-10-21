@@ -121,17 +121,8 @@ const fakePrisma = (tickets: Ticket[]) => {
         return [...counts].map(([value, count]) => ({ [field]: value, _count: count }));
       }),
     },
-    ticketMessage: {
-      // The newest matching message per ticket.
-      groupBy: vi.fn(async ({ where: { ticket: ticketWhere, ...messageWhere } }: { where: Row & { ticket?: Row } }) =>
-        tickets
-          .filter((t) => matches(t, ticketWhere))
-          .flatMap((t) => {
-            const times = t.messages.filter((m) => matches(m, messageWhere)).map((m) => m.createdAt.getTime());
-            return times.length > 0 ? [{ ticketId: t.id, _max: { createdAt: new Date(Math.max(...times)) } }] : [];
-          }),
-      ),
-    },
+    // Nothing in the list reads messages on their own; a call fails here.
+    ticketMessage: {},
     user: {
       findMany: vi.fn(async (args: FindArgs) => chosen(users, args)),
       findUnique: vi.fn(async (args: FindArgs) => chosen(users, args)[0] ?? null),
@@ -172,7 +163,6 @@ describe('TicketsService.list', () => {
       take: 5,
       include: { messages: { orderBy: { createdAt: 'desc' }, take: 1, select: { senderType: true, createdAt: true } } },
     });
-    expect(prisma.ticketMessage.groupBy).not.toHaveBeenCalled();
     expect(result.meta).toEqual({ page: 2, limit: 5, total: 7, totalPage: 2 });
 
     // sort=queue names that order, for a sort menu to send.
@@ -180,7 +170,6 @@ describe('TicketsService.list', () => {
     const queued = await named.service.list({ sort: 'queue', page: 2, limit: 5 });
     expect(named.prisma.supportTicket.findMany).toHaveBeenCalledTimes(1);
     expect(named.prisma.supportTicket.findMany.mock.calls[0]).toEqual(prisma.supportTicket.findMany.mock.calls[0]);
-    expect(named.prisma.ticketMessage.groupBy).not.toHaveBeenCalled();
     expect(queued).toEqual(result);
   });
 
@@ -239,8 +228,8 @@ describe('TicketsService.list sort=waiting', () => {
   const WAITING = [
     ticket('low-oldest', { priority: 'LOW', createdAt: ago(90), messages: [asked(90)] }),
     ticket('urgent-new', { priority: 'URGENT', createdAt: ago(1), messages: [asked(1)] }),
-    // The team answered since (more recently than urgent-new's message);
-    // the customer's newest message still dates the wait.
+    // The team answered since: it no longer owes a reply, so it follows
+    // every ticket that does, however urgent.
     ticket('urgent-answered', { priority: 'URGENT', createdAt: ago(6), messages: [asked(6), answered(0.5)] }),
     ticket('high', { priority: 'HIGH', createdAt: ago(2), messages: [asked(2)] }),
     // Never wrote: waiting since the ticket opened.
@@ -248,17 +237,37 @@ describe('TicketsService.list sort=waiting', () => {
     // Wrote twice: the newer message counts.
     ticket('medium-twice', { createdAt: ago(40), messages: [asked(40), asked(8)] }),
   ];
-  const RANKED = ['urgent-answered', 'urgent-new', 'high', 'medium-silent', 'medium-twice', 'low-oldest'];
+  const RANKED = ['urgent-new', 'high', 'medium-silent', 'medium-twice', 'low-oldest', 'urgent-answered'];
 
-  it('puts the most urgent first, then whoever has waited longest since their newest message', async () => {
+  it('puts the tickets owing a reply first, the most urgent first, then whoever has waited longest since their newest message', async () => {
     const { service } = setup(WAITING);
     const result = await service.list({ sort: 'waiting', limit: 100 });
 
     expect(ids(result)).toEqual(RANKED);
     expect(result.meta).toEqual({ page: 1, limit: 100, total: 6, totalPage: 1 });
     // The list's usual rows.
-    expect(result.data[0]).toMatchObject({ lastMessageFrom: 'ADMIN', lastMessageAt: ago(0.5), assignedAdmin: null });
-    expect(result.data[1]).toMatchObject({ id: 'urgent-new', lastMessageFrom: 'USER', platformUser: { id: 'cust-rahim', name: 'Rahim Uddin' } });
+    expect(result.data[0]).toMatchObject({ id: 'urgent-new', lastMessageFrom: 'USER', platformUser: { id: 'cust-rahim', name: 'Rahim Uddin' } });
+    expect(result.data[5]).toMatchObject({ lastMessageFrom: 'ADMIN', lastMessageAt: ago(0.5), assignedAdmin: null });
+  });
+
+  it("puts an answered ticket behind one still waiting on the team, as the In queue tab sorts without 'Waiting on us'", async () => {
+    const { service } = setup([
+      // Asked 5 days ago, answered 4 days ago: the customer's turn.
+      ticket('answered-long-ago', { priority: 'HIGH', status: 'WAITING_ON_USER', createdAt: ago(120), messages: [asked(120), answered(96)] }),
+      ticket('asked-an-hour-ago', { priority: 'HIGH', createdAt: ago(1), messages: [asked(1)] }),
+      // The customer wrote last, but it is solved: nothing is owed.
+      ticket('solved-urgent', { priority: 'URGENT', status: 'RESOLVED', resolvedAt: ago(1), createdAt: ago(10), messages: [asked(10)] }),
+      // Answered, and urgent: first among the ones not owed.
+      ticket('answered-urgent', { priority: 'URGENT', status: 'IN_PROGRESS', createdAt: ago(5), messages: [asked(5), answered(3)] }),
+      // The customer wrote back after the reply: owed again, since 2h ago.
+      ticket('wrote-back', { priority: 'LOW', status: 'WAITING_ON_USER', createdAt: ago(30), messages: [asked(30), answered(20), asked(2)] }),
+    ]);
+
+    const inQueue = await service.list({ sort: 'waiting', status: 'IN_QUEUE' });
+    expect(ids(inQueue)).toEqual(['asked-an-hour-ago', 'wrote-back', 'answered-urgent', 'answered-long-ago']);
+
+    // Among the ones not owed: the most urgent, then the oldest activity.
+    expect(ids(await service.list({ sort: 'waiting' }))).toEqual(['asked-an-hour-ago', 'wrote-back', 'solved-urgent', 'answered-urgent', 'answered-long-ago']);
   });
 
   it('cuts every page from the same ranking, and loads only that page in full', async () => {
@@ -288,13 +297,10 @@ describe('TicketsService.list sort=waiting', () => {
 
     expect(ids(result)).toEqual(['urgent-new', 'high', 'asked', 'again', 'medium-silent', 'medium-twice', 'empty', 'wrote-back', 'low-oldest']);
     expect(result.meta.total).toBe((await service.stats()).needsReplyCount);
-    // The newest customer message is looked up under the same filters.
+    // Each ticket's newest message is read with it, under the same filters.
     const ranked = prisma.supportTicket.findMany.mock.calls.find(([args]) => args?.select?.priority)?.[0];
-    expect(prisma.ticketMessage.groupBy).toHaveBeenCalledWith({
-      by: ['ticketId'],
-      where: { senderType: 'USER', ticket: ranked?.where },
-      _max: { createdAt: true },
-    });
+    expect(ranked?.where).toMatchObject({ AND: [{ status: { notIn: ['RESOLVED', 'CLOSED'] } }] });
+    expect(ranked?.select).toMatchObject({ messages: { orderBy: { createdAt: 'desc' }, take: 1, select: { senderType: true, createdAt: true } } });
   });
 
   it('ranks under the search as well: asked has waited since 30h ago, again since 26h ago', async () => {

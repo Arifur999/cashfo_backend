@@ -19,6 +19,14 @@ const LIST_INCLUDE = {
   messages: { orderBy: { createdAt: 'desc' }, take: 1, select: { senderType: true, createdAt: true } },
 } satisfies Prisma.SupportTicketInclude;
 
+type NewestMessage = { senderType: string; createdAt: Date };
+
+// The queue's "needs a reply": an unsolved ticket whose newest message is
+// the customer's, or that has none yet. The team owes them an answer
+// whatever the status says. awaitingReply() and sort=waiting both read it.
+const owesReply = (status: TicketStatus, newest: NewestMessage | undefined) =>
+  !RESOLVED_STATUSES.includes(status) && (!newest || newest.senderType === 'USER');
+
 // sort=waiting puts the highest first, in the enum's order (LOW..URGENT).
 const PRIORITY_RANK: Record<TicketPriority, number> = { LOW: 0, MEDIUM: 1, HIGH: 2, URGENT: 3 };
 
@@ -26,14 +34,20 @@ interface WaitingTicket {
   id: string;
   priority: TicketPriority;
   createdAt: Date;
-  // The customer's newest message, or the opening when they never wrote.
+  // Whether the team owes the customer a reply (owesReply()).
+  owed: boolean;
+  // Owed: the customer's newest message, or the opening when nobody has
+  // written. Otherwise the ticket's newest message (or its opening), so
+  // the ones answered longest ago come first among them.
   waitingSince: Date;
 }
 
-// sort=waiting: the most urgent first, then whoever has waited longest.
-// The older ticket, then the id, settle a tie, so no row can sit on both
-// sides of a page boundary.
+// sort=waiting: every ticket that owes a reply before any that doesn't (an
+// answered, waiting-on-user or solved one), then the most urgent, then
+// whoever has waited longest. The older ticket, then the id, settle a tie,
+// so no row can sit on both sides of a page boundary.
 const byLongestWaiting = (a: WaitingTicket, b: WaitingTicket) =>
+  Number(b.owed) - Number(a.owed) ||
   PRIORITY_RANK[b.priority] - PRIORITY_RANK[a.priority] ||
   a.waitingSince.getTime() - b.waitingSince.getTime() ||
   a.createdAt.getTime() - b.createdAt.getTime() ||
@@ -86,8 +100,9 @@ export class TicketsService {
       where.OR = [{ subject: { contains: query.search, mode: 'insensitive' } }, { platformUserId: { in: requesterIds } }];
     }
 
-    // sort=waiting ranks by priority, then by how long the customer has
-    // waited (longestWaitingPage()). sort=queue, or no sort: unassigned
+    // sort=waiting ranks the tickets owing a reply first, then by priority,
+    // then by how long the customer has waited (longestWaitingPage()).
+    // sort=queue, or no sort: unassigned
     // tickets surface first, then by priority (enum declaration order
     // LOW..URGENT means `desc` puts URGENT first), then newest first.
     const [tickets, total] =
@@ -117,17 +132,22 @@ export class TicketsService {
   // sort=waiting. How long a ticket has waited lives on its messages, and
   // Prisma orders by a relation's count but never by its newest row, so no
   // single query can page this order. Instead the whole filtered set is
-  // ranked here, from an id, a priority and two dates a ticket (the
-  // database takes each one's newest customer message), and only the page
-  // asked for is loaded in full: every page cuts the same ranking, and the
-  // total is its length.
+  // ranked here, from a few fields a ticket and its newest message (who
+  // wrote it and when, the same row awaitingReply() reads), and only the
+  // page asked for is loaded in full: every page cuts the same ranking,
+  // and the total is its length.
   private async longestWaitingPage(where: Prisma.SupportTicketWhereInput, page: number, limit: number) {
-    const [candidates, lastAsked] = await Promise.all([
-      this.prisma.supportTicket.findMany({ where, select: { id: true, priority: true, createdAt: true } }),
-      this.prisma.ticketMessage.groupBy({ by: ['ticketId'], where: { senderType: 'USER', ticket: where }, _max: { createdAt: true } }),
-    ]);
-    const askedAt = new Map(lastAsked.map((row) => [row.ticketId, row._max.createdAt]));
-    const ranked = candidates.map((ticket) => ({ ...ticket, waitingSince: askedAt.get(ticket.id) ?? ticket.createdAt })).sort(byLongestWaiting);
+    const candidates = await this.prisma.supportTicket.findMany({
+      where,
+      select: { id: true, priority: true, status: true, createdAt: true, messages: LIST_INCLUDE.messages },
+    });
+    const ranked = candidates
+      .map(({ messages, status, ...ticket }): WaitingTicket => {
+        const newest = messages.at(0);
+        // Owed: its newest message is the customer's, or there is none.
+        return { ...ticket, owed: owesReply(status, newest), waitingSince: newest?.createdAt ?? ticket.createdAt };
+      })
+      .sort(byLongestWaiting);
 
     const pageIds = ranked.slice((page - 1) * limit, page * limit).map((ticket) => ticket.id);
     const rows = pageIds.length > 0 ? await this.prisma.supportTicket.findMany({ where: { id: { in: pageIds } }, include: LIST_INCLUDE }) : [];
@@ -353,20 +373,18 @@ export class TicketsService {
     };
   }
 
-  // The queue's "needs a reply": an unsolved ticket whose newest message is
-  // the customer's, or that has none yet. The team owes them an answer
-  // whatever the status says, since that message (or the opening). stats()
-  // counts this list and list(awaitingReply) filters by it, so the figure
-  // and the filtered list's total agree.
+  // The tickets that owe a reply (owesReply()), each since the customer's
+  // newest message (or the opening). stats() counts this list and
+  // list(awaitingReply) filters by it, so the figure and the filtered
+  // list's total agree.
   private async awaitingReply(): Promise<{ id: string; since: Date }[]> {
     const unsolved = await this.prisma.supportTicket.findMany({
       where: { status: { notIn: RESOLVED_STATUSES } },
-      select: { id: true, createdAt: true, messages: { orderBy: { createdAt: 'desc' }, take: 1, select: { senderType: true, createdAt: true } } },
+      select: { id: true, status: true, createdAt: true, messages: LIST_INCLUDE.messages },
     });
     return unsolved.flatMap((ticket) => {
       const last = ticket.messages.at(0);
-      if (!last) return [{ id: ticket.id, since: ticket.createdAt }];
-      return last.senderType === 'USER' ? [{ id: ticket.id, since: last.createdAt }] : [];
+      return owesReply(ticket.status, last) ? [{ id: ticket.id, since: last?.createdAt ?? ticket.createdAt }] : [];
     });
   }
 
