@@ -227,6 +227,18 @@ export class UserAuthService {
   // out on every device -- changing your password signs you out everywhere
   // else -- then signs the caller in fresh, same response shape as
   // login()/register(), so the frontend can set cookies and go straight on.
+  // Whether a reset link still works, without using it, so the reset page
+  // can say an expired or used link up front instead of after the new
+  // password is typed twice. The same rules as resetPassword(); only a
+  // yes or no comes back.
+  async checkResetToken(rawToken: string): Promise<{ valid: boolean }> {
+    const tokenHash = createHash('sha256').update(rawToken).digest('hex');
+    const resetToken = await this.prisma.passwordResetToken.findUnique({ where: { tokenHash }, select: { usedAt: true, expiresAt: true, userId: true } });
+    if (!resetToken || resetToken.usedAt || resetToken.expiresAt < new Date()) return { valid: false };
+    const owner = await this.prisma.user.findUnique({ where: { id: resetToken.userId }, select: { status: true, role: true } });
+    return { valid: owner?.status === 'ACTIVE' && owner.role === Role.USER };
+  }
+
   async resetPassword(rawToken: string, newPassword: string, client: ClientInfo) {
     const tokenHash = createHash('sha256').update(rawToken).digest('hex');
     const resetToken = await this.prisma.passwordResetToken.findUnique({ where: { tokenHash } });
