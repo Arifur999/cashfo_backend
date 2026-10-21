@@ -1,8 +1,8 @@
 import { escapeHtml } from './escape-html.js';
 
-export function renderWelcomeEmail(name: string): { subject: string; html: string; text: string } {
-  const subject = 'Welcome to Money Management Tracker';
-  const text = `Hi ${name},\n\nYour account has been created. You can now log in and start tracking your accounts, transactions, and reports.\n\n- Money Management Tracker`;
+export function renderWelcomeEmail(name: string, platformName: string): { subject: string; html: string; text: string } {
+  const subject = `Welcome to ${platformName}`;
+  const text = `Hi ${name},\n\nYour account has been created. You can now log in and start tracking your accounts, transactions, and reports.\n\n- ${platformName}`;
   const html = `
     <div style="font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto;">
       <h2 style="color: #111827;">Welcome, ${escapeHtml(name)}!</h2>
@@ -10,7 +10,7 @@ export function renderWelcomeEmail(name: string): { subject: string; html: strin
         Your account has been created successfully. You can now log in and start tracking
         your accounts, transactions, contacts, and reports.
       </p>
-      <p style="color: #9ca3af; font-size: 12px; margin-top: 32px;">Money Management Tracker</p>
+      <p style="color: #9ca3af; font-size: 12px; margin-top: 32px;">${escapeHtml(platformName)}</p>
     </div>
   `;
   return { subject, html, text };

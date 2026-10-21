@@ -3,7 +3,6 @@ import { ConfigService } from '@nestjs/config';
 import { Prisma, TicketPriority, TicketStatus } from '@prisma/client';
 import { ADMIN_USER_WHERE, END_USER_WHERE } from '../common/roles.js';
 import { MailService } from '../mail/mail.service.js';
-import { renderSupportReplyEmail } from '../mail/templates/support-reply-email.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { pushNotification } from '../user-notifications/push.js';
 import { AddMessageDto } from './dto/add-message.dto.js';
@@ -270,7 +269,7 @@ export class TicketsService {
     if (!this.configService.get<string>('RESEND_API_KEY')) return;
     const appUrl = this.configService.get<string>('USER_FRONTEND_URL') ?? 'http://localhost:3000';
     const link = `${appUrl}/settings/help?message=${ticket.id}`;
-    this.mailService.sendEmail({ to: customer.email, ...renderSupportReplyEmail(customer.name, ticket.subject, reply, link) }).catch((error: unknown) => {
+    this.mailService.sendSupportReplyEmail(customer.email, customer.name, ticket.subject, reply, link).catch((error: unknown) => {
       this.logger.warn(`Support reply email for ticket ${ticket.id} failed: ${error instanceof Error ? error.message : String(error)}`);
     });
   }

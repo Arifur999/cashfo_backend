@@ -6,7 +6,6 @@ import { AuthSessionsService, type ClientInfo } from '../auth/auth-sessions.serv
 import { CredentialsService } from '../auth/credentials.service.js';
 import { SessionTokensService } from '../auth/session-tokens.service.js';
 import { MailService } from '../mail/mail.service.js';
-import { renderPasswordResetEmail } from '../mail/templates/password-reset-email.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { ChangePasswordDto } from './dto/change-password.dto.js';
 import { LoginDto } from './dto/login.dto.js';
@@ -209,9 +208,8 @@ export class UserAuthService {
 
       const frontendUrl = this.configService.get<string>('USER_FRONTEND_URL') ?? 'http://localhost:3001';
       const resetUrl = `${frontendUrl}/reset-password?token=${rawToken}`;
-      const resetEmail = renderPasswordResetEmail(user.name, resetUrl);
       try {
-        await this.mailService.sendEmail({ to: user.email, ...resetEmail });
+        await this.mailService.sendPasswordResetEmail(user.email, user.name, resetUrl);
       } catch (err: unknown) {
         // Unlike the welcome email, this one isn't fire-and-forget -- but a
         // send failure still must not change the generic response below, or

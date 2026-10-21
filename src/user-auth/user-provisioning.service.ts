@@ -3,7 +3,6 @@ import { Prisma, WorkspaceType } from '@prisma/client';
 import { randomBytes } from 'crypto';
 import { AccountsService } from '../accounts/accounts.service.js';
 import { MailService } from '../mail/mail.service.js';
-import { renderWelcomeEmail } from '../mail/templates/welcome-email.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { SettingsService } from '../settings/settings.service.js';
 
@@ -109,7 +108,7 @@ export class UserProvisioningService {
   private async sendWelcomeEmail(userId: string) {
     const user = await this.prisma.user.findUnique({ where: { id: userId }, select: { name: true, email: true } });
     if (!user) return;
-    this.mailService.sendEmail({ to: user.email, ...renderWelcomeEmail(user.name) }).catch((err: unknown) => {
+    this.mailService.sendWelcomeEmail(user.email, user.name).catch((err: unknown) => {
       this.logger.error(`Failed to send welcome email to ${user.email}: ${err instanceof Error ? err.message : String(err)}`);
     });
   }

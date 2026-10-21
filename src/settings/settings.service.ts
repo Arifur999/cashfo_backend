@@ -8,8 +8,12 @@ import { UpdateSettingsDto } from './dto/update-settings.dto.js';
 // as named, typed fields on the API rather than exposing raw key/value pairs
 // to the admin -- same "don't make the admin hand-edit JSON" reasoning as the
 // notification-campaign target filter.
+// The product's name. Emails also sign off with it when the stored
+// platform_name is empty or still the old 'Money Management Tracker'.
+export const DEFAULT_PLATFORM_NAME = 'Smartly';
+
 const DEFAULTS = {
-  platform_name: 'Money Management Tracker',
+  platform_name: DEFAULT_PLATFORM_NAME,
   support_email: 'support@example.com',
   default_currency: 'BDT',
   default_timezone: 'Asia/Dhaka',
