@@ -99,6 +99,7 @@ export class BudgetsService {
     });
   }
 
+  // null clears the target: getOverview() then answers totalBudget: null.
   async updateTarget(businessId: string, dto: UpdateBudgetTargetDto) {
     return this.prisma.business.update({
       where: { id: businessId },
