@@ -38,9 +38,10 @@ export const workspaceCount = (filter: WorkspaceCountFilter): { equals: number }
   filter === '1' ? { equals: 1 } : { gte: filter === '2+' ? 2 : 3 };
 
 // The list's order; last active, newest first, unless asked otherwise. A
-// person who never signed in sorts last.
+// person who never signed in sorts last. The id breaks the last ties, so
+// every page reads in one fixed order.
 export const ownerOrderBy = (sort: OwnerSort | undefined): Prisma.UserOrderByWithRelationInput[] => {
-  if (sort === 'joined') return [{ createdAt: 'desc' }];
-  if (sort === 'name') return [{ name: 'asc' }, { createdAt: 'desc' }];
-  return [{ lastLoginAt: { sort: 'desc', nulls: 'last' } }, { createdAt: 'desc' }];
+  if (sort === 'joined') return [{ createdAt: 'desc' }, { id: 'desc' }];
+  if (sort === 'name') return [{ name: 'asc' }, { createdAt: 'desc' }, { id: 'desc' }];
+  return [{ lastLoginAt: { sort: 'desc', nulls: 'last' } }, { createdAt: 'desc' }, { id: 'desc' }];
 };
