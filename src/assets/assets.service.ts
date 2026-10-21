@@ -3,6 +3,7 @@ import { Account, Asset, Prisma } from '@prisma/client';
 import { FIXED_ASSETS_ACCOUNT_SUBTYPE, MONEY_ACCOUNT_SUBTYPES } from '../accounts/accounts.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { TransactionsService } from '../transactions/transactions.service.js';
+import { isBeforePurchase, isNewestValuation } from './asset-dates.js';
 import { CreateAssetCategoryDto } from './dto/create-asset-category.dto.js';
 import { CreateAssetPurchaseDto } from './dto/create-asset-purchase.dto.js';
 import { SellAssetDto } from './dto/sell-asset.dto.js';
@@ -189,6 +190,9 @@ export class AssetsService {
       if (asset.status === 'SOLD') {
         throw new BadRequestException('This asset has already been sold.');
       }
+      if (isBeforePurchase(dto.date, asset.purchaseDate)) {
+        throw new BadRequestException('An asset can\'t be sold before the day it was bought.');
+      }
       const depositAccount = await this.requirePaymentAccount(businessId, dto.soldAccountId, tx);
       const fixedAssetsAccount = await this.requireOrCreateFixedAssetsAccount(businessId, tx);
 
@@ -230,11 +234,20 @@ export class AssetsService {
     if (asset.status === 'SOLD') {
       throw new BadRequestException('Cannot update the value of a sold asset.');
     }
-    await this.prisma.assetValueHistory.create({ data: { assetId: id, value: dto.value, note: dto.note, recordedAt: new Date(dto.date) } });
-    return this.prisma.asset.update({
-      where: { id },
-      data: { currentValue: dto.value },
-      include: { valueHistory: { orderBy: VALUE_HISTORY_ORDER } },
+    if (isBeforePurchase(dto.date, asset.purchaseDate)) {
+      throw new BadRequestException('A value can\'t be dated before the day the asset was bought.');
+    }
+    // A value for an earlier day fills in the history; only the newest one
+    // is what the asset is worth today.
+    const newest = await this.prisma.assetValueHistory.findFirst({ where: { assetId: id }, orderBy: VALUE_HISTORY_ORDER, select: { recordedAt: true } });
+    const isToday = isNewestValuation(dto.date, newest?.recordedAt ?? null);
+    return this.prisma.$transaction(async (tx) => {
+      await tx.assetValueHistory.create({ data: { assetId: id, value: dto.value, note: dto.note, recordedAt: new Date(dto.date) } });
+      return tx.asset.update({
+        where: { id },
+        data: isToday ? { currentValue: dto.value } : {},
+        include: { valueHistory: { orderBy: VALUE_HISTORY_ORDER } },
+      });
     });
   }
 
