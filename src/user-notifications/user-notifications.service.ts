@@ -7,7 +7,7 @@ import { PrismaService } from '../prisma/prisma.service.js';
 import { ReceivablesPayablesService } from '../receivables-payables/receivables-payables.service.js';
 import { SavingsGoalsService } from '../savings-goals/savings-goals.service.js';
 import { UpdateReminderPreferencesDto } from './dto/update-reminder-preferences.dto.js';
-import { announcementReminders, budgetReminders, loanReminders, savingsReminders, type ReminderDraft } from './reminders.js';
+import { announcementReminders, budgetReminders, categoryNamesBn, loanReminders, savingsReminders, type ReminderDraft } from './reminders.js';
 
 // The checks run when the feed is read, at most this often per user.
 const CHECK_EVERY_MS = 30 * 60 * 1000;
@@ -105,11 +105,14 @@ export class UserNotificationsService {
     const today = dhakaToday();
     const month = `${today.year}-${String(today.month).padStart(2, '0')}`;
     const drafts: ReminderDraft[] = [];
+    const ownWorkspaces = workspaces.filter((w) => w.type !== 'GROUP');
+    const nameBnOf: (name: string) => string | null = user.remindBudget && ownWorkspaces.length > 0 ? await this.expenseCategoryNamesBn() : () => null;
 
-    for (const workspace of workspaces.filter((w) => w.type !== 'GROUP')) {
+    for (const workspace of ownWorkspaces) {
       if (user.remindBudget) {
         const overview = await this.budgetsService.getOverview(workspace.id, {});
-        drafts.push(...budgetReminders(workspace.id, month, overview.categories));
+        const lines = overview.categories.map((category) => ({ ...category, nameBn: nameBnOf(category.name) }));
+        drafts.push(...budgetReminders(workspace.id, month, lines));
       }
       if (user.remindLoans) {
         drafts.push(...loanReminders(workspace.id, await this.receivablesPayablesService.dueWithin(workspace.id, LOAN_DAYS)));
@@ -124,5 +127,16 @@ export class UserNotificationsService {
     const planIds = [...new Set(workspaces.flatMap((w) => (w.planId ? [w.planId] : [])))];
     drafts.push(...announcementReminders(await this.announcementsService.forCustomer(planIds)));
     return drafts;
+  }
+
+  // The Bangla names a budget reminder can give its category: the default
+  // expense categories', an active one's first (see categoryNamesBn()).
+  private async expenseCategoryNamesBn() {
+    const defaults = await this.prisma.defaultCategory.findMany({
+      where: { type: 'EXPENSE' },
+      orderBy: [{ isActive: 'desc' }, { displayOrder: 'asc' }],
+      select: { name: true, nameBn: true },
+    });
+    return categoryNamesBn(defaults);
   }
 }

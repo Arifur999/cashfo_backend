@@ -1,19 +1,12 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
-import { AccountType, Prisma } from '@prisma/client';
+import { Prisma } from '@prisma/client';
+import { dayDate, entryTotals, isDebitPositive, LIVE_TRANSACTION, signedNet } from './account-figures.js';
 import { MONEY_ACCOUNT_SUBTYPES } from './accounts.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 
-// Accounting rule (product blueprint): for ASSET/EXPENSE accounts, DEBIT
-// increases the balance and CREDIT decreases it; for LIABILITY/EQUITY/
-// INCOME accounts, it's the reverse. Exported (Prompt 7) so ReportsService
-// can reuse the exact same rule for the Trial Balance's debit/credit column
-// split rather than redefining it.
-export function isDebitPositive(accountType: AccountType): boolean {
-  return accountType === 'ASSET' || accountType === 'EXPENSE';
-}
-
-// A transaction that still stands: neither voided nor the reversal of a void.
-const LIVE_TRANSACTION = { status: 'POSTED', reversalOfId: null } satisfies Prisma.TransactionWhereInput;
+// The accounting rule lives in account-figures.ts; still exported from here
+// for ReportsService's Trial Balance.
+export { isDebitPositive } from './account-figures.js';
 
 export interface LedgerFilters {
   dateFrom?: string;
@@ -290,16 +283,23 @@ export class AccountBalanceService {
   // shown as money sent out (positive), Adjustment as a signed +/-. Voided
   // transactions and their reversals are left out of every column; the
   // pair nets to zero in the current balance.
-  async getWalletsOverview(businessId: string) {
+  //
+  // With `asOf` (a YYYY-MM-DD Dhaka day), each wallet also carries
+  // balanceAsOf: its opening balance plus every standing entry dated on or
+  // before that day, for all wallets in one groupBy -- Home's trend chip read
+  // one ledger per wallet for it. A posting voided after asOf counts on
+  // neither side, so it can differ from that ledger's figure, which keeps
+  // both halves of a void.
+  async getWalletsOverview(businessId: string, filters: { asOf?: string } = {}) {
     const accounts = await this.prisma.account.findMany({
       where: { businessId, accountType: 'ASSET', accountSubtype: { in: MONEY_ACCOUNT_SUBTYPES } },
       orderBy: { displayOrder: 'asc' },
     });
     const accountIds = accounts.map((a) => a.id);
 
-    const [nonTransferGrouped, transferEntries] =
+    const [nonTransferGrouped, transferEntries, asOfGrouped] =
       accountIds.length === 0
-        ? [[], []]
+        ? [[], [], []]
         : await Promise.all([
             this.prisma.transactionEntry.groupBy({
               by: ['accountId', 'entryType'],
@@ -310,7 +310,15 @@ export class AccountBalanceService {
               where: { accountId: { in: accountIds }, transaction: { ...LIVE_TRANSACTION, transactionType: 'TRANSFER' } },
               include: { transaction: { include: { entries: { include: { account: { select: { accountSubtype: true } } } } } } },
             }),
+            filters.asOf
+              ? this.prisma.transactionEntry.groupBy({
+                  by: ['accountId', 'entryType'],
+                  where: { accountId: { in: accountIds }, transaction: { businessId, ...LIVE_TRANSACTION, transactionDate: { lte: dayDate(filters.asOf) } } },
+                  _sum: { amount: true },
+                })
+              : [],
           ]);
+    const asOfTotals = filters.asOf ? entryTotals(asOfGrouped) : null;
 
     const inByAccount = new Map<string, Prisma.Decimal>();
     const outByAccount = new Map<string, Prisma.Decimal>();
@@ -355,6 +363,7 @@ export class AccountBalanceService {
         savings: (savingsByAccount.get(account.id) ?? new Prisma.Decimal(0)).toFixed(2),
         adjustment: (adjustmentByAccount.get(account.id) ?? new Prisma.Decimal(0)).toFixed(2),
         currentBalance: balance.toFixed(2),
+        ...(asOfTotals && { balanceAsOf: new Prisma.Decimal(account.openingBalance).plus(signedNet(account.accountType, asOfTotals.get(account.id))).toFixed(2) }),
       };
     });
 

@@ -1,7 +1,8 @@
-import { NotFoundException } from '@nestjs/common';
+import { BadRequestException, NotFoundException, ValidationPipe } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { AccountBalanceService } from './account-balance.service.js';
 import type { LedgerFilters } from './account-balance.service.js';
+import { WalletsOverviewQueryDto } from './dto/wallets-overview-query.dto.js';
 
 type Entry = { id: string; accountId: string; entryType: 'DEBIT' | 'CREDIT'; amount: string; date: string };
 type DateFilter = { lt?: Date; gte?: Date; lte?: Date };
@@ -186,5 +187,172 @@ describe('AccountBalanceService.getLedger', () => {
   it("refuses another workspace's account", async () => {
     const { service } = setup('ASSET', '0.00', []);
     await expect(service.getLedger('biz-2', 'acc')).rejects.toThrow(NotFoundException);
+  });
+});
+
+describe('AccountBalanceService.getWalletsOverview', () => {
+  type Tx = { id: string; businessId: string; transactionType: string; transactionDate: string; status: 'POSTED' | 'VOIDED'; reversalOfId: string | null };
+  type Line = { id: string; accountId: string; entryType: 'DEBIT' | 'CREDIT'; amount: string; tx: Tx };
+
+  const wallet = (id: string, accountSubtype: string, openingBalance: string, currentBalance: string, status = 'ACTIVE') => ({
+    id,
+    businessId: 'biz-1',
+    name: id,
+    nameBn: null,
+    accountNumber: null,
+    accountType: 'ASSET',
+    accountSubtype,
+    status,
+    openingBalance: new Prisma.Decimal(openingBalance),
+    currentBalance: new Prisma.Decimal(currentBalance),
+  });
+  const wallets = [wallet('cash', 'cash', '100', '310'), wallet('bank', 'bank', '1000', '1075'), wallet('bkash', 'mfs', '0', '0', 'ARCHIVED')];
+  const subtypes: Record<string, string> = { cash: 'cash', bank: 'bank', bkash: 'mfs', sales: 'income', rent: 'expense' };
+
+  const tx = (id: string, transactionType: string, transactionDate: string, over: Partial<Tx> = {}): Tx => ({ id, businessId: 'biz-1', transactionType, transactionDate, status: 'POSTED', reversalOfId: null, ...over });
+  // Dr `debit` / Cr `credit`, one amount.
+  const posting = (t: Tx, debit: string, credit: string, amount: string): Line[] => [
+    { id: `${t.id}-dr`, accountId: debit, entryType: 'DEBIT', amount, tx: t },
+    { id: `${t.id}-cr`, accountId: credit, entryType: 'CREDIT', amount, tx: t },
+  ];
+  const lines = [
+    ...posting(tx('income', 'INCOME', '2026-09-10'), 'cash', 'sales', '500'),
+    ...posting(tx('spend', 'EXPENSE', '2026-09-20'), 'rent', 'cash', '200'),
+    ...posting(tx('move', 'TRANSFER', '2026-09-25'), 'bank', 'cash', '50'),
+    // Voided after the day asked about: counted on neither side.
+    ...posting(tx('void', 'INCOME', '2026-09-28', { status: 'VOIDED' }), 'bank', 'sales', '300'),
+    ...posting(tx('void-rev', 'INCOME', '2026-10-02', { reversalOfId: 'void' }), 'sales', 'bank', '300'),
+    // On the day itself: counted.
+    ...posting(tx('last', 'INCOME', '2026-09-30'), 'bank', 'sales', '25'),
+    ...posting(tx('next', 'EXPENSE', '2026-10-01'), 'rent', 'cash', '40'),
+  ];
+
+  // Just enough of Prisma's where semantics for the filters the overview
+  // sends; anything else fails loudly rather than matching by accident.
+  const lineMatches = (line: Line, where: Record<string, unknown>) =>
+    Object.entries(where).every(([key, value]) => {
+      if (key === 'accountId') return (value as { in: string[] }).in.includes(line.accountId);
+      if (key !== 'transaction') throw new Error(`The fake entries do not support filtering on ${key}`);
+      return Object.entries(value as Record<string, unknown>).every(([field, filter]) => {
+        if (field === 'businessId' || field === 'status' || field === 'reversalOfId') return line.tx[field] === filter;
+        if (field === 'transactionType') return typeof filter === 'string' ? line.tx.transactionType === filter : line.tx.transactionType !== (filter as { not: string }).not;
+        if (field === 'transactionDate') {
+          const { lte, ...rest } = filter as { lte: Date };
+          if (Object.keys(rest).length > 0) throw new Error(`The fake entries do not support transactionDate ${JSON.stringify(rest)}`);
+          return new Date(line.tx.transactionDate) <= lte;
+        }
+        throw new Error(`The fake entries do not support filtering on transaction.${field}`);
+      });
+    });
+
+  const setup = (accounts = wallets) => {
+    const prisma = {
+      account: { findMany: vi.fn().mockResolvedValue(accounts) },
+      transactionEntry: {
+        groupBy: vi.fn(({ by, where }: { by: string[]; where: Record<string, unknown> }) => {
+          if (by.join() !== 'accountId,entryType') throw new Error(`The fake entries do not group by ${by.join()}`);
+          const groups = new Map<string, { accountId: string; entryType: string; _sum: { amount: Prisma.Decimal } }>();
+          for (const line of lines.filter((candidate) => lineMatches(candidate, where))) {
+            const key = `${line.accountId}:${line.entryType}`;
+            const group = groups.get(key) ?? { accountId: line.accountId, entryType: line.entryType, _sum: { amount: new Prisma.Decimal(0) } };
+            groups.set(key, { ...group, _sum: { amount: group._sum.amount.plus(line.amount) } });
+          }
+          return Promise.resolve([...groups.values()]);
+        }),
+        // The transfers, each with its whole transaction's lines.
+        findMany: vi.fn(({ where }: { where: Record<string, unknown> }) =>
+          Promise.resolve(
+            lines
+              .filter((line) => lineMatches(line, where))
+              .map((line) => ({
+                ...line,
+                amount: new Prisma.Decimal(line.amount),
+                transaction: { entries: lines.filter((other) => other.tx === line.tx).map((other) => ({ accountId: other.accountId, account: { accountSubtype: subtypes[other.accountId] } })) },
+              })),
+          ),
+        ),
+      },
+    };
+    return { service: new AccountBalanceService(prisma as never), prisma };
+  };
+
+  it('answers as before without asOf, from the same two queries', async () => {
+    const { service, prisma } = setup();
+    const overview = await service.getWalletsOverview('biz-1');
+
+    expect(prisma.transactionEntry.groupBy).toHaveBeenCalledTimes(1);
+    expect(overview).toEqual({
+      totalAccounts: 3,
+      totalBalance: '1385.00',
+      inactiveAmount: '0.00',
+      availableBalance: '1385.00',
+      accounts: [
+        { id: 'cash', name: 'cash', nameBn: null, accountNumber: null, accountSubtype: 'cash', status: 'ACTIVE', openingBalance: '100.00', totalIn: '500.00', totalOut: '240.00', savings: '0.00', adjustment: '-50.00', currentBalance: '310.00' },
+        { id: 'bank', name: 'bank', nameBn: null, accountNumber: null, accountSubtype: 'bank', status: 'ACTIVE', openingBalance: '1000.00', totalIn: '25.00', totalOut: '0.00', savings: '0.00', adjustment: '50.00', currentBalance: '1075.00' },
+        { id: 'bkash', name: 'bkash', nameBn: null, accountNumber: null, accountSubtype: 'mfs', status: 'ARCHIVED', openingBalance: '0.00', totalIn: '0.00', totalOut: '0.00', savings: '0.00', adjustment: '0.00', currentBalance: '0.00' },
+      ],
+    });
+    expect(await setup().service.getWalletsOverview('biz-1', {})).toEqual(overview);
+  });
+
+  it("adds each wallet's balance at the end of asOf, from one more groupBy", async () => {
+    const { service, prisma } = setup();
+    const overview = await service.getWalletsOverview('biz-1', { asOf: '2026-09-30' });
+
+    expect(prisma.transactionEntry.groupBy).toHaveBeenCalledTimes(2);
+    expect(prisma.transactionEntry.groupBy.mock.calls[1][0]).toEqual({
+      by: ['accountId', 'entryType'],
+      where: { accountId: { in: ['cash', 'bank', 'bkash'] }, transaction: { businessId: 'biz-1', status: 'POSTED', reversalOfId: null, transactionDate: { lte: new Date('2026-09-30T00:00:00.000Z') } } },
+      _sum: { amount: true },
+    });
+    // Cash: 100 + 500 - 200 - 50 (October's 40 is after). Bank: 1000 + 50 + 25,
+    // the voided 300 and its reversal left out. bKash: only its opening.
+    expect(overview.accounts.map((row) => [row.id, row.balanceAsOf])).toEqual([
+      ['cash', '350.00'],
+      ['bank', '1075.00'],
+      ['bkash', '0.00'],
+    ]);
+    // Everything else as without asOf.
+    const plain = await setup().service.getWalletsOverview('biz-1');
+    expect({ ...overview, accounts: overview.accounts.map(({ balanceAsOf: _balanceAsOf, ...row }) => row) }).toEqual(plain);
+  });
+
+  it('reads the opening balance for a day before anything was posted', async () => {
+    const { service } = setup();
+    const overview = await service.getWalletsOverview('biz-1', { asOf: '2026-01-01' });
+    expect(overview.accounts.map((row) => row.balanceAsOf)).toEqual(['100.00', '1000.00', '0.00']);
+  });
+
+  it('asks nothing of the entries for a workspace with no wallets', async () => {
+    const { service, prisma } = setup([]);
+    expect(await service.getWalletsOverview('biz-1', { asOf: '2026-09-30' })).toEqual({ totalAccounts: 0, totalBalance: '0.00', inactiveAmount: '0.00', availableBalance: '0.00', accounts: [] });
+    expect(prisma.transactionEntry.groupBy).not.toHaveBeenCalled();
+  });
+});
+
+describe('WalletsOverviewQueryDto', () => {
+  // The global pipe, as main.ts sets it up.
+  const pipe = new ValidationPipe({ whitelist: true, transform: true, forbidNonWhitelisted: true });
+  const parse = (query: Record<string, unknown>) => pipe.transform(query, { type: 'query', metatype: WalletsOverviewQueryDto });
+  const refusal = async (query: Record<string, unknown>) => {
+    const error = await parse(query).then(
+      () => null,
+      (caught: unknown) => caught,
+    );
+    expect(error).toBeInstanceOf(BadRequestException);
+    return ((error as BadRequestException).getResponse() as { message: string[] }).message;
+  };
+
+  it('takes a calendar day, or none', async () => {
+    await expect(parse({})).resolves.toEqual({});
+    await expect(parse({ asOf: '2026-09-30' })).resolves.toEqual({ asOf: '2026-09-30' });
+  });
+
+  it('refuses other date forms, impossible days, a null and anything it does not know', async () => {
+    // A month is ISO 8601 too, but not a day.
+    expect(await refusal({ asOf: '2026-09' })).toEqual(['asOf must be a date in YYYY-MM-DD form']);
+    expect(await refusal({ asOf: '2026-02-30' })).toEqual(['asOf must be a valid ISO 8601 date string']);
+    expect(await refusal({ asOf: null })).toHaveLength(2);
+    expect(await refusal({ dateFrom: '2026-09-01' })).toEqual(['property dateFrom should not exist']);
   });
 });

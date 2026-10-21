@@ -4,8 +4,10 @@ import { AccountBalanceService } from './account-balance.service.js';
 import { AccountsService } from './accounts.service.js';
 import { CreateAccountDto } from './dto/create-account.dto.js';
 import { LedgerQueryDto } from './dto/ledger-query.dto.js';
+import { ListAccountsQueryDto } from './dto/list-accounts-query.dto.js';
 import { SummaryQueryDto } from './dto/summary-query.dto.js';
 import { UpdateAccountDto } from './dto/update-account.dto.js';
+import { WalletsOverviewQueryDto } from './dto/wallets-overview-query.dto.js';
 import { RequireBusinessMembership } from '../business-access/decorators/require-business-membership.decorator.js';
 import { RequireRole } from '../business-access/decorators/require-role.decorator.js';
 
@@ -21,9 +23,11 @@ export class AccountsController {
     private readonly accountBalanceService: AccountBalanceService,
   ) {}
 
+  // With ?dateFrom/?dateTo, every account also carries periodDebit,
+  // periodCredit and periodNet for that period (see AccountsService.list()).
   @Get()
-  list(@Param('businessId') businessId: string) {
-    return this.accountsService.list(businessId);
+  list(@Param('businessId') businessId: string, @Query() query: ListAccountsQueryDto) {
+    return this.accountsService.list(businessId, query);
   }
 
   // Filtered pickers for the Income/Expense/Transfer forms (Prompt 6) --
@@ -44,9 +48,10 @@ export class AccountsController {
 
   // For the Balance Overview page -- per-wallet opening/in/out/current
   // figures plus workspace-wide totals (see getWalletsOverview()'s comment).
+  // With ?asOf, each wallet's balance at the end of that day too.
   @Get('wallets-overview')
-  walletsOverview(@Param('businessId') businessId: string) {
-    return this.accountBalanceService.getWalletsOverview(businessId);
+  walletsOverview(@Param('businessId') businessId: string, @Query() query: WalletsOverviewQueryDto) {
+    return this.accountBalanceService.getWalletsOverview(businessId, query);
   }
 
   @Get('savings-wallets')

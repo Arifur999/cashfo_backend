@@ -28,6 +28,15 @@ export function duplicateOf(payment: DuplicateCandidate, candidates: DuplicateCa
   return earlier?.id ?? null;
 }
 
+// How many payments each status holds, from a groupBy over the status.
+// Every status is present, 0 when no payment has it, so a tab never reads
+// blank.
+export function countByStatus(rows: { status: PaymentStatus; _count: number }[]): Record<PaymentStatus, number> {
+  const counts = Object.fromEntries(Object.values(PaymentStatus).map((status) => [status, 0])) as Record<PaymentStatus, number>;
+  for (const row of rows) counts[row.status] = row._count;
+  return counts;
+}
+
 // The start of a payment's id from what an admin typed: the app prints
 // ids as "PAY-" and the first 8 characters, upper case ("PAY-3F2A1C9B"),
 // and stored ids are lower case. Null when nothing is left to match.

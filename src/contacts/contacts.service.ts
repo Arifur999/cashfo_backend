@@ -157,6 +157,21 @@ export class ContactsService {
     return this.prisma.contact.update({ where: { id }, data: { status: 'ARCHIVED' } });
   }
 
+  // The reverse of archive() above: the contact is ACTIVE again, with its
+  // history and balance as they were. Nothing to check -- archive() only
+  // ever let a settled contact go, and an active contact may carry any
+  // balance. An ACTIVE contact answers unchanged, as archive() answers an
+  // ARCHIVED one.
+  async unarchive(businessId: string, id: string) {
+    const contact = await this.requireContact(businessId, id);
+
+    if (contact.status === 'ACTIVE') {
+      return contact;
+    }
+
+    return this.prisma.contact.update({ where: { id }, data: { status: 'ACTIVE' } });
+  }
+
   private async requireContact(businessId: string, id: string) {
     const contact = await this.prisma.contact.findUnique({ where: { id } });
     if (!contact || contact.businessId !== businessId) {

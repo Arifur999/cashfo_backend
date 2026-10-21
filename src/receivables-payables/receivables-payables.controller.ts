@@ -1,5 +1,6 @@
 import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
 import { MemberRole } from '@prisma/client';
+import { ContactCategoryQueryDto } from './dto/contact-category-query.dto.js';
 import { ContactStatementQueryDto } from './dto/contact-statement-query.dto.js';
 import { CreatePayableDto } from './dto/create-payable.dto.js';
 import { CreateReceivableDto } from './dto/create-receivable.dto.js';
@@ -50,34 +51,37 @@ export class ReceivablesPayablesController {
     return this.service.getContactBalanceDetail(businessId, id);
   }
 
+  // Aging, overdue and due-soon take an optional ?category=BUSINESS|LOAN
+  // (Books asks for its own contacts, Loan Management for its own); without
+  // it every contact counts, as before.
   @Get('receivables/aging')
-  receivablesAging(@Param('businessId') businessId: string) {
-    return this.service.getAging(businessId, 'RECEIVABLE');
+  receivablesAging(@Param('businessId') businessId: string, @Query() query: ContactCategoryQueryDto) {
+    return this.service.getAging(businessId, 'RECEIVABLE', query.category);
   }
 
   @Get('payables/aging')
-  payablesAging(@Param('businessId') businessId: string) {
-    return this.service.getAging(businessId, 'PAYABLE');
+  payablesAging(@Param('businessId') businessId: string, @Query() query: ContactCategoryQueryDto) {
+    return this.service.getAging(businessId, 'PAYABLE', query.category);
   }
 
   @Get('receivables/overdue')
-  receivablesOverdue(@Param('businessId') businessId: string) {
-    return this.service.getOverdue(businessId, 'RECEIVABLE');
+  receivablesOverdue(@Param('businessId') businessId: string, @Query() query: ContactCategoryQueryDto) {
+    return this.service.getOverdue(businessId, 'RECEIVABLE', query.category);
   }
 
   @Get('payables/overdue')
-  payablesOverdue(@Param('businessId') businessId: string) {
-    return this.service.getOverdue(businessId, 'PAYABLE');
+  payablesOverdue(@Param('businessId') businessId: string, @Query() query: ContactCategoryQueryDto) {
+    return this.service.getOverdue(businessId, 'PAYABLE', query.category);
   }
 
   @Get('receivables/due-soon')
   receivablesDueSoon(@Param('businessId') businessId: string, @Query() query: DueSoonQueryDto) {
-    return this.service.getDueSoon(businessId, 'RECEIVABLE', query.days);
+    return this.service.getDueSoon(businessId, 'RECEIVABLE', query.days, query.category);
   }
 
   @Get('payables/due-soon')
   payablesDueSoon(@Param('businessId') businessId: string, @Query() query: DueSoonQueryDto) {
-    return this.service.getDueSoon(businessId, 'PAYABLE', query.days);
+    return this.service.getDueSoon(businessId, 'PAYABLE', query.days, query.category);
   }
 
   @Get('loan-management/dashboard')

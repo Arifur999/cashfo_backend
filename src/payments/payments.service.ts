@@ -3,7 +3,7 @@ import { PaymentStatus, Prisma } from '@prisma/client';
 import { dhakaDateKey, dhakaMonthStart, dhakaToday } from '../common/dhaka.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { ListPaymentsQueryDto } from './dto/list-payments-query.dto.js';
-import { DUPLICATE_WINDOW_MS, duplicateOf, paymentIdPrefix, type DuplicateCandidate } from './payment-extras.js';
+import { DUPLICATE_WINDOW_MS, countByStatus, duplicateOf, paymentIdPrefix, type DuplicateCandidate } from './payment-extras.js';
 import { RefundPaymentDto } from './dto/refund-payment.dto.js';
 import { SimulatePaymentDto } from './dto/simulate-payment.dto.js';
 
@@ -15,14 +15,14 @@ export class PaymentsService {
     const page = query.page ?? 1;
     const limit = query.limit ?? 10;
 
-    const where: Prisma.PaymentWhereInput = {};
-    if (forcedStatus) where.status = forcedStatus;
-    else if (query.status) where.status = query.status;
-
-    if (query.gateway) where.gateway = query.gateway;
-    if (query.planId) where.planId = query.planId;
+    // Every filter but the status. The status tabs are counted over these,
+    // so beside a gateway, a plan, a search or dates each tab says how many
+    // rows it would show.
+    const narrowed: Prisma.PaymentWhereInput = {};
+    if (query.gateway) narrowed.gateway = query.gateway;
+    if (query.planId) narrowed.planId = query.planId;
     if (query.dateFrom || query.dateTo) {
-      where.createdAt = {
+      narrowed.createdAt = {
         ...(query.dateFrom && { gte: new Date(query.dateFrom) }),
         ...(query.dateTo && { lte: new Date(query.dateTo) }),
       };
@@ -39,7 +39,7 @@ export class PaymentsService {
       // so typing that, with or without PAY-, finds it too, as does the
       // gateway's own reference.
       const idPrefix = paymentIdPrefix(search);
-      where.OR = [
+      narrowed.OR = [
         { platformUserId: { in: matchingUsers.map((u) => u.id) } },
         { invoice: { invoiceNumber: { contains: search, mode: 'insensitive' } } },
         { gatewayReferenceId: { contains: search, mode: 'insensitive' } },
@@ -47,7 +47,10 @@ export class PaymentsService {
       ];
     }
 
-    const [payments, total] = await Promise.all([
+    const status = forcedStatus ?? query.status;
+    const where: Prisma.PaymentWhereInput = status ? { ...narrowed, status } : narrowed;
+
+    const [payments, byStatus] = await Promise.all([
       this.prisma.payment.findMany({
         where,
         // The id breaks ties, so a page never repeats or skips a payment
@@ -58,12 +61,20 @@ export class PaymentsService {
         include: {
           plan: { select: { id: true, name: true, slug: true } },
           invoice: { select: { id: true, invoiceNumber: true } },
+          // Enough of the refund to tell a partial one from a full one;
+          // null when there is none.
+          refund: { select: { amount: true, status: true, createdAt: true } },
         },
       }),
-      this.prisma.payment.count({ where }),
+      this.prisma.payment.groupBy({ by: ['status'], where: narrowed, _count: true }),
     ]);
 
-    return { data: await this.attachExtras(payments), meta: { page, limit, total, totalPage: Math.ceil(total / limit) } };
+    // The total is read off the same counts (every payment has exactly one
+    // status), so the open tab's count and the pager's "of N" always agree.
+    const statusCounts = countByStatus(byStatus);
+    const total = status ? statusCounts[status] : Object.values(statusCounts).reduce((sum, count) => sum + count, 0);
+
+    return { data: await this.attachExtras(payments), meta: { page, limit, total, totalPage: Math.ceil(total / limit), statusCounts } };
   }
 
   failed(query: ListPaymentsQueryDto) {

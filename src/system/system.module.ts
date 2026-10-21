@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { AdminAuthModule } from '../admin-auth/admin-auth.module.js';
 import { BackupsController } from './backups.controller.js';
 import { BackupsService } from './backups.service.js';
+import { ClientErrorsController } from './client-errors.controller.js';
 import { ErrorLogsController } from './error-logs.controller.js';
 import { ErrorLogsService } from './error-logs.service.js';
 import { FeatureFlagsController } from './feature-flags.controller.js';
@@ -17,17 +18,20 @@ import { RateLimitsService } from './rate-limits.service.js';
 //   - Feature flags: real data model + rollout-percentage logic, ready for
 //     the future end-user app to call GET .../evaluate today.
 //   - Error logs: real table + a real global exception filter (see
-//     filters/global-exception.filter.ts) logging genuine 5xx failures;
-//     nothing simulated here.
+//     filters/global-exception.filter.ts) logging genuine 5xx failures,
+//     plus the admin panel's and the customer app's error screens
+//     reporting what they showed; nothing simulated here.
 //   - Rate limits: ApiRateLimitLog is currently seed-only demonstration data
 //     -- @nestjs/throttler (Prompt 1) enforces real limits in-memory but
 //     doesn't persist a log; wiring it to write rows here is future work.
 // Every route except feature-flags' `evaluate` and errors' `report` is
 // SUPER_ADMIN only -- see the per-controller comments for why those two
-// deviate from that default.
+// deviate from that default. ClientErrorsController is the one customer
+// route (POST /api/client-errors, the customer app's error screen); its
+// UserAuthGuard comes from the global BusinessAccessModule.
 @Module({
   imports: [AdminAuthModule],
-  controllers: [BackupsController, FeatureFlagsController, ErrorLogsController, RateLimitsController],
+  controllers: [BackupsController, FeatureFlagsController, ErrorLogsController, ClientErrorsController, RateLimitsController],
   providers: [BackupsService, FeatureFlagsService, ErrorLogsService, RateLimitsService],
   exports: [ErrorLogsService, FeatureFlagsService],
 })

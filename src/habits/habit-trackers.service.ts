@@ -307,13 +307,17 @@ export class HabitTrackersService {
     });
   }
 
-  // A sheet can only be deleted while it has no ticked cells (its Tick total
-  // is 0) -- once anything is ticked it's real history, so the user has to
-  // untick everything first. Enforced here, not just by the UI, and as ONE
-  // conditional delete (checks: none) so a tick landing between a "has any
-  // ticks?" read and the delete can't slip through.
+  // A Namaz or Ramadan sheet can only be deleted while it has no ticked cells
+  // (its Tick total is 0) -- once anything is ticked it's real history, so the
+  // user has to untick everything first. Enforced here, not just by the UI,
+  // and as ONE conditional delete (checks: none) so a tick landing between a
+  // "has any ticks?" read and the delete can't slip through. An Others
+  // challenge is not held to that: it goes at once, ticks and all
+  // (removeChallenge).
   async remove(userId: string, id: string): Promise<{ id: string }> {
     const tracker = await this.requireTracker(userId, id);
+    if (configFor(tracker.category)?.kind === 'custom') return this.removeChallenge(userId, tracker);
+
     // A tick that lands while its habit is being removed can leave a row under
     // a habit that no longer exists. It shows nowhere (toView hides it), so it
     // must not count as "ticked" and block the delete -- clear such rows first.
@@ -322,6 +326,23 @@ export class HabitTrackersService {
     if (count === 0) {
       throw new BadRequestException('This tracker has ticks or paras logged -- clear them all before deleting it');
     }
+    return { id };
+  }
+
+  // An Others challenge with its rows (the `items` column) and every tick on
+  // it, in one transaction, so the client deletes a challenge in one call.
+  // The ticks (and paras, which a challenge never has) go first, so this
+  // doesn't lean on the foreign keys' cascade, then the sheet itself, still
+  // matched on its owner and category. If that matches nothing -- another
+  // request deleted it meanwhile -- the throw rolls the whole delete back.
+  private async removeChallenge(userId: string, tracker: { id: string; category: string }): Promise<{ id: string }> {
+    const { id, category } = tracker;
+    await this.prisma.$transaction(async (tx) => {
+      await tx.habitMonthCheck.deleteMany({ where: { trackerId: id } });
+      await tx.ramadanParaLog.deleteMany({ where: { trackerId: id } });
+      const { count } = await tx.habitMonthTracker.deleteMany({ where: { id, userId, category } });
+      if (count === 0) throw new NotFoundException('Tracker not found');
+    });
     return { id };
   }
 

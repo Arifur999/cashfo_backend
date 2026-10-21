@@ -17,6 +17,8 @@ export interface BudgetLine {
   name: string;
   monthlyLimit: string | null;
   spent: string;
+  // The category's Bangla name; null or left out when it has none.
+  nameBn?: string | null;
 }
 
 export interface DueLine {
@@ -51,9 +53,27 @@ export interface AnnouncementLine {
 
 const dayKey = (date: Date) => date.toISOString().slice(0, 10);
 
+const nameKey = (name: string) => name.trim().toLowerCase();
+
+// A workspace's budget category keeps only the name it was given, so its
+// Bangla name is the one the default category of that name has (Content >
+// Categories), whatever the case or spaces around it: "Shopping" reads
+// "কেনাকাটা", a name of the customer's own has none. The first default of a
+// name wins, so pass the active ones first.
+export function categoryNamesBn(defaults: { name: string; nameBn: string }[]): (name: string) => string | null {
+  const byName = new Map<string, string>();
+  for (const category of defaults) {
+    const key = nameKey(category.name);
+    const nameBn = category.nameBn.trim();
+    if (key && nameBn && !byName.has(key)) byName.set(key, nameBn);
+  }
+  return (name) => byName.get(nameKey(name)) ?? null;
+}
+
 // A category past 90% of its limit this month, and again once it goes over:
 // "Shopping is at 98% of its limit. Only ৳ 100 left for the rest of
-// October." `month` is 'YYYY-MM'.
+// October." `month` is 'YYYY-MM'; categoryBn is the category's Bangla name,
+// or null.
 export function budgetReminders(businessId: string, month: string, lines: BudgetLine[]): ReminderDraft[] {
   const drafts: ReminderDraft[] = [];
   for (const line of lines) {
@@ -67,7 +87,7 @@ export function budgetReminders(businessId: string, month: string, lines: Budget
       key: `budget:${line.id}:${month}:${level}`,
       type: 'BUDGET',
       businessId,
-      data: { category: line.name, percent, left: (limit - spent).toFixed(2), month },
+      data: { category: line.name, categoryBn: line.nameBn ?? null, percent, left: (limit - spent).toFixed(2), month },
     });
   }
   return drafts;

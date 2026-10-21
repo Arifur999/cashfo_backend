@@ -13,8 +13,8 @@ import { TransactionsService } from '../transactions/transactions.service.js';
 import { ImgbbService } from '../uploads/imgbb.service.js';
 
 // Viewing (list/detail/transactions) is open to all roles including STAFF;
-// create/edit/archive restricted to OWNER/ACCOUNTANT -- same split as
-// AccountsController.
+// create/edit/archive/unarchive restricted to OWNER/ACCOUNTANT -- same split
+// as AccountsController.
 @RequireBusinessMembership()
 @Controller('api/businesses/:businessId/contacts')
 export class ContactsController {
@@ -55,6 +55,13 @@ export class ContactsController {
   @Patch(':id/archive')
   archive(@Param('businessId') businessId: string, @Param('id') id: string) {
     return this.contactsService.archive(businessId, id);
+  }
+
+  // Loans' "Restore" and Books' "Make active again".
+  @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
+  @Patch(':id/unarchive')
+  unarchive(@Param('businessId') businessId: string, @Param('id') id: string) {
+    return this.contactsService.unarchive(businessId, id);
   }
 
   @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)

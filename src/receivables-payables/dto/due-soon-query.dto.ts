@@ -1,7 +1,9 @@
 import { Type } from 'class-transformer';
 import { IsInt, IsOptional, Max, Min } from 'class-validator';
+import { ContactCategoryQueryDto } from './contact-category-query.dto.js';
 
-export class DueSoonQueryDto {
+// `category` comes from ContactCategoryQueryDto.
+export class DueSoonQueryDto extends ContactCategoryQueryDto {
   // How far ahead to look, today included; a week when left out.
   @IsOptional()
   @Type(() => Number)

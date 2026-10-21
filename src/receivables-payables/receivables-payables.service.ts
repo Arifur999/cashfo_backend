@@ -1,5 +1,5 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
-import { Account, AccountType, Contact, Prisma } from '@prisma/client';
+import { Account, AccountType, Contact, ContactCategory, Prisma } from '@prisma/client';
 import { MONEY_ACCOUNT_SUBTYPES } from '../accounts/accounts.service.js';
 import { dhakaDateOnly, dhakaYear } from '../common/dhaka.js';
 import { PrismaService } from '../prisma/prisma.service.js';
@@ -30,10 +30,18 @@ export interface AgingBucketRow {
   // per-contact call.
   totalInvoiced: string;
   totalPaid: string;
+  // What of their opening balance -- owed from before Books, on no invoice --
+  // is still unpaid on this side, once general payments have settled it
+  // first (DirectionBreakdown.openingRemaining). It has no due date, so it is
+  // in no bucket and not in `total`.
+  openingRemaining: string;
 }
 
 export interface AgingReport {
   buckets: { current: string; days1to30: string; days31to60: string; over60: string };
+  // Every looked-at contact's openingRemaining, including the ones with no
+  // row because nothing on an invoice is outstanding.
+  openingRemaining: string;
   contacts: AgingBucketRow[];
 }
 
@@ -455,14 +463,11 @@ export class ReceivablesPayablesService {
     };
   }
 
-  async getAging(businessId: string, direction: Direction): Promise<AgingReport> {
-    const contactType = direction === 'RECEIVABLE' ? 'CUSTOMER' : 'SUPPLIER';
-    // Not filtered by category -- Dena-Pawna and Loan Management show the
-    // same underlying contact list (see getLoanDashboard()'s comment), just
-    // through different lenses. Only `type` scopes this one to Customer/
-    // Supplier/Both.
+  async getAging(businessId: string, direction: Direction, category?: ContactCategory): Promise<AgingReport> {
+    // Which contacts: see dueContactsWhere(). Books asks for BUSINESS, Loan
+    // Management for LOAN -- the same engine through two lenses.
     const contacts = await this.prisma.contact.findMany({
-      where: { businessId, type: { in: [contactType, 'BOTH'] } },
+      where: this.dueContactsWhere(businessId, direction, category),
       orderBy: { name: 'asc' },
     });
 
@@ -474,10 +479,14 @@ export class ReceivablesPayablesService {
     };
     const today = todayUtcMidnight();
     const rows: AgingBucketRow[] = [];
+    let openingRemaining = new Prisma.Decimal(0);
 
     const breakdowns = await this.computeDirections(businessId, contacts, direction);
     for (const contact of contacts) {
       const breakdown = breakdowns.get(contact.id)!;
+      // Counted before the row check: a contact who owes only from before
+      // has no row, but what they owe is still in the report's total.
+      openingRemaining = openingRemaining.plus(breakdown.openingRemaining);
       if (new Prisma.Decimal(breakdown.remaining).lessThanOrEqualTo(0)) continue;
 
       const rowBuckets: Record<AgingBucket, Prisma.Decimal> = {
@@ -504,6 +513,7 @@ export class ReceivablesPayablesService {
         total: breakdown.remaining,
         totalInvoiced: breakdown.totalInvoiced,
         totalPaid: breakdown.totalPaid,
+        openingRemaining: breakdown.openingRemaining,
       });
     }
 
@@ -514,15 +524,14 @@ export class ReceivablesPayablesService {
         days31to60: buckets.days31to60.toFixed(2),
         over60: buckets.over60.toFixed(2),
       },
+      openingRemaining: openingRemaining.toFixed(2),
       contacts: rows,
     };
   }
 
-  async getOverdue(businessId: string, direction: Direction): Promise<OverdueRow[]> {
-    const contactType = direction === 'RECEIVABLE' ? 'CUSTOMER' : 'SUPPLIER';
-    // Not filtered by category -- see getAging()'s comment.
+  async getOverdue(businessId: string, direction: Direction, category?: ContactCategory): Promise<OverdueRow[]> {
     const contacts = await this.prisma.contact.findMany({
-      where: { businessId, type: { in: [contactType, 'BOTH'] } },
+      where: this.dueContactsWhere(businessId, direction, category),
     });
 
     const today = todayUtcMidnight();
@@ -552,11 +561,11 @@ export class ReceivablesPayablesService {
 
   // What falls due within the next `days` days, today included, and is not
   // paid off yet: the "Due this week" list. Anything already overdue is
-  // getOverdue()'s, so no row shows up in both.
-  async getDueSoon(businessId: string, direction: Direction, days = 7): Promise<DueSoonRow[]> {
-    const contactType = direction === 'RECEIVABLE' ? 'CUSTOMER' : 'SUPPLIER';
+  // getOverdue()'s, so no row shows up in both. Which contacts: see
+  // dueContactsWhere().
+  async getDueSoon(businessId: string, direction: Direction, days = 7, category?: ContactCategory): Promise<DueSoonRow[]> {
     const contacts = await this.prisma.contact.findMany({
-      where: { businessId, type: { in: [contactType, 'BOTH'] } },
+      where: this.dueContactsWhere(businessId, direction, category),
     });
 
     const today = todayUtcMidnight();
@@ -790,6 +799,19 @@ export class ReceivablesPayablesService {
     return new Map(
       contacts.map((contact) => [contact.id, new Prisma.Decimal(contact.openingBalance).plus(receivable.get(contact.id)!.balance).minus(payable.get(contact.id)!.balance)]),
     );
+  }
+
+  // The contacts aging, overdue and due-soon read. Without a category, and
+  // for BUSINESS, the type rule they have always had: Customer/Both on the
+  // receivable side, Supplier/Both on the payable side. For LOAN, every loan
+  // contact whatever its type -- Loans also offers Relative, Bank, NGO and
+  // Other, and those carry opening balances and take payments too. A contact
+  // with nothing on a side breaks down to zero there and gets no row, so the
+  // wider set adds nothing that is not owed.
+  private dueContactsWhere(businessId: string, direction: Direction, category?: ContactCategory): Prisma.ContactWhereInput {
+    if (category === 'LOAN') return { businessId, category };
+    const contactType = direction === 'RECEIVABLE' ? 'CUSTOMER' : 'SUPPLIER';
+    return { businessId, type: { in: [contactType, 'BOTH'] }, ...(category && { category }) };
   }
 
   private bucketFor(dueDate: Date | null, today: Date): AgingBucket {

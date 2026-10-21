@@ -1,7 +1,8 @@
 import { AdminWorkspacesService } from './admin-workspaces.service.js';
 
 const plan = (name: string, price: number, billingCycle = 'MONTHLY') => ({ name, price, billingCycle });
-const business = (name: string, overrides: Partial<{ isDefault: boolean; type: string; plan: ReturnType<typeof plan> | null }> = {}) => ({
+const business = (name: string, overrides: Partial<{ id: string; isDefault: boolean; type: string; plan: ReturnType<typeof plan> | null }> = {}) => ({
+  id: `id-${name}`,
   name,
   isDefault: false,
   type: 'BUSINESS',
@@ -99,5 +100,41 @@ describe('AdminWorkspacesService.overview', () => {
 
     expect(result.items.map((item) => item.userId)).toEqual(['u-free']);
     expect(result).toMatchObject({ page: 2, limit: 3, totalCount: 4 });
+  });
+
+  it('gives every workspace its id and kind beside the names, oldest first', async () => {
+    const { service } = setup();
+    const { items } = await service.overview({});
+    const tanzila = items.find((item) => item.userId === 'u-business');
+
+    expect(tanzila?.workspaces).toEqual([
+      { id: 'id-Personal', name: 'Personal', type: 'PERSONAL', isDefault: true },
+      { id: 'id-Haque & Sons', name: 'Haque & Sons', type: 'BUSINESS', isDefault: false },
+      { id: 'id-Haque Agro', name: 'Haque Agro', type: 'BUSINESS', isDefault: false },
+      { id: 'id-Haque Family', name: 'Haque Family', type: 'GROUP', isDefault: false },
+    ]);
+    // workspaceNames stays as it was.
+    expect(tanzila?.workspaceNames).toEqual(['Personal', 'Haque & Sons', 'Haque Agro', 'Haque Family']);
+  });
+
+  it('marks a renamed personal workspace by its kind, and sends nothing else of the row', async () => {
+    const { service, prisma } = setup();
+    prisma.user.findMany.mockResolvedValue([
+      {
+        id: 'u-renamed',
+        name: 'Nusrat Jahan',
+        email: 'nusrat@example.com',
+        ownedBusinesses: [
+          { ...business('আমার হিসাব', { id: 'ws-own', isDefault: true, type: 'PERSONAL', plan: plan('Free', 0) }), pinHash: '$2b$10$hash', currency: 'BDT' },
+          business('Jahan Boutique', { id: 'ws-shop' }),
+        ],
+      },
+    ]);
+    const { items } = await service.overview({});
+
+    expect(items[0].workspaces).toEqual([
+      { id: 'ws-own', name: 'আমার হিসাব', type: 'PERSONAL', isDefault: true },
+      { id: 'ws-shop', name: 'Jahan Boutique', type: 'BUSINESS', isDefault: false },
+    ]);
   });
 });

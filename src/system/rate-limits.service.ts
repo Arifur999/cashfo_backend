@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { dhakaDayStart } from '../common/dhaka.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { ListRateLimitsQueryDto } from './dto/list-rate-limits-query.dto.js';
 
@@ -25,8 +26,10 @@ export class RateLimitsService {
   }
 
   async summary() {
-    const startOfToday = new Date();
-    startOfToday.setUTCHours(0, 0, 0, 0);
+    // "Today" is the Asia/Dhaka calendar day, as everywhere else in the app:
+    // from Dhaka midnight (18:00 UTC the evening before). UTC's midnight is
+    // 6am in Dhaka, so "today" used to run from 6am to 6am.
+    const startOfToday = dhakaDayStart();
 
     const [byEndpoint, exceededToday, topOffendersRaw] = await Promise.all([
       this.prisma.apiRateLimitLog.groupBy({ by: ['endpoint'], _sum: { requestCount: true } }),

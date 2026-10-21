@@ -1,10 +1,13 @@
 import { Module } from '@nestjs/common';
+import { SettingsModule } from '../settings/settings.module.js';
 import { MailService } from './mail.service.js';
 
 // Shared/cross-cutting, same shape as UploadsModule -- any feature module
 // that needs to send a transactional email imports this rather than
-// duplicating Resend-calling logic.
+// duplicating Resend-calling logic. SettingsModule: the platform name the
+// emails sign off with (SettingsService.getCached()).
 @Module({
+  imports: [SettingsModule],
   providers: [MailService],
   exports: [MailService],
 })

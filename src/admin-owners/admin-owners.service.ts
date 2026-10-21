@@ -117,6 +117,8 @@ export class AdminOwnersService {
     };
   }
 
+  // businessType and businessIsDefault say what kind of workspace the row
+  // shows, so the personal one can be labelled as such whatever it is named.
   private summarizeOwner(owner: OwnerWithBusinesses) {
     const business = owner.ownedBusinesses.find((b) => b.isDefault) ?? owner.ownedBusinesses[0] ?? null;
     const daysUsing = Math.max(0, Math.floor((Date.now() - owner.createdAt.getTime()) / MS_PER_DAY));
@@ -128,6 +130,8 @@ export class AdminOwnersService {
       phone: owner.phone,
       businessId: business?.id ?? null,
       businessName: business?.name ?? null,
+      businessType: business?.type ?? null,
+      businessIsDefault: business?.isDefault ?? null,
       planId: business?.planId ?? null,
       planName: business?.plan?.name ?? null,
       workspaceCount: owner.ownedBusinesses.length,
@@ -170,6 +174,9 @@ export class AdminOwnersService {
       lastLoginAt: owner.lastLoginAt,
       businessId: business?.id ?? null,
       businessName: business?.name ?? null,
+      // What kind of workspace this is, as on the list's rows.
+      businessType: business?.type ?? null,
+      businessIsDefault: business?.isDefault ?? null,
       planId: business?.planId ?? null,
       planName: business?.plan?.name ?? null,
       workspaceCount: owner.ownedBusinesses.length,

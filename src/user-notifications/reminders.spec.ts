@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { announcementReminders, budgetReminders, loanReminders, savingsReminders } from './reminders.js';
+import { announcementReminders, budgetReminders, categoryNamesBn, loanReminders, savingsReminders } from './reminders.js';
 
 describe('budgetReminders', () => {
   it('reminds once past 90% of a limit and again once over it', () => {
@@ -10,8 +10,36 @@ describe('budgetReminders', () => {
       { id: 'misc', name: 'Misc', monthlyLimit: null, spent: '700.00' },
     ]);
     expect(drafts.map((d) => d.key)).toEqual(['budget:shop:2026-10:90', 'budget:food:2026-10:over']);
-    expect(drafts[0].data).toEqual({ category: 'Shopping', percent: 98, left: '100.00', month: '2026-10' });
+    expect(drafts[0].data).toEqual({ category: 'Shopping', categoryBn: null, percent: 98, left: '100.00', month: '2026-10' });
     expect(drafts[1].data.left).toBe('-400.00');
+  });
+
+  it('names the category in Bangla too when it has a Bangla name, under the same key', () => {
+    const [draft] = budgetReminders('b1', '2026-10', [{ id: 'shop', name: 'Shopping', nameBn: 'কেনাকাটা', monthlyLimit: '5000.00', spent: '4900.00' }]);
+    expect(draft.key).toBe('budget:shop:2026-10:90');
+    expect(draft.data).toEqual({ category: 'Shopping', categoryBn: 'কেনাকাটা', percent: 98, left: '100.00', month: '2026-10' });
+  });
+});
+
+describe('categoryNamesBn', () => {
+  const nameBnOf = categoryNamesBn([
+    { name: 'Shopping', nameBn: 'কেনাকাটা' },
+    { name: 'Food', nameBn: 'খাবার' },
+    // An inactive one of the same name comes after the active one.
+    { name: 'food', nameBn: 'খাদ্য' },
+    { name: 'Rent', nameBn: '  ' },
+  ]);
+
+  it("gives a category the Bangla name of the default category it's named after, case and spaces aside", () => {
+    expect(nameBnOf('Shopping')).toBe('কেনাকাটা');
+    expect(nameBnOf(' shopping ')).toBe('কেনাকাটা');
+    expect(nameBnOf('FOOD')).toBe('খাবার');
+  });
+
+  it('has none for a name of its own, or where the default has a blank one', () => {
+    expect(nameBnOf('Tea stall')).toBeNull();
+    expect(nameBnOf('Rent')).toBeNull();
+    expect(categoryNamesBn([])('Shopping')).toBeNull();
   });
 });
 

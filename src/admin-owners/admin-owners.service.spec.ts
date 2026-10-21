@@ -32,3 +32,85 @@ describe('AdminOwnersService.resetPassword', () => {
     expect(credentials.set).not.toHaveBeenCalled();
   });
 });
+
+// A live workspace as Prisma includes it, plan and all.
+const workspace = (
+  id: string,
+  name: string,
+  over: Partial<{ type: string; isDefault: boolean; planId: string | null; plan: { name: string } | null }> = {},
+) => ({
+  id,
+  name,
+  type: 'BUSINESS',
+  isDefault: false,
+  planId: null,
+  plan: null,
+  pinHash: null,
+  deletedAt: null,
+  ...over,
+});
+type Workspace = ReturnType<typeof workspace>;
+
+const owner = (ownedBusinesses: Workspace[]) => ({
+  id: 'u1',
+  name: 'Nusrat Jahan',
+  email: 'nusrat@example.com',
+  phone: null,
+  status: 'ACTIVE',
+  createdAt: new Date('2026-01-01T00:00:00.000Z'),
+  lastLoginAt: null,
+  ownedBusinesses,
+});
+
+// The personal workspace under a name of the owner's own, after a shop.
+const renamedPersonal = [
+  workspace('ws-shop', 'Jahan Boutique'),
+  workspace('ws-own', 'আমার হিসাব', { type: 'PERSONAL', isDefault: true, planId: 'plan-free', plan: { name: 'Free' } }),
+];
+
+const reads = (ownedBusinesses: Workspace[]) => {
+  const row = owner(ownedBusinesses);
+  const prisma = {
+    user: {
+      findMany: vi.fn().mockResolvedValue([row]),
+      findUnique: vi.fn().mockResolvedValue(row),
+      count: vi.fn().mockResolvedValue(1),
+      groupBy: vi.fn().mockResolvedValue([{ status: 'ACTIVE', _count: 1 }]),
+    },
+    auditLog: { findMany: vi.fn().mockResolvedValue([]) },
+  };
+  return { service: new AdminOwnersService(prisma as never, {} as never, {} as never, {} as never), prisma };
+};
+
+describe('AdminOwnersService.list', () => {
+  it('says what kind of workspace a row shows, so a renamed personal one still reads as personal', async () => {
+    const { service } = reads(renamedPersonal);
+    const { items } = await service.list({});
+    expect(items[0]).toMatchObject({
+      businessId: 'ws-own',
+      businessName: 'আমার হিসাব',
+      businessType: 'PERSONAL',
+      businessIsDefault: true,
+      planName: 'Free',
+      workspaceCount: 2,
+    });
+  });
+
+  it('says so when the row shows a workspace that is not the default one', async () => {
+    const { service } = reads([workspace('ws-shop', 'Jahan Boutique')]);
+    const { items } = await service.list({});
+    expect(items[0]).toMatchObject({ businessId: 'ws-shop', businessType: 'BUSINESS', businessIsDefault: false });
+  });
+});
+
+describe('AdminOwnersService.getById', () => {
+  it('says what kind of workspace it shows, as the list does', async () => {
+    const { service } = reads(renamedPersonal);
+    await expect(service.getById('u1')).resolves.toMatchObject({ businessId: 'ws-own', businessType: 'PERSONAL', businessIsDefault: true });
+  });
+
+  it('has no kind for an owner with no live workspace', async () => {
+    const { service } = reads([]);
+    await expect(service.getById('u1')).resolves.toMatchObject({ businessId: null, businessName: null, businessType: null, businessIsDefault: null });
+  });
+});
