@@ -161,6 +161,10 @@ export class AccountBalanceService {
         entryType: entry.entryType,
         amount: entry.amount,
         transactionStatus: entry.transaction.status,
+        // The posting this row's transaction reversed. Both halves of a void
+        // stay in the running balance: the wallet really moved, then moved
+        // back.
+        reversalOfId: entry.transaction.reversalOfId,
         runningBalance: running,
       };
     });
