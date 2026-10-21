@@ -40,7 +40,17 @@ export class InvoicesService {
   async getById(id: string) {
     const invoice = await this.prisma.invoice.findUnique({
       where: { id },
-      include: { payment: { include: { plan: { select: { id: true, name: true } } } } },
+      // The payment with every column, its status among them, and what went
+      // back on it (null when nothing did), so the invoice page can stamp
+      // PAID, REFUNDED or PARTLY REFUNDED without reading the payment again.
+      include: {
+        payment: {
+          include: {
+            plan: { select: { id: true, name: true } },
+            refund: { select: { amount: true, status: true, createdAt: true } },
+          },
+        },
+      },
     });
     if (!invoice) {
       throw new NotFoundException('Invoice not found');
