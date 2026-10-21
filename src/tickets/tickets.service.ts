@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Prisma, TicketStatus } from '@prisma/client';
+import { Prisma, TicketPriority, TicketStatus } from '@prisma/client';
 import { ADMIN_USER_WHERE, END_USER_WHERE } from '../common/roles.js';
 import { MailService } from '../mail/mail.service.js';
 import { renderSupportReplyEmail } from '../mail/templates/support-reply-email.js';
@@ -9,10 +9,36 @@ import { pushNotification } from '../user-notifications/push.js';
 import { AddMessageDto } from './dto/add-message.dto.js';
 import { AssignTicketDto } from './dto/assign-ticket.dto.js';
 import { CreateTicketDto } from './dto/create-ticket.dto.js';
-import { ListTicketsQueryDto, TICKET_STATUS_GROUPS, type TicketStatusFilter } from './dto/list-tickets-query.dto.js';
+import { ListTicketsQueryDto, TICKET_STATUS_GROUPS, UNASSIGNED, type TicketStatusFilter } from './dto/list-tickets-query.dto.js';
 import { UpdateTicketDto } from './dto/update-ticket.dto.js';
 
 const RESOLVED_STATUSES: TicketStatus[] = [TicketStatus.RESOLVED, TicketStatus.CLOSED];
+
+// A list row's newest message: it says whether the user is waiting on an
+// answer.
+const LIST_INCLUDE = {
+  messages: { orderBy: { createdAt: 'desc' }, take: 1, select: { senderType: true, createdAt: true } },
+} satisfies Prisma.SupportTicketInclude;
+
+// sort=waiting puts the highest first, in the enum's order (LOW..URGENT).
+const PRIORITY_RANK: Record<TicketPriority, number> = { LOW: 0, MEDIUM: 1, HIGH: 2, URGENT: 3 };
+
+interface WaitingTicket {
+  id: string;
+  priority: TicketPriority;
+  createdAt: Date;
+  // The customer's newest message, or the opening when they never wrote.
+  waitingSince: Date;
+}
+
+// sort=waiting: the most urgent first, then whoever has waited longest.
+// The older ticket, then the id, settle a tie, so no row can sit on both
+// sides of a page boundary.
+const byLongestWaiting = (a: WaitingTicket, b: WaitingTicket) =>
+  PRIORITY_RANK[b.priority] - PRIORITY_RANK[a.priority] ||
+  a.waitingSince.getTime() - b.waitingSince.getTime() ||
+  a.createdAt.getTime() - b.createdAt.getTime() ||
+  (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 
 // Who a ticket is from. SupportTicket.platformUserId holds a customer's User
 // id; tickets from before that may still hold an id from the legacy
@@ -45,7 +71,9 @@ export class TicketsService {
     if (query.status) where.status = isStatusGroup(query.status) ? { in: TICKET_STATUS_GROUPS[query.status] } : query.status;
     if (query.priority) where.priority = query.priority;
     if (query.category) where.category = query.category;
-    if (query.assignedToAdminId) where.assignedToAdminId = query.assignedToAdminId;
+    if (query.assignedToAdminId) where.assignedToAdminId = query.assignedToAdminId === UNASSIGNED ? null : query.assignedToAdminId;
+    // On top of the status asked for, not in place of it.
+    if (query.awaitingReply) where.AND = [await this.awaitingReplyWhere()];
 
     if (query.search) {
       const nameOrEmail = {
@@ -59,20 +87,23 @@ export class TicketsService {
       where.OR = [{ subject: { contains: query.search, mode: 'insensitive' } }, { platformUserId: { in: requesterIds } }];
     }
 
-    // Default sort: unassigned tickets surface first, then by priority
-    // (enum declaration order LOW..URGENT means `desc` puts URGENT first),
-    // then newest first.
-    const [tickets, total] = await Promise.all([
-      this.prisma.supportTicket.findMany({
-        where,
-        orderBy: [{ assignedToAdminId: { sort: 'asc', nulls: 'first' } }, { priority: 'desc' }, { createdAt: 'desc' }],
-        skip: (page - 1) * limit,
-        take: limit,
-        // The last message says whether the user is waiting on an answer.
-        include: { messages: { orderBy: { createdAt: 'desc' }, take: 1, select: { senderType: true, createdAt: true } } },
-      }),
-      this.prisma.supportTicket.count({ where }),
-    ]);
+    // sort=waiting ranks by priority, then by how long the customer has
+    // waited (longestWaitingPage()). sort=queue, or no sort: unassigned
+    // tickets surface first, then by priority (enum declaration order
+    // LOW..URGENT means `desc` puts URGENT first), then newest first.
+    const [tickets, total] =
+      query.sort === 'waiting'
+        ? await this.longestWaitingPage(where, page, limit)
+        : await Promise.all([
+            this.prisma.supportTicket.findMany({
+              where,
+              orderBy: [{ assignedToAdminId: { sort: 'asc', nulls: 'first' } }, { priority: 'desc' }, { createdAt: 'desc' }],
+              skip: (page - 1) * limit,
+              take: limit,
+              include: LIST_INCLUDE,
+            }),
+            this.prisma.supportTicket.count({ where }),
+          ]);
 
     const rows = tickets.map(({ messages, ...ticket }) => ({
       ...ticket,
@@ -82,6 +113,27 @@ export class TicketsService {
     const withUsers = await this.attachRequesters(rows);
     const data = await this.attachAssignedAdmins(withUsers);
     return { data, meta: { page, limit, total, totalPage: Math.ceil(total / limit) } };
+  }
+
+  // sort=waiting. How long a ticket has waited lives on its messages, and
+  // Prisma orders by a relation's count but never by its newest row, so no
+  // single query can page this order. Instead the whole filtered set is
+  // ranked here, from an id, a priority and two dates a ticket (the
+  // database takes each one's newest customer message), and only the page
+  // asked for is loaded in full: every page cuts the same ranking, and the
+  // total is its length.
+  private async longestWaitingPage(where: Prisma.SupportTicketWhereInput, page: number, limit: number) {
+    const [candidates, lastAsked] = await Promise.all([
+      this.prisma.supportTicket.findMany({ where, select: { id: true, priority: true, createdAt: true } }),
+      this.prisma.ticketMessage.groupBy({ by: ['ticketId'], where: { senderType: 'USER', ticket: where }, _max: { createdAt: true } }),
+    ]);
+    const askedAt = new Map(lastAsked.map((row) => [row.ticketId, row._max.createdAt]));
+    const ranked = candidates.map((ticket) => ({ ...ticket, waitingSince: askedAt.get(ticket.id) ?? ticket.createdAt })).sort(byLongestWaiting);
+
+    const pageIds = ranked.slice((page - 1) * limit, page * limit).map((ticket) => ticket.id);
+    const rows = pageIds.length > 0 ? await this.prisma.supportTicket.findMany({ where: { id: { in: pageIds } }, include: LIST_INCLUDE }) : [];
+    const byId = new Map(rows.map((row) => [row.id, row]));
+    return [pageIds.flatMap((id) => byId.get(id) ?? []), ranked.length] as const;
   }
 
   async getById(id: string) {
@@ -94,7 +146,7 @@ export class TicketsService {
       throw new NotFoundException('Ticket not found');
     }
 
-    const [requesters, assignedAdmin] = await Promise.all([
+    const [{ requesters, customerIds }, assignedAdmin] = await Promise.all([
       this.findRequesters([ticket.platformUserId]),
       ticket.assignedToAdminId
         ? this.prisma.user.findUnique({ where: { id: ticket.assignedToAdminId, ...ADMIN_USER_WHERE }, select: { id: true, name: true } })
@@ -106,7 +158,17 @@ export class TicketsService {
       this.prisma.supportTicket.count({ where: { platformUserId: ticket.platformUserId, id: { not: id } } }),
       this.prisma.supportTicket.count({ where: { platformUserId: ticket.platformUserId, id: { not: id }, status: { in: RESOLVED_STATUSES } } }),
     ]);
-    return { ...ticket, platformUser: requesters.get(ticket.platformUserId) ?? null, assignedAdmin, requesterTickets: { total, solved } };
+    const person = requesters.get(ticket.platformUserId) ?? null;
+    return {
+      ...ticket,
+      platformUser: person,
+      // Who wrote in, named as a feature request names its requester:
+      // isCustomer when it is a customer's account, whose record the page
+      // can open by this id; a legacy platform user has none.
+      requester: person && { id: person.id, name: person.name, email: person.email, isCustomer: customerIds.has(person.id) },
+      assignedAdmin,
+      requesterTickets: { total, solved },
+    };
   }
 
   // Opened by an admin on a customer's behalf (phone, email). The customer
@@ -238,7 +300,7 @@ export class TicketsService {
     const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
     const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     const monthAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
-    const [byStatusRaw, unassignedOpenCount, inProgressOver24hCount, urgentCount, solvedThisWeekCount, byCategoryRaw, byPriorityRaw, resolvedTickets, recentTickets, unsolved] =
+    const [byStatusRaw, unassignedOpenCount, inProgressOver24hCount, urgentCount, solvedThisWeekCount, byCategoryRaw, byPriorityRaw, resolvedTickets, recentTickets, owed] =
       await Promise.all([
         this.prisma.supportTicket.groupBy({ by: ['status'], _count: true }),
         this.prisma.supportTicket.count({ where: { status: 'OPEN', assignedToAdminId: null } }),
@@ -256,11 +318,9 @@ export class TicketsService {
           where: { createdAt: { gte: monthAgo } },
           select: { createdAt: true, messages: { where: { senderType: 'ADMIN' }, orderBy: { createdAt: 'asc' }, take: 1, select: { createdAt: true } } },
         }),
-        // Who wrote last on each unsolved ticket: the list's "waiting on us".
-        this.prisma.supportTicket.findMany({
-          where: { status: { notIn: ['RESOLVED', 'CLOSED'] } },
-          select: { createdAt: true, messages: { orderBy: { createdAt: 'desc' }, take: 1, select: { senderType: true, createdAt: true } } },
-        }),
+        // The tickets that owe the customer a reply, and since when: the
+        // list's "waiting on us", which list(awaitingReply) shows.
+        this.awaitingReply(),
       ]);
 
     const hours = (ms: number) => ms / (1000 * 60 * 60);
@@ -270,11 +330,8 @@ export class TicketsService {
     const avgFirstReplyHours =
       answered.length > 0 ? hours(answered.reduce((sum, t) => sum + (t.messages[0].createdAt.getTime() - t.createdAt.getTime()), 0) / answered.length) : 0;
 
-    // The customer wrote last (or only opened it): the team owes a reply,
-    // whatever the status says, and since when.
-    const owedSince = unsolved.flatMap((t) => (t.messages.length === 0 ? [t.createdAt] : t.messages[0].senderType === 'USER' ? [t.messages[0].createdAt] : []));
-    const needsReplyCount = owedSince.length;
-    const needsReplyOver24hCount = owedSince.filter((since) => since < dayAgo).length;
+    const needsReplyCount = owed.length;
+    const needsReplyOver24hCount = owed.filter((ticket) => ticket.since < dayAgo).length;
 
     const statusCounts = Object.fromEntries(Object.values(TicketStatus).map((status) => [status, 0])) as Record<TicketStatus, number>;
     for (const row of byStatusRaw) statusCounts[row.status] = row._count;
@@ -297,6 +354,31 @@ export class TicketsService {
     };
   }
 
+  // The queue's "needs a reply": an unsolved ticket whose newest message is
+  // the customer's, or that has none yet. The team owes them an answer
+  // whatever the status says, since that message (or the opening). stats()
+  // counts this list and list(awaitingReply) filters by it, so the figure
+  // and the filtered list's total agree.
+  private async awaitingReply(): Promise<{ id: string; since: Date }[]> {
+    const unsolved = await this.prisma.supportTicket.findMany({
+      where: { status: { notIn: RESOLVED_STATUSES } },
+      select: { id: true, createdAt: true, messages: { orderBy: { createdAt: 'desc' }, take: 1, select: { senderType: true, createdAt: true } } },
+    });
+    return unsolved.flatMap((ticket) => {
+      const last = ticket.messages.at(0);
+      if (!last) return [{ id: ticket.id, since: ticket.createdAt }];
+      return last.senderType === 'USER' ? [{ id: ticket.id, since: last.createdAt }] : [];
+    });
+  }
+
+  // The same rule as a list filter. Who wrote last is a fact about each
+  // ticket's newest message, which no Prisma where can state, so the rule
+  // travels as the ids it matched.
+  private async awaitingReplyWhere(): Promise<Prisma.SupportTicketWhereInput> {
+    const owed = await this.awaitingReply();
+    return { status: { notIn: RESOLVED_STATUSES }, id: { in: owed.map((ticket) => ticket.id) } };
+  }
+
   private async requireTicket(id: string) {
     const ticket = await this.prisma.supportTicket.findUnique({ where: { id } });
     if (!ticket) {
@@ -306,13 +388,14 @@ export class TicketsService {
   }
 
   private async attachRequesters<T extends { platformUserId: string }>(tickets: T[]) {
-    const requesters = await this.findRequesters(tickets.map((t) => t.platformUserId));
+    const { requesters } = await this.findRequesters(tickets.map((t) => t.platformUserId));
     return tickets.map((t) => ({ ...t, platformUser: requesters.get(t.platformUserId) ?? null }));
   }
 
   // Customers first; ids not found there are looked up in the legacy
   // PlatformUser table. A customer's plan is their default workspace's.
-  private async findRequesters(ids: string[]): Promise<Map<string, Requester>> {
+  // customerIds holds the ones found as customers.
+  private async findRequesters(ids: string[]): Promise<{ requesters: Map<string, Requester>; customerIds: Set<string> }> {
     const unique = [...new Set(ids)];
     const customers = await this.prisma.user.findMany({
       where: { id: { in: unique }, ...END_USER_WHERE },
@@ -335,7 +418,7 @@ export class TicketsService {
       });
       for (const u of legacy) found.set(u.id, u);
     }
-    return found;
+    return { requesters: found, customerIds: new Set(customers.map((u) => u.id)) };
   }
 
   private async attachAssignedAdmins<T extends { assignedToAdminId: string | null }>(tickets: T[]) {
