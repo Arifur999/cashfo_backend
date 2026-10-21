@@ -89,8 +89,13 @@ export class AssetsService {
     });
   }
 
+  // The last type stays: an asset needs one to be filed under, and an empty
+  // list is what brings the seven defaults back (listCategories()).
   async deleteCategory(businessId: string, id: string) {
     await this.requireCategory(businessId, id);
+    if ((await this.prisma.assetCategoryOption.count({ where: { businessId } })) <= 1) {
+      throw new BadRequestException('Keep at least one asset type.');
+    }
     await this.prisma.assetCategoryOption.delete({ where: { id } });
     return { id };
   }
