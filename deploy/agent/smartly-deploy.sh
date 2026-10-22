@@ -70,7 +70,7 @@ done
 
 for image in "${IMAGES[@]}"; do
   if ! docker pull -q "$image" >/dev/null 2>&1; then
-    log "pull of $image failed (registry unreachable, or the package is private) -- leaving the running release alone"
+    log "pull of $image failed (registry unreachable, or this box is not logged in to ghcr.io) -- leaving the running release alone"
     exit 0
   fi
 done

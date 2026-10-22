@@ -72,4 +72,4 @@ The development seed (`npm run seed`) adds demo admins and end users that share 
 
 ## Deploying
 
-`main` is the live site, `smartly.softech.agency`. Every pull request runs CI (`.github/workflows/ci.yml`); a merge to `main` publishes `ghcr.io/arifur999/cashfo_backend`, and the VPS pulls it within two minutes, rolling back if the release doesn't come up healthy. Setup, operations and rollback: [deploy/README.md](deploy/README.md).
+`main` is the live site, `smartly.softech.agency`. Every pull request runs CI (`.github/workflows/ci.yml`); a merge to `main` publishes `ghcr.io/arifur999/cashfo-api`, and the VPS pulls it within two minutes, rolling back if the release doesn't come up healthy. Setup, operations and rollback: [deploy/README.md](deploy/README.md).

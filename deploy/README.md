@@ -17,7 +17,7 @@ pull request (either repo)
      (the API also: every migration on an empty database + the bootstrap)
 merge to main
   -> CI again as the quality gate, then the image is pushed to
-     ghcr.io/arifur999/cashfo_backend or ghcr.io/arifur999/cashfo
+     ghcr.io/arifur999/cashfo-api or ghcr.io/arifur999/cashfo-web
   -> within 2 min, smartly-deploy.timer on the VPS sees the new digest
   -> docker compose up -d   (a new API image runs smartly-migrate first)
   -> waits until smartly-api and smartly-web are both healthy
@@ -27,7 +27,8 @@ merge to main
 
 A red CI run publishes nothing, so the site keeps running the last good
 release. A push that only changes docs (or, in this repo, `deploy/`) publishes
-nothing either, so it restarts nothing.
+nothing either, so it restarts nothing. CI has no push trigger of its own:
+on `main` it runs only as Deploy's quality gate, so each merge is tested once.
 
 A release replaces the containers, which takes a few seconds. During that
 window nginx answers with a 503 "Updating" page that reloads itself, not a
@@ -45,7 +46,9 @@ rollback restores code but not the schema, **migrations must be additive**
 `main` is the live site. Work happens on a branch, reaches `main` through a
 pull request, and CI must be green before merging. To make GitHub enforce
 that: repo Settings -> Branches -> Add branch protection rule for `main` ->
-*Require status checks to pass before merging* -> pick the CI checks.
+*Require status checks to pass before merging* -> pick the CI checks. (On a
+private repo, branch protection needs GitHub Pro. Without it nothing is
+enforced, but a red quality gate still publishes nothing.)
 
 ## How it fits together
 
@@ -85,9 +88,9 @@ that: repo Settings -> Branches -> Add branch protection rule for `main` ->
 Encrypt for anything.
 
 **2. Images.** Merge to `main` in both repos and wait for each *Deploy*
-workflow to go green. Then make both packages pullable without a login, as
-Travelar's are: GitHub -> your profile -> Packages -> `cashfo_backend` (and
-then `cashfo`) -> Package settings -> Change visibility -> Public.
+workflow to go green. Both packages (`cashfo-api`, `cashfo-web`) are private,
+so the server has to log in to ghcr.io before it can pull them: see
+[Private repos and images](#private-repos-and-images).
 
 **3. Google sign-in.** The OAuth client's authorized redirect URI must be
 `https://smartly.softech.agency/api/auth/callback/google` (and the origin
@@ -96,7 +99,8 @@ then `cashfo`) -> Package settings -> Change visibility -> Public.
 **4. On the VPS, as root:**
 
 ```bash
-git clone https://github.com/Arifur999/cashfo_backend.git /root/smartly-src
+# the repo is private: set up its deploy key first (Private repos and images)
+git clone git@github-cashfo_backend:Arifur999/cashfo_backend.git /root/smartly-src
 cd /root/smartly-src/deploy
 
 # asks for the super admin's email: their login and the Let's Encrypt contact
@@ -162,6 +166,72 @@ line, and commit it:
 - /opt/smartly/nginx/smartly.softech.agency.conf:/etc/nginx/conf.d/smartly.softech.agency.conf:ro
 ```
 
+## Private repos and images
+
+The repos and their images are private. GitHub Actions needs nothing for that,
+but the box needs two kinds of read-only access. Both are set up once and
+survive reboots.
+
+**Pulling images: log the box in to ghcr.io.** Once for the whole box:
+Travelar's and softech.agency's agents use the same login. Make a classic
+token (GitHub -> Settings -> Developer settings -> Personal access tokens ->
+Tokens (classic) -> *Generate new token*) with only the `read:packages` scope,
+then, as root, paste it when asked:
+
+```bash
+docker login ghcr.io -u Arifur999
+```
+
+Docker keeps it in `/root/.docker/config.json`. If the token has an expiry
+date, write it down: after it every pull fails, `journalctl -u smartly-deploy`
+says so, and the site stays on its last release until the box logs in again.
+
+**Pulling code: a read-only deploy key per clone.** GitHub accepts a deploy
+key on one repo only, so each clone on the box gets its own key under its own
+`Host` alias:
+
+| Clone | Repo | As |
+|---|---|---|
+| `/root/smartly-src` | `cashfo_backend` | root |
+| `/root/travelar-src` | `travelar_backend` | root |
+| `/root/softech-src` | `softech_agency` | root |
+| `/srv/hatim/hatim_Backend` | `ss_backend` (furnify) | the user in its `VPS_USER` secret: its Deploy workflow runs `git fetch` there |
+
+For one row at a time, as the user in the last column:
+
+```bash
+REPO=cashfo_backend DIR=/root/smartly-src
+ssh-keygen -t ed25519 -N "" -C "srv1881651 $REPO" -f ~/.ssh/deploy_$REPO
+printf 'Host github-%s\n  HostName github.com\n  User git\n  IdentityFile ~/.ssh/deploy_%s\n  IdentitiesOnly yes\n' "$REPO" "$REPO" >> ~/.ssh/config
+cat ~/.ssh/deploy_$REPO.pub
+```
+
+GitHub -> that repo -> Settings -> Deploy keys -> *Add deploy key*: paste the
+`ssh-ed25519 ...` line and leave *Allow write access* off. Then:
+
+```bash
+git -C "$DIR" remote set-url origin "git@github-$REPO:Arifur999/$REPO.git"
+git -C "$DIR" pull
+```
+
+The first connection asks whether to trust github.com. Answer `yes` only if
+the fingerprint it shows is `SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU`.
+
+**Moving a running box off the old public images.** Once, after both repos'
+first green *Deploy* under the new names:
+
+```bash
+sed -i -e 's|^API_IMAGE=.*|API_IMAGE=ghcr.io/arifur999/cashfo-api:latest|' \
+       -e 's|^WEB_IMAGE=.*|WEB_IMAGE=ghcr.io/arifur999/cashfo-web:latest|' /opt/smartly/.env
+systemctl start smartly-deploy && journalctl -u smartly-deploy -n 20 --no-pager
+```
+
+When `docker ps --filter name=smartly-` shows both containers on the new
+images, delete the old packages: GitHub -> your profile -> Packages ->
+`cashfo_backend` (then `cashfo`) -> Package settings -> *Delete this package*.
+They were renamed, not hidden, because GitHub cannot make a public package
+private again.
+
 ## Operations
 
 ```bash
@@ -178,7 +248,7 @@ touch /opt/smartly/.maintenance      # ... and rm /opt/smartly/.maintenance afte
 
 # roll back to a specific commit (pin, then release)
 systemctl stop smartly-deploy.timer
-sed -i 's|^WEB_IMAGE=.*|WEB_IMAGE=ghcr.io/arifur999/cashfo:<sha>|' /opt/smartly/.env
+sed -i 's|^WEB_IMAGE=.*|WEB_IMAGE=ghcr.io/arifur999/cashfo-web:<sha>|' /opt/smartly/.env
 cd /opt/smartly && docker compose up -d
 # undo the pin later: set it back to :latest and `systemctl start smartly-deploy.timer`
 
