@@ -668,6 +668,9 @@ model User {
   remindLoans         Boolean              @default(true)
   remindSavings       Boolean              @default(false)
   remindersCheckedAt  DateTime?
+  // The master switch for the Habit Tracker's timed reminders (habits,
+  // challenges, to-dos, namaz, Ramadan, books, skills): bell and push alike.
+  remindHabits        Boolean              @default(true)
   // Admins only: when they last pressed "Mark all as read" on the bell;
   // its rows newer than this are unread (AdminFeedService).
   adminFeedSeenAt     DateTime?
@@ -724,6 +727,8 @@ model User {
   authSessions        AuthSession[]
   authAccounts        AuthAccount[]
   notifications       UserNotification[]
+  pushSubscriptions   PushSubscription[]
+  reminders           Reminder[]
 
   // No separate @@index([email]) -- @unique above already creates a unique
   // index covering lookups by email (same reasoning as PlatformUser).
@@ -1248,20 +1253,23 @@ model TodoList {
 }
 
 model TodoItem {
-  id        String       @id @default(uuid())
-  listId    String
-  list      TodoList     @relation(fields: [listId], references: [id], onDelete: Cascade)
-  text      String
-  completed Boolean      @default(false)
-  priority  TodoPriority @default(MEDIUM)
+  id           String       @id @default(uuid())
+  listId       String
+  list         TodoList     @relation(fields: [listId], references: [id], onDelete: Cascade)
+  text         String
+  completed    Boolean      @default(false)
+  priority     TodoPriority @default(MEDIUM)
   // "HH:MM" on a 24-hour clock, Dhaka time; null = any time that day.
-  dueTime   String?
+  dueTime      String?
+  // A reminder this many minutes before dueTime (0 = at the time); null =
+  // none. Only fires while dueTime is set (RemindersScheduler).
+  remindBefore Int?
   // The day the task was first planned for, once it has moved to another.
-  movedFrom DateTime?    @db.Date
+  movedFrom    DateTime?    @db.Date
   // Set on a task a repeat rule added; one per rule per day.
-  repeatId  String?
-  repeat    TodoRepeat?  @relation(fields: [repeatId], references: [id], onDelete: SetNull)
-  createdAt DateTime     @default(now())
+  repeatId     String?
+  repeat       TodoRepeat?  @relation(fields: [repeatId], references: [id], onDelete: SetNull)
+  createdAt    DateTime     @default(now())
 
   @@unique([repeatId, listId])
   @@index([listId])
@@ -1289,6 +1297,8 @@ model TodoRepeat {
   text          String
   priority      TodoPriority   @default(MEDIUM)
   dueTime       String?
+  // Copied onto each copy, like dueTime.
+  remindBefore  Int?
   kind          TodoRepeatKind
   // WEEKLY: 0 = Sunday ... 6 = Saturday.
   weekdays      Int[]
@@ -2176,4 +2186,63 @@ enum UserNotificationType {
   ANNOUNCEMENT
   // The support team answered one of the customer's messages.
   SUPPORT_REPLY
+  // A Habit Tracker reminder came due (RemindersScheduler).
+  REMINDER
+}
+
+// A browser or phone that gets web push notifications for one customer
+// (Settings > App > Reminders). `endpoint` is the push service's address for
+// that device; signing in as someone else on it moves the row to them.
+model PushSubscription {
+  id         String   @id @default(uuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  endpoint   String   @unique
+  p256dh     String
+  auth       String
+  // "en" | "bn": the language this device's notifications are written in.
+  locale     String   @default("en")
+  userAgent  String?
+  createdAt  DateTime @default(now())
+  lastUsedAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+enum ReminderKind {
+  HABIT
+  CHALLENGE
+  TODO
+  NAMAZ
+  RAMADAN
+  BOOK
+  SKILL
+}
+
+// A timed Habit Tracker reminder, fired by RemindersScheduler into the bell
+// (and as a push). `targetKey` names what it is for: a Habit.id (HABIT), a
+// HabitMonthTracker.id (CHALLENGE), a Book.id (BOOK), a Skill.id (SKILL),
+// "fajr" | "dhuhr" | "asr" | "maghrib" | "isha" (NAMAZ) or "sehri" | "iftar"
+// (RAMADAN). A plain string, not a foreign key: the services' delete paths
+// remove the rows of what they delete. To-do reminders live on the task
+// itself (TodoItem.remindBefore).
+model Reminder {
+  id            String       @id @default(uuid())
+  userId        String
+  user          User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  kind          ReminderKind
+  targetKey     String
+  enabled       Boolean      @default(true)
+  // "HH:MM" on a 24-hour clock, Dhaka time (HABIT/CHALLENGE/BOOK/SKILL, 1-6
+  // of them); empty for NAMAZ/RAMADAN, whose times are worked out daily.
+  times         String[]
+  // 0 = Sunday ... 6 = Saturday; empty = every day. HABIT/CHALLENGE/BOOK/SKILL.
+  weekdays      Int[]
+  // NAMAZ/RAMADAN: this many minutes before the computed time (0-120).
+  minutesBefore Int          @default(0)
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  @@unique([userId, kind, targetKey])
+  @@index([enabled, kind])
 }
