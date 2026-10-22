@@ -22,6 +22,7 @@ const setup = ({ tracker = sheet('Others') as ReturnType<typeof sheet> | null, d
     habitMonthCheck: { deleteMany: vi.fn().mockResolvedValue({ count: 12 }) },
     ramadanParaLog: { deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
     habitMonthTracker: { deleteMany: vi.fn().mockResolvedValue({ count: deleted }) },
+    reminder: { deleteMany: vi.fn().mockResolvedValue({ count: 1 }) },
   };
   const prisma = {
     habitMonthTracker: { findUnique: vi.fn().mockResolvedValue(tracker), deleteMany: vi.fn().mockResolvedValue({ count: deleted }) },
@@ -44,6 +45,8 @@ describe('HabitTrackersService.remove: an Others challenge', () => {
     expect(tx.habitMonthTracker.deleteMany).toHaveBeenCalledWith({ where: { id: 'trk-1', userId: 'user-1', category: 'Others' } });
     // The ticks go before the sheet they hang off.
     expect(tx.habitMonthCheck.deleteMany.mock.invocationCallOrder[0]).toBeLessThan(tx.habitMonthTracker.deleteMany.mock.invocationCallOrder[0]);
+    // Its reminders too (Reminder.targetKey is no foreign key).
+    expect(tx.reminder.deleteMany).toHaveBeenCalledWith({ where: { userId: 'user-1', kind: 'CHALLENGE', targetKey: 'trk-1' } });
     // Nothing outside the transaction, and no "clear your ticks first".
     expect(prisma.habitMonthCheck.deleteMany).not.toHaveBeenCalled();
     expect(prisma.habitMonthTracker.deleteMany).not.toHaveBeenCalled();

@@ -65,6 +65,8 @@ export class HabitsService {
   // archive so past logs/streaks keep pointing at a real habit.
   async deleteHabit(userId: string, id: string): Promise<{ id: string; action: 'deleted' | 'archived' }> {
     await this.requireHabit(userId, id);
+    // Its reminders go either way: an archived habit reminds no one.
+    await this.prisma.reminder.deleteMany({ where: { userId, kind: 'HABIT', targetKey: id } });
     const logCount = await this.prisma.habitLog.count({ where: { habitId: id } });
     if (logCount === 0) {
       await this.prisma.habit.delete({ where: { id } });
