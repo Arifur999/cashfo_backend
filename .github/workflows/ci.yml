@@ -1,8 +1,10 @@
 name: CI
 
+# No `push` trigger on purpose: Deploy already runs this as its quality gate on
+# every push to main, so a push trigger here tested each merge twice and spent
+# the Actions minutes twice. Pull requests run it directly; main runs it
+# through Deploy.
 on:
-  push:
-    branches: [main]
   pull_request:
   # Deploy runs this as its quality gate before publishing an image.
   workflow_call:
@@ -16,8 +18,8 @@ permissions:
   contents: read
 
 concurrency:
-  # github.workflow is the CALLER's name when Deploy runs this, so the two runs
-  # of one push land in different groups and can't cancel each other.
+  # github.workflow is the CALLER's name when Deploy runs this, so a pull
+  # request run and a release's quality gate never share a group.
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 

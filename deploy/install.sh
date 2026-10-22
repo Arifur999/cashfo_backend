@@ -52,7 +52,8 @@ done
 if [ "$pulled" != 1 ]; then
   die "could not pull the images after 3 attempts. Nothing was started. Read the error above:
        * 'denied' or 'unauthorized'
-         -> the package is private: GitHub -> Packages -> cashfo_backend / cashfo -> Package settings -> Change visibility -> Public
+         -> this server is not logged in to ghcr.io (the packages are private): as root,
+            docker login ghcr.io -u Arifur999   -- see 'Private repos and images' in deploy/README.md
        * 'manifest unknown'
          -> nothing published yet: merge to main and wait for the Deploy workflow to go green
        * 'connection reset', 'TLS handshake' or a timeout
