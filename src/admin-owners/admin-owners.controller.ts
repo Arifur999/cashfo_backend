@@ -1,4 +1,5 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import type { Request } from 'express';
 import { AdminRole } from '../common/roles.js';
 import { CurrentAdmin } from '../admin-auth/decorators/current-admin.decorator.js';
@@ -9,6 +10,7 @@ import type { RequestAdminUser } from '../admin-auth/interfaces/request-admin-us
 import { AdminOwnersService } from './admin-owners.service.js';
 import { ChangeOwnerPlanDto } from './dto/change-owner-plan.dto.js';
 import { ListOwnersQueryDto } from './dto/list-owners-query.dto.js';
+import { StartImpersonationDto } from './dto/start-impersonation.dto.js';
 import { SuspendOwnerDto } from './dto/suspend-owner.dto.js';
 import { OwnerImpersonationService } from './owner-impersonation.service.js';
 
@@ -67,11 +69,14 @@ export class AdminOwnersController {
 
   // "View as customer" (read-only, see OwnerImpersonationService): customer
   // tokens for a session of this owner. SUPER_ADMIN only -- it shows a real
-  // customer's books.
+  // customer's books -- and only with the support code the customer made.
+  // The code itself burns after five wrong tries; this also caps tries per
+  // address and customer.
   @Roles(AdminRole.SUPER_ADMIN)
+  @Throttle({ default: { limit: 5, ttl: 15 * 60 * 1000, getTracker: (req) => `${req.ip}|${req.params?.userId ?? ''}` } })
   @Post(':userId/impersonate')
-  impersonate(@Param('userId') userId: string, @CurrentAdmin() admin: RequestAdminUser, @Req() req: Request) {
-    return this.impersonation.start(userId, admin.id, { ipAddress: req.ip, userAgent: req.headers['user-agent'] });
+  impersonate(@Param('userId') userId: string, @Body() dto: StartImpersonationDto, @CurrentAdmin() admin: RequestAdminUser, @Req() req: Request) {
+    return this.impersonation.start(userId, admin.id, { ipAddress: req.ip, userAgent: req.headers['user-agent'] }, dto.code);
   }
 
   @Roles(AdminRole.SUPER_ADMIN)

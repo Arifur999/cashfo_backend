@@ -1,9 +1,10 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { Role, UserStatus } from '@prisma/client';
 import { AuthSessionsService, type ClientInfo } from '../auth/auth-sessions.service.js';
 import { SessionTokensService } from '../auth/session-tokens.service.js';
 import { END_USER_WHERE } from '../common/roles.js';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { SupportAccessService } from '../support-access/support-access.service.js';
 
 // How long one "View as customer" lasts before the admin is signed out of it.
 export const IMPERSONATION_MINUTES = 60;
@@ -15,20 +16,44 @@ export const IMPERSONATION_MINUTES = 60;
 // workspace PIN, and lets the app show whose view it is. It is not a
 // device: no UserSession row, so it stays out of their device list and the
 // engagement analytics. Both ends land in the audit log.
+//
+// It opens only with the customer's consent: the one-time support code they
+// made in Settings > Security (SupportAccessService). A refused code is
+// logged too, so a run of guesses shows in the audit log.
 @Injectable()
 export class OwnerImpersonationService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly sessions: AuthSessionsService,
     private readonly tokens: SessionTokensService,
+    private readonly supportAccess: SupportAccessService,
   ) {}
 
-  async start(userId: string, adminId: string, client: ClientInfo) {
+  async start(userId: string, adminId: string, client: ClientInfo, code: string) {
     const owner = await this.prisma.user.findUnique({ where: { id: userId, ...END_USER_WHERE } });
     if (!owner) throw new NotFoundException('Owner not found');
     // better-auth's session hook refuses them too; this says why.
     if (owner.status !== UserStatus.ACTIVE) {
       throw new BadRequestException('Only an active account can be viewed. Activate it first.');
+    }
+
+    const consent = await this.supportAccess.consume(userId, code);
+    if (consent !== 'ok') {
+      await this.prisma.auditLog.create({
+        data: {
+          adminUserId: adminId,
+          action: 'USER_IMPERSONATION_REFUSED',
+          entityType: 'User',
+          entityId: userId,
+          newValue: { sensitive: true, reason: consent === 'none' ? 'no-code' : 'wrong-code' },
+          ipAddress: client.ipAddress,
+        },
+      });
+      throw new ForbiddenException(
+        consent === 'none'
+          ? 'There is no support code to use. Ask the customer to make one in Settings > Security.'
+          : "That isn't the customer's support code. Check it with them and try again.",
+      );
     }
 
     const expiresAt = new Date(Date.now() + IMPERSONATION_MINUTES * 60 * 1000);
@@ -41,7 +66,7 @@ export class OwnerImpersonationService {
           action: 'USER_IMPERSONATION_STARTED',
           entityType: 'User',
           entityId: userId,
-          newValue: { sensitive: true, readOnly: true, expiresInMinutes: IMPERSONATION_MINUTES },
+          newValue: { sensitive: true, readOnly: true, expiresInMinutes: IMPERSONATION_MINUTES, consent: 'support-code' },
           ipAddress: client.ipAddress,
         },
       }),

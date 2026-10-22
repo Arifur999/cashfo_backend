@@ -54,12 +54,6 @@ export class PlatformUsersController {
     return this.platformUsersService.resetPassword(id, admin.id, req.ip);
   }
 
-  @Roles(AdminRole.SUPER_ADMIN)
-  @Post(':id/impersonate')
-  impersonate(@Param('id') id: string, @CurrentAdmin() admin: RequestAdminUser, @Req() req: Request) {
-    return this.platformUsersService.impersonate(id, admin.id, req.ip);
-  }
-
   @Roles(AdminRole.SUPER_ADMIN, AdminRole.FINANCE_ADMIN)
   @Patch(':id/change-plan')
   changePlan(@Param('id') id: string, @Body() dto: ChangePlanDto, @CurrentAdmin() admin: RequestAdminUser, @Req() req: Request) {
