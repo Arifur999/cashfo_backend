@@ -289,3 +289,57 @@ describe('ContactCategoryQueryDto and DueSoonQueryDto', () => {
     expect(await refusal(DueSoonQueryDto, { days: '91' })).toEqual(['days must not be greater than 90']);
   });
 });
+
+describe('ReceivablesPayablesService loans with any kind of loan contact', () => {
+  const recording = () => {
+    const createTransaction = vi.fn((_businessId: string, dto: unknown) => Promise.resolve(dto));
+    const prisma = {
+      contact: {
+        findUnique: vi.fn(({ where }: { where: { id: string } }) => Promise.resolve(contacts.find((row) => row.id === where.id) ?? null)),
+      },
+      account: {
+        findFirst: vi.fn(({ where }: { where: { businessId: string; accountSubtype: string } }) =>
+          Promise.resolve(where.businessId === 'biz-1' ? { id: where.accountSubtype === 'receivable' ? 'ar' : 'ap', businessId: 'biz-1' } : null),
+        ),
+        findUnique: vi.fn(({ where }: { where: { id: string } }) =>
+          Promise.resolve(where.id === 'cash' ? { id: 'cash', businessId: 'biz-1', accountType: 'ASSET', accountSubtype: 'cash' } : null),
+        ),
+      },
+    };
+    return { service: new ReceivablesPayablesService(prisma as never, { createTransaction } as never), createTransaction };
+  };
+  const loan = { amount: '2500', date: TODAY, moneyAccountId: 'cash' };
+
+  it('takes a loan from a Bank: Dr the money account / Cr Payable', async () => {
+    const { service, createTransaction } = recording();
+    await service.recordPurchase('biz-1', { ...loan, contactId: 'bank' } as never, 'user-1');
+    expect(createTransaction.mock.calls[0][1]).toMatchObject({
+      transactionType: 'PURCHASE',
+      contactId: 'bank',
+      entries: [
+        { accountId: 'cash', entryType: 'DEBIT', amount: '2500' },
+        { accountId: 'ap', entryType: 'CREDIT', amount: '2500' },
+      ],
+    });
+  });
+
+  it('gives a loan to a Bank: Dr Receivable / Cr the money account', async () => {
+    const { service, createTransaction } = recording();
+    await service.recordSale('biz-1', { ...loan, contactId: 'bank' } as never, 'user-1');
+    expect(createTransaction.mock.calls[0][1]).toMatchObject({
+      transactionType: 'SALE',
+      contactId: 'bank',
+      entries: [
+        { accountId: 'ar', entryType: 'DEBIT', amount: '2500' },
+        { accountId: 'cash', entryType: 'CREDIT', amount: '2500' },
+      ],
+    });
+  });
+
+  it('keeps the Customer/Supplier rule for trade contacts', async () => {
+    const { service, createTransaction } = recording();
+    await expect(service.recordSale('biz-1', { amount: '10', date: TODAY, contactId: 'supplier' } as never, 'user-1')).rejects.toThrow(BadRequestException);
+    await expect(service.recordPurchase('biz-1', { amount: '10', date: TODAY, contactId: 'shop' } as never, 'user-1')).rejects.toThrow(BadRequestException);
+    expect(createTransaction).not.toHaveBeenCalled();
+  });
+});

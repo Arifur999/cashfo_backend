@@ -1,6 +1,4 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
-import { JwtService } from '@nestjs/jwt';
-import { ConfigService } from '@nestjs/config';
 import { Prisma, PlatformUserStatus } from '@prisma/client';
 import { randomBytes } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service.js';
@@ -13,11 +11,7 @@ const SEARCHABLE_FIELDS = ['name', 'email'] as const;
 
 @Injectable()
 export class PlatformUsersService {
-  constructor(
-    private readonly prisma: PrismaService,
-    private readonly jwtService: JwtService,
-    private readonly configService: ConfigService,
-  ) {}
+  constructor(private readonly prisma: PrismaService) {}
 
   async list(query: ListPlatformUsersQueryDto) {
     const page = query.page ?? 1;
@@ -174,28 +168,6 @@ export class PlatformUsersService {
     });
 
     return { tempPassword };
-  }
-
-  async impersonate(id: string, adminId: string, ipAddress?: string) {
-    const user = await this.requireUser(id);
-
-    const token = this.jwtService.sign(
-      { sub: user.id, type: 'impersonation', impersonatedBy: adminId },
-      { secret: this.configService.get<string>('JWT_SECRET'), expiresIn: '15m' },
-    );
-
-    await this.prisma.auditLog.create({
-      data: {
-        adminUserId: adminId,
-        action: 'USER_IMPERSONATION_STARTED',
-        entityType: 'PlatformUser',
-        entityId: id,
-        newValue: { sensitive: true, targetUserId: id, tokenExpiresInMinutes: 15 },
-        ipAddress,
-      },
-    });
-
-    return { token };
   }
 
   async changePlan(id: string, dto: ChangePlanDto, adminId: string, ipAddress?: string) {

@@ -50,6 +50,7 @@ import { SignInModule } from './sign-in/sign-in.module.js';
 import { SubscriptionPlansModule } from './subscription-plans/subscription-plans.module.js';
 import { GlobalExceptionFilter } from './system/filters/global-exception.filter.js';
 import { SupportModule } from './support/support.module.js';
+import { SupportAccessModule } from './support-access/support-access.module.js';
 import { SystemModule } from './system/system.module.js';
 import { TicketsModule } from './tickets/tickets.module.js';
 import { TodosModule } from './todos/todos.module.js';
@@ -101,6 +102,8 @@ import { UserNotificationsModule } from './user-notifications/user-notifications
     // Customer-facing platform info + the maintenance-mode switch for /api/*.
     PlatformModule,
     UserAuthModule,
+    // A customer's support codes for "View as customer".
+    SupportAccessModule,
     SignInModule,
     BusinessesModule,
     AccountsModule,

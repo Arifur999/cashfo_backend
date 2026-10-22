@@ -35,7 +35,9 @@ export class ContactsService {
     const [data, total] = await Promise.all([
       this.prisma.contact.findMany({
         where,
-        orderBy: { name: 'asc' },
+        // The id breaks ties between equal names, so paging stays stable and
+        // no contact is skipped or repeated across pages.
+        orderBy: [{ name: 'asc' }, { id: 'asc' }],
         skip: (page - 1) * limit,
         take: limit,
       }),

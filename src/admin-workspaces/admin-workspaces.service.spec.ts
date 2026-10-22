@@ -102,6 +102,29 @@ describe('AdminWorkspacesService.overview', () => {
     expect(result).toMatchObject({ page: 2, limit: 3, totalCount: 4 });
   });
 
+  it('orders by the ?sort= the list picks, ties falling back to the biggest add-on', async () => {
+    const { service } = setup();
+    const order = async (sort: 'addOn' | 'workspaces' | 'extra' | 'name' | 'plan') =>
+      (await service.overview({ sort })).items.map((item) => item.userId);
+
+    expect(await order('addOn')).toEqual(['u-business', 'u-monthly', 'u-yearly', 'u-free']);
+    expect(await order('workspaces')).toEqual(['u-business', 'u-monthly', 'u-yearly', 'u-free']);
+    expect(await order('extra')).toEqual(['u-business', 'u-monthly', 'u-yearly', 'u-free']);
+    expect(await order('name')).toEqual(['u-free', 'u-monthly', 'u-yearly', 'u-business']);
+    expect(await order('plan')).toEqual(['u-business', 'u-free', 'u-monthly', 'u-yearly']);
+  });
+
+  it('puts an owner without a plan after every plan, and sorts before it pages', async () => {
+    const { service, prisma } = setup();
+    prisma.user.findMany.mockResolvedValue([
+      ...OWNERS,
+      { id: 'u-none', name: 'Aminul Haq', email: 'aminul@example.com', ownedBusinesses: [business('Personal', { isDefault: true, type: 'PERSONAL' }), business('Haq Shop')] },
+    ]);
+
+    expect((await service.overview({ sort: 'plan' })).items.at(-1)?.userId).toBe('u-none');
+    expect((await service.overview({ sort: 'name', page: 1, limit: 1 })).items.map((item) => item.userId)).toEqual(['u-none']);
+  });
+
   it('gives every workspace its id and kind beside the names, oldest first', async () => {
     const { service } = setup();
     const { items } = await service.overview({});

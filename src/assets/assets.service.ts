@@ -3,7 +3,7 @@ import { Account, Asset, Prisma } from '@prisma/client';
 import { FIXED_ASSETS_ACCOUNT_SUBTYPE, MONEY_ACCOUNT_SUBTYPES } from '../accounts/accounts.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { TransactionsService } from '../transactions/transactions.service.js';
-import { isBeforePurchase, isNewestValuation } from './asset-dates.js';
+import { canMovePurchaseTo, isBeforePurchase, isNewestValuation, purchaseRowOf } from './asset-dates.js';
 import { CreateAssetCategoryDto } from './dto/create-asset-category.dto.js';
 import { CreateAssetPurchaseDto } from './dto/create-asset-purchase.dto.js';
 import { SellAssetDto } from './dto/sell-asset.dto.js';
@@ -258,23 +258,30 @@ export class AssetsService {
   }
 
   // Corrects an asset's name, type and notes. The purchase date changes
-  // only on an asset no wallet paid for (a paid purchase keeps its
-  // posting's date), and only while nothing has happened to it since:
-  // its first value moves to the new day with it.
+  // only on an owned asset no wallet paid for (a paid purchase keeps its
+  // posting's date, and a sale stays after its purchase), and never past a
+  // value recorded since. Only the purchase's own history row moves with
+  // it: an asset added as already owned gets a value check dated the day it
+  // was added, and that check stays where it is.
   async update(businessId: string, id: string, dto: UpdateAssetDto) {
     const asset = await this.requireAsset(businessId, id);
     const newDate = dto.purchaseDate !== undefined && dto.purchaseDate.slice(0, 10) !== asset.purchaseDate.toISOString().slice(0, 10) ? new Date(dto.purchaseDate) : null;
+    let purchaseRowId: string | undefined;
     if (newDate) {
       if (asset.purchaseTransactionId) {
         throw new BadRequestException('A purchase paid from a wallet keeps its date. Delete the asset and add it again to change it.');
       }
-      const history = await this.prisma.assetValueHistory.count({ where: { assetId: id } });
-      if (asset.status === 'SOLD' || history > 1) {
-        throw new BadRequestException('The purchase date can only change before the asset is revalued or sold.');
+      if (asset.status === 'SOLD') {
+        throw new BadRequestException('A sold asset keeps its purchase date. Undo the sale to change it.');
+      }
+      const history = await this.prisma.assetValueHistory.findMany({ where: { assetId: id }, select: { id: true, recordedAt: true, note: true } });
+      purchaseRowId = purchaseRowOf(history)?.id;
+      if (!canMovePurchaseTo(newDate, history, purchaseRowId)) {
+        throw new BadRequestException('The purchase date can\'t be later than a value recorded for the asset.');
       }
     }
     return this.prisma.$transaction(async (tx) => {
-      if (newDate) await tx.assetValueHistory.updateMany({ where: { assetId: id }, data: { recordedAt: newDate } });
+      if (newDate && purchaseRowId) await tx.assetValueHistory.update({ where: { id: purchaseRowId }, data: { recordedAt: newDate } });
       return tx.asset.update({
         where: { id },
         data: {
@@ -297,11 +304,14 @@ export class AssetsService {
       if (asset.status === 'SOLD') {
         throw new BadRequestException('Undo the sale first, then delete the asset.');
       }
+      const purchaseIsPosted = await this.isPosted(asset.purchaseTransactionId, tx);
       await tx.assetValueHistory.deleteMany({ where: { assetId: id } });
       await tx.asset.delete({ where: { id } });
       // The asset is gone first, so the void finds no asset owning the
-      // posting (voids of asset postings are refused anywhere else).
-      if (asset.purchaseTransactionId) {
+      // posting (voids of asset postings are refused anywhere else). A
+      // purchase voided before that rule existed has already given its
+      // money back, so there is nothing left to void.
+      if (asset.purchaseTransactionId && purchaseIsPosted) {
         await this.transactionsService.voidTransaction(businessId, asset.purchaseTransactionId, `Asset deleted: ${asset.name}`, userId, tx);
       }
       return { id };
@@ -309,23 +319,57 @@ export class AssetsService {
   }
 
   // Undoes a sale recorded by mistake: the sale's income is voided and the
-  // asset is owned again, at the value it had before.
+  // asset is owned again, at the value it had before. The wallet the sale
+  // paid into is locked and checked like a purchase's: the proceeds must
+  // still be there to take back, or the wallet would go below zero.
   async undoSale(businessId: string, id: string, userId: string) {
-    return this.transactionsService.withLocks([`asset:${id}`, `fixed-assets:${businessId}`], async (tx) => {
+    // Read first to learn which wallet to lock. Locks are taken in sorted
+    // order (withLocks), so the wallet lock has to be among the keys from
+    // the start; locking it later would deadlock against purchase().
+    const before = await this.requireAsset(businessId, id);
+    const lockKeys = [`asset:${id}`, `fixed-assets:${businessId}`];
+    if (before.soldAccountId) lockKeys.push(`account:${before.soldAccountId}`);
+    return this.transactionsService.withLocks(lockKeys, async (tx) => {
       const asset = await this.requireAsset(businessId, id, tx);
       if (asset.status !== 'SOLD') {
         throw new BadRequestException('This asset has not been sold.');
+      }
+      // Undone and sold again into another wallet while this call waited:
+      // the wallet locked above is the wrong one.
+      if (asset.soldAccountId !== before.soldAccountId) {
+        throw new ConflictException('This sale changed meanwhile. Reload and try again.');
+      }
+      // A sale posting voided before that was refused has no money left in
+      // the wallet to take back; the asset is simply owned again.
+      const saleIsPosted = await this.isPosted(asset.soldTransactionId, tx);
+      if (saleIsPosted && asset.soldAccountId && asset.soldPrice !== null) {
+        const wallet = await tx.account.findUnique({ where: { id: asset.soldAccountId }, select: { name: true, currentBalance: true } });
+        const balance = new Prisma.Decimal(wallet?.currentBalance ?? 0);
+        if (wallet && balance.lessThan(asset.soldPrice)) {
+          throw new BadRequestException(
+            `"${wallet.name}" only has ${balance.toFixed(2)} -- the sale's ${new Prisma.Decimal(asset.soldPrice).toFixed(2)} can't be taken back from it.`,
+          );
+        }
       }
       const restored = await tx.asset.update({
         where: { id },
         data: { status: 'ACTIVE', soldAt: null, soldPrice: null, soldAccountId: null, soldTransactionId: null },
         include: { valueHistory: { orderBy: VALUE_HISTORY_ORDER } },
       });
-      if (asset.soldTransactionId) {
+      if (asset.soldTransactionId && saleIsPosted) {
         await this.transactionsService.voidTransaction(businessId, asset.soldTransactionId, `Sale undone: ${asset.name}`, userId, tx);
       }
       return restored;
     });
+  }
+
+  // Whether an asset's posting still holds its money. Postings voided
+  // before feature-owned postings were protected stay VOIDED, and voiding
+  // them again would be refused.
+  private async isPosted(transactionId: string | null, tx: Prisma.TransactionClient): Promise<boolean> {
+    if (!transactionId) return false;
+    const posting = await tx.transaction.findUnique({ where: { id: transactionId }, select: { status: true } });
+    return posting?.status === 'POSTED';
   }
 
   private async requireAsset(businessId: string, id: string, client: Prisma.TransactionClient = this.prisma): Promise<Asset> {

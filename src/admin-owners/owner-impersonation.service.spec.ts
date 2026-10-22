@@ -1,7 +1,11 @@
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { OwnerImpersonationService } from './owner-impersonation.service.js';
 
-const setup = ({ owner = { id: 'user-1', status: 'ACTIVE' } as { id: string; status: string } | null, views = [] as { id: string }[] } = {}) => {
+const setup = ({
+  owner = { id: 'user-1', status: 'ACTIVE' } as { id: string; status: string } | null,
+  views = [] as { id: string }[],
+  consent = 'ok' as 'ok' | 'none' | 'wrong',
+} = {}) => {
   const prisma = {
     user: { findUnique: vi.fn().mockResolvedValue(owner) },
     authSession: { update: vi.fn((args) => args), findMany: vi.fn().mockResolvedValue(views) },
@@ -10,15 +14,16 @@ const setup = ({ owner = { id: 'user-1', status: 'ACTIVE' } as { id: string; sta
   };
   const sessions = { create: vi.fn().mockResolvedValue('session-9'), revoke: vi.fn() };
   const tokens = { issue: vi.fn().mockReturnValue({ accessToken: 'access', refreshToken: 'refresh' }) };
-  const service = new OwnerImpersonationService(prisma as never, sessions as never, tokens as never);
-  return { service, prisma, sessions, tokens };
+  const supportAccess = { consume: vi.fn().mockResolvedValue(consent) };
+  const service = new OwnerImpersonationService(prisma as never, sessions as never, tokens as never, supportAccess as never);
+  return { service, prisma, sessions, tokens, supportAccess };
 };
 
 describe('OwnerImpersonationService.start', () => {
   it('opens a customer session marked with the admin, for an hour, and logs it', async () => {
     const { service, prisma, sessions, tokens } = setup();
     const before = Date.now();
-    const result = await service.start('user-1', 'admin-1', { ipAddress: '203.0.113.5', userAgent: 'Chrome' });
+    const result = await service.start('user-1', 'admin-1', { ipAddress: '203.0.113.5', userAgent: 'Chrome' }, '123456');
 
     expect(sessions.create).toHaveBeenCalledWith('user-1', { ipAddress: '203.0.113.5', userAgent: 'Chrome' });
     const update = prisma.authSession.update.mock.calls[0][0];
@@ -34,14 +39,38 @@ describe('OwnerImpersonationService.start', () => {
 
   it('only views customers', async () => {
     const { service, sessions } = setup({ owner: null });
-    await expect(service.start('admin-2', 'admin-1', {})).rejects.toThrow(NotFoundException);
+    await expect(service.start('admin-2', 'admin-1', {}, '123456')).rejects.toThrow(NotFoundException);
     expect(sessions.create).not.toHaveBeenCalled();
   });
 
   it('refuses a suspended account', async () => {
     const { service, sessions } = setup({ owner: { id: 'user-1', status: 'SUSPENDED' } });
-    await expect(service.start('user-1', 'admin-1', {})).rejects.toThrow(BadRequestException);
+    await expect(service.start('user-1', 'admin-1', {}, '123456')).rejects.toThrow(BadRequestException);
     expect(sessions.create).not.toHaveBeenCalled();
+  });
+
+  it("opens only with the customer's support code", async () => {
+    const { service, supportAccess } = setup();
+    await service.start('user-1', 'admin-1', {}, '123456');
+    expect(supportAccess.consume).toHaveBeenCalledWith('user-1', '123456');
+  });
+
+  it.each([
+    ['none', 'no-code'],
+    ['wrong', 'wrong-code'],
+  ] as const)('refuses and logs a %s code without opening a session', async (consent, reason) => {
+    const { service, prisma, sessions } = setup({ consent });
+    await expect(service.start('user-1', 'admin-1', { ipAddress: '203.0.113.5' }, '000000')).rejects.toThrow(ForbiddenException);
+    expect(sessions.create).not.toHaveBeenCalled();
+    expect(prisma.auditLog.create.mock.calls[0][0]).toMatchObject({
+      data: { adminUserId: 'admin-1', action: 'USER_IMPERSONATION_REFUSED', entityId: 'user-1', newValue: { reason }, ipAddress: '203.0.113.5' },
+    });
+  });
+
+  it('never spends a code on a suspended account', async () => {
+    const { service, supportAccess } = setup({ owner: { id: 'user-1', status: 'SUSPENDED' } });
+    await expect(service.start('user-1', 'admin-1', {}, '123456')).rejects.toThrow(BadRequestException);
+    expect(supportAccess.consume).not.toHaveBeenCalled();
   });
 });
 
