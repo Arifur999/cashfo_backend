@@ -241,7 +241,11 @@ export class SkillsService {
   }
 
   async remove(userId: string, id: string): Promise<{ id: string }> {
-    const { count } = await this.prisma.skill.deleteMany({ where: { id, userId } });
+    // Its practice reminders go with it (Reminder.targetKey is no foreign key).
+    const [{ count }] = await this.prisma.$transaction([
+      this.prisma.skill.deleteMany({ where: { id, userId } }),
+      this.prisma.reminder.deleteMany({ where: { userId, kind: 'SKILL', targetKey: id } }),
+    ]);
     if (count === 0) throw new NotFoundException('Skill not found');
     return { id };
   }

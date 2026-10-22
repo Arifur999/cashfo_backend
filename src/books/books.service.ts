@@ -199,7 +199,11 @@ export class BooksService {
   }
 
   async remove(userId: string, id: string): Promise<{ id: string }> {
-    const { count } = await this.prisma.book.deleteMany({ where: { id, userId } });
+    // Its reading reminders go with it (Reminder.targetKey is no foreign key).
+    const [{ count }] = await this.prisma.$transaction([
+      this.prisma.book.deleteMany({ where: { id, userId } }),
+      this.prisma.reminder.deleteMany({ where: { userId, kind: 'BOOK', targetKey: id } }),
+    ]);
     if (count === 0) throw new NotFoundException('Book not found');
     return { id };
   }

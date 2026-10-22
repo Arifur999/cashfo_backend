@@ -103,6 +103,7 @@ cd /root/smartly-src/deploy
 read -rp "Super admin email: " E && bash bootstrap.sh "$E"
 bash set-env.sh GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET         # Google sign-in; can wait
 bash set-env.sh RESEND_API_KEY IMGBB_API_KEY BETTER_AUTH_API_KEY   # email, avatars, dashboard; can wait
+bash set-env.sh VAPID_PUBLIC_KEY VAPID_PRIVATE_KEY VAPID_SUBJECT  # reminder push; can wait (see below)
 bash install.sh                        # start the stack, create the super admin, install the timers
 bash attach-site.sh                    # certificate + vhost, checks the neighbours
 ```
@@ -117,6 +118,17 @@ to re-run.
   the shared nginx, once).
 - It compares furnify, softech.agency and travance before and after, and
   withdraws its own block if any of them changed.
+
+Reminder push (Habit Tracker reminders on phones and computers) needs a VAPID
+key pair, made once and then kept: a new pair orphans every device that
+subscribed with the old one. Make it once the stack runs, then set it with the
+`set-env.sh` line above; `VAPID_SUBJECT` is a contact address for the push
+services, e.g. `mailto:support@softech.agency`. Without it the bell still gets
+every reminder.
+
+```bash
+docker exec smartly-api node_modules/.bin/web-push generate-vapid-keys
+```
 
 **5. Sign in** at `https://smartly.softech.agency/login` with
 `SUPER_ADMIN_EMAIL` and its password -- or with Google, when that address is a

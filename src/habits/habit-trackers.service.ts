@@ -342,6 +342,7 @@ export class HabitTrackersService {
       await tx.ramadanParaLog.deleteMany({ where: { trackerId: id } });
       const { count } = await tx.habitMonthTracker.deleteMany({ where: { id, userId, category } });
       if (count === 0) throw new NotFoundException('Tracker not found');
+      await tx.reminder.deleteMany({ where: { userId, kind: 'CHALLENGE', targetKey: id } });
     });
     return { id };
   }
