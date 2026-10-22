@@ -39,7 +39,9 @@ import { PrismaModule } from './prisma/prisma.module.js';
 import { PlatformModule } from './platform/platform.module.js';
 import { QuickEntriesModule } from './quick-entries/quick-entries.module.js';
 import { ReceivablesPayablesModule } from './receivables-payables/receivables-payables.module.js';
+import { PushModule } from './push/push.module.js';
 import { ReferralsModule } from './referrals/referrals.module.js';
+import { RemindersModule } from './reminders/reminders.module.js';
 import { ReportsModule } from './reports/reports.module.js';
 import { RevenueModule } from './revenue/revenue.module.js';
 import { SavingsGoalsModule } from './savings-goals/savings-goals.module.js';
@@ -123,6 +125,9 @@ import { UserNotificationsModule } from './user-notifications/user-notifications
     SkillsModule,
     TodosModule,
     UserNotificationsModule,
+    // Web push, and the Habit Tracker reminders that use it (the one timer).
+    PushModule,
+    RemindersModule,
     SupportModule,
     AccountExportModule,
     AdminFeedModule,
