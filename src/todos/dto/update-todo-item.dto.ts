@@ -2,7 +2,7 @@ import type { TodoPriority } from '@prisma/client';
 import { Transform, Type } from 'class-transformer';
 import { IsBoolean, IsNotEmpty, IsString, Matches, MaxLength, ValidateIf, ValidateNested } from 'class-validator';
 import { trim, whenSent } from '../../common/dto.js';
-import { IsTodoPriority, IsTodoTime, TodoRepeatDto } from './todo-fields.js';
+import { IsRemindBefore, IsTodoPriority, IsTodoTime, TodoRepeatDto } from './todo-fields.js';
 
 // Every field is optional -- the same route edits the text, ticks the task,
 // and saves the Edit task drawer. ValidateIf(whenSent), not IsOptional, so an
@@ -27,6 +27,10 @@ export class UpdateTodoItemDto {
   @ValidateIf((_, value) => value !== undefined && value !== null)
   @IsTodoTime()
   dueTime?: string | null;
+
+  // null turns the reminder off.
+  @IsRemindBefore()
+  remindBefore?: number | null;
 
   // Moves the task to that day's list.
   @ValidateIf(whenSent)

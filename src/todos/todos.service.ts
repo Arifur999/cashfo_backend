@@ -46,6 +46,8 @@ export interface TodoItemView {
   completed: boolean;
   priority: TodoPriority;
   dueTime: string | null;
+  // Minutes before dueTime it reminds (0 = at the time); null = no reminder.
+  remindBefore: number | null;
   // "YYYY-MM-DD" the task was first planned for, once it has moved.
   movedFrom: string | null;
   repeat: TodoRepeatRuleView | null;
@@ -61,6 +63,7 @@ export interface TodoRepeatView extends TodoRepeatRuleView {
   text: string;
   priority: TodoPriority;
   dueTime: string | null;
+  remindBefore: number | null;
   startsOn: string;
 }
 
@@ -81,6 +84,7 @@ function toItemView(item: ItemWithRepeat): TodoItemView {
     completed: item.completed,
     priority: item.priority,
     dueTime: item.dueTime,
+    remindBefore: item.remindBefore,
     movedFrom: item.movedFrom ? dayKey(item.movedFrom) : null,
     repeat: ruleView(item.repeat),
   };
@@ -91,7 +95,7 @@ function toListView(list: ListWithItems): TodoListView {
 }
 
 function toRepeatView(repeat: TodoRepeat): TodoRepeatView {
-  return { ...ruleOf(repeat), text: repeat.text, priority: repeat.priority, dueTime: repeat.dueTime, startsOn: dayKey(repeat.startsOn) };
+  return { ...ruleOf(repeat), text: repeat.text, priority: repeat.priority, dueTime: repeat.dueTime, remindBefore: repeat.remindBefore, startsOn: dayKey(repeat.startsOn) };
 }
 
 // The rule's fields for a repeat setting on a task dated `day`.
@@ -171,7 +175,7 @@ export class TodosService {
       throw new BadRequestException(`A list can have at most ${MAX_ITEMS_PER_LIST} tasks`);
     }
     const text = cleanTaskText(dto.text);
-    await this.prisma.todoItem.create({ data: { listId, text, priority: dto.priority, dueTime: dto.dueTime ?? null } });
+    await this.prisma.todoItem.create({ data: { listId, text, priority: dto.priority, dueTime: dto.dueTime ?? null, remindBefore: dto.remindBefore ?? null } });
     return this.get(userId, listId);
   }
 
@@ -186,6 +190,7 @@ export class TodosService {
       ...(dto.text !== undefined && { text: cleanTaskText(dto.text) }),
       ...(dto.priority !== undefined && { priority: dto.priority }),
       ...(dto.dueTime !== undefined && { dueTime: dto.dueTime }),
+      ...(dto.remindBefore !== undefined && { remindBefore: dto.remindBefore }),
     };
     await this.prisma.todoItem.update({
       where: { id: itemId },
@@ -207,8 +212,8 @@ export class TodosService {
     if (dto.repeat !== undefined) {
       await this.setRepeat(userId, { ...item, ...fields }, list.date, day, rule, dto.repeat);
     } else if (rule && day === list.date && Object.keys(fields).length > 0) {
-      // Words, priority or time changed on a repeating task: its days ahead
-      // follow.
+      // Words, priority, time or reminder changed on a repeating task: its
+      // days ahead follow.
       await this.prisma.todoRepeat.update({ where: { id: rule.id }, data: fields });
       await this.prisma.todoItem.updateMany({ where: { repeatId: rule.id, completed: false, list: { date: { gt: day } } }, data: fields });
     }
@@ -251,7 +256,7 @@ export class TodosService {
   // task was on when the save began, `day` the one it is on now (they differ
   // when the same save moved it). Copies already made from the earlier of
   // the two are remade, so they follow the new rule.
-  private async setRepeat(userId: string, item: Pick<TodoItem, 'id' | 'text' | 'priority' | 'dueTime'>, since: Date, day: Date, rule: TodoRepeat | null, repeat: TodoRepeatDto | null): Promise<void> {
+  private async setRepeat(userId: string, item: Pick<TodoItem, 'id' | 'text' | 'priority' | 'dueTime' | 'remindBefore'>, since: Date, day: Date, rule: TodoRepeat | null, repeat: TodoRepeatDto | null): Promise<void> {
     const from = day < since ? day : since;
     if (repeat === null) {
       if (!rule) return;
@@ -260,9 +265,11 @@ export class TodosService {
       return;
     }
     const fields = ruleFields(repeat, day);
+    // The copies remind as the repeat says, or else as the task does.
+    const remindBefore = repeat.remindBefore !== undefined ? repeat.remindBefore : item.remindBefore;
     if (rule) {
       await this.dropCopiesFrom(rule.id, from, item.id);
-      await this.prisma.todoRepeat.update({ where: { id: rule.id }, data: { ...fields, text: item.text, priority: item.priority, dueTime: item.dueTime, filledThrough: day } });
+      await this.prisma.todoRepeat.update({ where: { id: rule.id }, data: { ...fields, text: item.text, priority: item.priority, dueTime: item.dueTime, remindBefore, filledThrough: day } });
       // A move took the task off its rule; it comes back on.
       await this.prisma.todoItem.update({ where: { id: item.id }, data: { repeatId: rule.id } });
     } else {
@@ -273,7 +280,7 @@ export class TodosService {
         MAX_REPEATS_PER_USER,
         `You can keep at most ${MAX_REPEATS_PER_USER} repeating tasks.`,
         (tx) => tx.todoRepeat.count({ where: { userId, endsOn: null } }),
-        (tx) => tx.todoRepeat.create({ data: { userId, ...fields, text: item.text, priority: item.priority, dueTime: item.dueTime, startsOn: day, filledThrough: day } }),
+        (tx) => tx.todoRepeat.create({ data: { userId, ...fields, text: item.text, priority: item.priority, dueTime: item.dueTime, remindBefore, startsOn: day, filledThrough: day } }),
       );
       await this.prisma.todoItem.update({ where: { id: item.id }, data: { repeatId: created.id } });
     }
@@ -301,7 +308,7 @@ export class TodosService {
         const list = await this.findOrCreateList(userId, day);
         if ((await this.prisma.todoItem.count({ where: { listId: list.id } })) >= MAX_ITEMS_PER_LIST) continue;
         await this.prisma.todoItem.createMany({
-          data: [{ listId: list.id, text: repeat.text, priority: repeat.priority, dueTime: repeat.dueTime, repeatId: repeat.id }],
+          data: [{ listId: list.id, text: repeat.text, priority: repeat.priority, dueTime: repeat.dueTime, remindBefore: repeat.remindBefore, repeatId: repeat.id }],
           skipDuplicates: true,
         });
       }
