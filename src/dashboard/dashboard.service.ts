@@ -4,6 +4,7 @@ import { AnalyticsService } from '../analytics/analytics.service.js';
 import { dhakaDateKey } from '../common/dhaka.js';
 import { AdminRole, END_USER_WHERE } from '../common/roles.js';
 import { requesterNames } from '../admin-feed/requester-names.js';
+import { auditReason, withEntityLabels } from '../audit-logs/audit-entity-labels.js';
 import { SystemHealthService } from '../health/system-health.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { RevenueService } from '../revenue/revenue.service.js';
@@ -18,6 +19,7 @@ const UNSOLVED = { status: { notIn: ['RESOLVED', 'CLOSED'] } } satisfies Prisma.
 const NEWEST_MESSAGE = { where: { isInternal: false }, orderBy: { createdAt: 'desc' }, take: 1, select: { senderType: true, createdAt: true } } as const;
 // The support team's goal: an answer within a day.
 const REPLY_GOAL_MS = DAY_MS;
+const SIGN_IN_ACTIONS = ['ADMIN_LOGIN'];
 // Every customer who signed up: a live workspace, or purged (no workspaces
 // left) -- the Users list's "All" tab.
 const SIGNED_UP: Prisma.UserWhereInput = { ...END_USER_WHERE, OR: [{ ownedBusinesses: { some: { deletedAt: null } } }, { status: UserStatus.DELETED }] };
@@ -174,7 +176,14 @@ export class DashboardService {
       this.prisma.errorLog.count({ where: { resolved: false, createdAt: { gte: dayAgo } } }),
       this.prisma.errorLog.count({ where: { resolved: false, createdAt: { gte: dayAgo }, severity: { in: HIGH } } }),
       this.prisma.backupRecord.findFirst({ where: { status: 'SUCCESS' }, orderBy: { completedAt: 'desc' } }),
-      this.prisma.auditLog.findMany({ take: 6, orderBy: { createdAt: 'desc' }, include: { adminUser: { select: { name: true } } } }),
+      // Changes only: a run of sign-ins would push them off the card (the
+      // audit log still lists every sign-in).
+      this.prisma.auditLog.findMany({
+        where: { action: { notIn: SIGN_IN_ACTIONS } },
+        take: 6,
+        orderBy: { createdAt: 'desc' },
+        include: { adminUser: { select: { name: true, role: true } } },
+      }),
       this.health.status(),
     ]);
     const backup = lastBackup ? { completedAt: lastBackup.completedAt, sizeMb: lastBackup.sizeMb } : null;
@@ -183,12 +192,17 @@ export class DashboardService {
       securityFlags: { open: flagsOpen, high: flagsHigh },
       errors24h,
       lastBackup: backup,
-      recentAuditLogs: recentAuditLogs.map((log) => ({
+      // entityLabel names the record ("Yearly Pro", a payer, a ticket's
+      // subject); adminRole colours the avatar; reason is what the admin typed.
+      recentAuditLogs: (await withEntityLabels(this.prisma, recentAuditLogs)).map((log) => ({
         id: log.id,
         action: log.action,
         entityType: log.entityType,
         entityId: log.entityId,
+        entityLabel: log.entityLabel,
         adminName: log.adminUser.name,
+        adminRole: log.adminUser.role,
+        reason: auditReason(log.newValue),
         createdAt: log.createdAt,
       })),
       system: {

@@ -1,5 +1,5 @@
 import type { PrismaService } from '../prisma/prisma.service.js';
-import { withEntityLabels } from './audit-entity-labels.js';
+import { auditReason, withEntityLabels } from './audit-entity-labels.js';
 
 // A table that answers `findMany({ where: { id: { in } } })` and counts reads.
 const table = (rows: Array<Record<string, unknown>>) => {
@@ -44,5 +44,15 @@ describe('withEntityLabels', () => {
     // User and AdminUser are both read from the one identity table.
     expect(tables.user.reads.count).toBe(2);
     expect(tables.subscriptionPlan.reads.count).toBe(1);
+  });
+});
+
+describe('auditReason', () => {
+  it('reads the reason an admin typed, and nothing from rows without one', () => {
+    expect(auditReason({ status: 'SUSPENDED', reason: 'Spam invites' })).toBe('Spam invites');
+    expect(auditReason({ reason: '  ' })).toBeNull();
+    expect(auditReason({ reason: 42 })).toBeNull();
+    expect(auditReason(['reason'])).toBeNull();
+    expect(auditReason(null)).toBeNull();
   });
 });

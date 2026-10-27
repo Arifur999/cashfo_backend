@@ -1,4 +1,5 @@
 import { payerIdOf, requesterNames } from '../admin-feed/requester-names.js';
+import type { Prisma } from '@prisma/client';
 import type { PrismaService } from '../prisma/prisma.service.js';
 
 type Labeler = (prisma: PrismaService, ids: string[]) => Promise<Array<{ id: string; label: string }>>;
@@ -62,6 +63,14 @@ const LABELERS: Record<string, Labeler> = {
     });
   },
 };
+
+// The reason an admin typed (suspend, plan change, refund), from the audit
+// row's newValue: enough for a one-line history without the whole row.
+export function auditReason(newValue: Prisma.JsonValue | null | undefined): string | null {
+  if (!newValue || typeof newValue !== 'object' || Array.isArray(newValue)) return null;
+  const reason = newValue.reason;
+  return typeof reason === 'string' && reason.trim() ? reason : null;
+}
 
 export interface AuditRecordRef {
   entityType: string;

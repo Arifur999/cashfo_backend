@@ -117,4 +117,18 @@ describe('DashboardService.summary', () => {
     expect(summary.attention.ticketsNoReply).toBeNull();
     expect(summary.system).toBeNull();
   });
+
+  it("names what each recent change was on, who made it and why, leaving sign-ins out", async () => {
+    const { service, prisma } = setup();
+    const at = new Date('2026-10-02T05:00:00.000Z');
+    prisma.auditLog.findMany.mockResolvedValue([
+      { id: 'l1', action: 'USER_SUSPENDED', entityType: 'User', entityId: 'u-abir', newValue: { reason: 'Spam invites' }, createdAt: at, adminUser: { name: 'Imran', role: 'SUPPORT_ADMIN' } },
+    ]);
+    Object.assign(prisma.user, { findMany: vi.fn().mockResolvedValue([{ id: 'u-abir', name: 'Abir Hasan', createdAt: at }]) });
+    const summary = await service.summary({ id: 'admin-1', role: 'SUPER_ADMIN' });
+    expect(prisma.auditLog.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { action: { notIn: ['ADMIN_LOGIN'] } } }));
+    expect(summary.recentAuditLogs).toEqual([
+      expect.objectContaining({ id: 'l1', entityLabel: 'Abir Hasan', adminName: 'Imran', adminRole: 'SUPPORT_ADMIN', reason: 'Spam invites' }),
+    ]);
+  });
 });

@@ -3,6 +3,7 @@ import { BillingCycle, Prisma, UserStatus } from '@prisma/client';
 import { AccountDeletionService } from '../account-deletion/account-deletion.service.js';
 import { AccountExportService } from '../account-export/account-export.service.js';
 import { AccountsService } from '../accounts/accounts.service.js';
+import { auditReason } from '../audit-logs/audit-entity-labels.js';
 import { AuthSessionsService } from '../auth/auth-sessions.service.js';
 import { CredentialsService } from '../auth/credentials.service.js';
 import { SubscriptionsService } from '../billing/subscriptions.service.js';
@@ -22,12 +23,6 @@ const MS_PER_DAY = 24 * 60 * 60 * 1000;
 function trialEndsAt(subscription: { status: string; trialEndsAt: Date | null } | null, now = new Date()): Date | null {
   if (subscription?.status !== 'TRIALING' || !subscription.trialEndsAt) return null;
   return subscription.trialEndsAt > now ? subscription.trialEndsAt : null;
-}
-
-function auditReason(newValue: Prisma.JsonValue): string | null {
-  if (!newValue || typeof newValue !== 'object' || Array.isArray(newValue)) return null;
-  const reason = newValue.reason;
-  return typeof reason === 'string' && reason.trim() ? reason : null;
 }
 
 const OWNER_LIST_INCLUDE = {
