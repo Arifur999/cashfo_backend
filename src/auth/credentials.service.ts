@@ -37,5 +37,9 @@ export class CredentialsService {
       update: { password: passwordHash },
     });
     await db.user.update({ where: { id: userId }, data: { passwordChangedAt: new Date() } });
+    // A new password -- changed, reset by link, or handed out by an admin --
+    // also ends every "don't ask again on this computer" for two-step
+    // sign-in: whoever had the old one gets asked for the code again.
+    await db.trustedDevice.deleteMany({ where: { userId } });
   }
 }

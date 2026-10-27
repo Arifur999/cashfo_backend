@@ -14,6 +14,9 @@ const where = (ids: string[]) => ({ id: { in: ids } });
 const LABELERS: Record<string, Labeler> = {
   AdminUser: async (prisma, ids) => named(await prisma.user.findMany({ where: where(ids), select: { id: true, name: true } })),
   User: async (prisma, ids) => named(await prisma.user.findMany({ where: where(ids), select: { id: true, name: true } })),
+  // An admin invite answers with the address it went to.
+  AdminInvite: async (prisma, ids) =>
+    (await prisma.adminInvite.findMany({ where: where(ids), select: { id: true, email: true } })).map((row) => ({ id: row.id, label: row.email })),
   PlatformUser: async (prisma, ids) => named(await prisma.platformUser.findMany({ where: where(ids), select: { id: true, name: true } })),
   Business: async (prisma, ids) => named(await prisma.business.findMany({ where: where(ids), select: { id: true, name: true } })),
   SubscriptionPlan: async (prisma, ids) => named(await prisma.subscriptionPlan.findMany({ where: where(ids), select: { id: true, name: true } })),

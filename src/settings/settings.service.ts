@@ -36,6 +36,9 @@ const DEFAULTS = {
   billing_grace_days: 3,
   // Hours an unpaid checkout stays open.
   billing_checkout_hours: 48,
+  // Security > Admin team > "Require it for everyone": every admin must
+  // use two-step sign-in; one without it sets it up before getting in.
+  admin_two_step_required: false,
 } as const;
 
 const KEY_TO_FIELD: Record<string, keyof PlatformSettings> = {
@@ -50,6 +53,7 @@ const KEY_TO_FIELD: Record<string, keyof PlatformSettings> = {
   billing_manual_instructions_bn: 'billingManualInstructionsBn',
   billing_grace_days: 'billingGraceDays',
   billing_checkout_hours: 'billingCheckoutHours',
+  admin_two_step_required: 'adminTwoStepRequired',
 };
 
 export interface PlatformSettings {
@@ -64,6 +68,7 @@ export interface PlatformSettings {
   billingManualInstructionsBn: string;
   billingGraceDays: number;
   billingCheckoutHours: number;
+  adminTwoStepRequired: boolean;
 }
 
 // The invited friend's first-payment discount, for checkout prices.
@@ -112,6 +117,7 @@ export class SettingsService {
       billingManualInstructionsBn: (byKey.get('billing_manual_instructions_bn') as string | undefined) || DEFAULTS.billing_manual_instructions_bn,
       billingGraceDays: (byKey.get('billing_grace_days') as number | undefined) ?? DEFAULTS.billing_grace_days,
       billingCheckoutHours: (byKey.get('billing_checkout_hours') as number | undefined) ?? DEFAULTS.billing_checkout_hours,
+      adminTwoStepRequired: (byKey.get('admin_two_step_required') as boolean | undefined) ?? DEFAULTS.admin_two_step_required,
     };
   }
 
@@ -206,6 +212,7 @@ export class SettingsService {
     if (dto.billingManualInstructionsBn !== undefined) updates.push(['billing_manual_instructions_bn', dto.billingManualInstructionsBn]);
     if (dto.billingGraceDays !== undefined) updates.push(['billing_grace_days', dto.billingGraceDays]);
     if (dto.billingCheckoutHours !== undefined) updates.push(['billing_checkout_hours', dto.billingCheckoutHours]);
+    if (dto.adminTwoStepRequired !== undefined) updates.push(['admin_two_step_required', dto.adminTwoStepRequired]);
 
     // Every field and its audit entry together: a failure half-way used to
     // leave some settings changed with no record of who changed them.

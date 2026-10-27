@@ -70,7 +70,7 @@ export class UserAuthController {
   @UseFilters(LoginRateLimitFilter)
   @Post('login')
   login(@Body() dto: LoginDto, @Req() req: Request) {
-    return this.userAuthService.login(dto, this.resolveClientInfo(req));
+    return this.userAuthService.login(dto, this.resolveClientInfo(req), req.headers['x-trusted-device']);
   }
 
   // The second half of Google sign-in: the better-auth session cookie the
@@ -78,7 +78,7 @@ export class UserAuthController {
   @Throttle({ default: { limit: 10, ttl: 60 * 1000 } })
   @Post('session/exchange')
   exchangeSession(@Req() req: Request, @Body() dto: SessionExchangeDto) {
-    return this.userAuthService.exchangeSession(req.headers.cookie, this.resolveClientInfo(req), dto.referralCode);
+    return this.userAuthService.exchangeSession(req.headers.cookie, this.resolveClientInfo(req), dto.referralCode, req.headers['x-trusted-device']);
   }
 
   @Post('refresh')

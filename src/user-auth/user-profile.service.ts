@@ -46,6 +46,8 @@ export class UserProfileService {
       // False for a Google-only account: Settings offers to set a password
       // instead of changing one.
       hasPassword: await this.credentials.has(user.id),
+      // Two-step sign-in with an authenticator app (Settings > Security).
+      twoFactorEnabled: Boolean((await this.prisma.twoFactor.findUnique({ where: { userId: user.id }, select: { enabledAt: true } }))?.enabledAt),
       businesses: memberships.map((m) => ({
         id: m.business.id,
         name: m.business.name,

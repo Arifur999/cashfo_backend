@@ -7,6 +7,7 @@ import { CredentialsService } from '../auth/credentials.service.js';
 import { SessionTokensService } from '../auth/session-tokens.service.js';
 import { MailService } from '../mail/mail.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { TwoStepService } from '../two-step/two-step.service.js';
 import { ChangePasswordDto } from './dto/change-password.dto.js';
 import { LoginDto } from './dto/login.dto.js';
 import { RegisterDto } from './dto/register.dto.js';
@@ -28,6 +29,7 @@ export class UserAuthService {
     private readonly tokens: SessionTokensService,
     private readonly devices: UserSessionsService,
     private readonly provisioning: UserProvisioningService,
+    private readonly twoStep: TwoStepService,
   ) {}
 
   async register(dto: RegisterDto, client: ClientInfo) {
@@ -52,7 +54,9 @@ export class UserAuthService {
     return this.signedInResponse(user, signedIn.sessionId, client, defaultBusinessId);
   }
 
-  async login(dto: LoginDto, client: ClientInfo) {
+  // trustedDevices: the x-trusted-device header the frontend forwards from
+  // its cookies, which lets a computer trusted for 30 days skip the code.
+  async login(dto: LoginDto, client: ClientInfo, trustedDevices?: string | string[]) {
     const user = await this.prisma.user.findUnique({ where: { email: dto.email } });
 
     // DELETED is treated the same as "no account" -- a soft-deleted account
@@ -76,23 +80,17 @@ export class UserAuthService {
       throw new UnauthorizedException('Invalid email or password');
     }
 
-    await this.prisma.$transaction([
-      this.prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } }),
-      this.prisma.loginAttempt.create({
-        data: { email: dto.email, ipAddress: client.ipAddress ?? 'unknown', userAgent: client.userAgent, success: true },
-      }),
-    ]);
-
-    // Also completes an account created elsewhere that has no workspace yet.
-    const defaultBusinessId = await this.provisioning.ensureDefaultWorkspace(user.id);
-    return this.signedInResponse(user, signedIn.sessionId, client, defaultBusinessId);
+    // Two-step sign-in: the code comes before any token.
+    const pending = await this.twoStep.gate(user, signedIn.sessionId, 'user', trustedDevices);
+    if (pending) return pending;
+    return this.finishSignIn(user, signedIn.sessionId, client);
   }
 
   // Google sign-in ends on better-auth's callback, which leaves a session
   // cookie in the browser. The frontend forwards that cookie here and gets
   // the usual token pair, bound to that same session. An admin's session is
   // refused, not ended, so the frontend can exchange it on the admin side.
-  async exchangeSession(cookieHeader: string | undefined, client: ClientInfo, referralCode?: string) {
+  async exchangeSession(cookieHeader: string | undefined, client: ClientInfo, referralCode?: string, trustedDevices?: string | string[]) {
     const signedIn = await this.sessions.fromCookie(cookieHeader);
     if (!signedIn) {
       throw new UnauthorizedException('No signed-in session to exchange');
@@ -105,16 +103,26 @@ export class UserAuthService {
       throw new ForbiddenException('Your account has been suspended. Contact support for assistance.');
     }
 
+    const pending = await this.twoStep.gate(user, signedIn.sessionId, 'user', trustedDevices);
+    if (pending) return pending;
+    // A first Google sign-in is also the signup: finishing it creates the
+    // workspace and records the referral the invite link carried.
+    return this.finishSignIn(user, signedIn.sessionId, client, referralCode);
+  }
+
+  // Shared by every completed sign-in (password, Google, the second step):
+  // stamps it, writes the login history, makes sure the account has its
+  // workspace, and issues the tokens.
+  async finishSignIn(user: User, sessionId: string, client: ClientInfo, referralCode?: string) {
     await this.prisma.$transaction([
       this.prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } }),
       this.prisma.loginAttempt.create({
         data: { email: user.email, ipAddress: client.ipAddress ?? 'unknown', userAgent: client.userAgent, success: true },
       }),
     ]);
-    // A first Google sign-in is also the signup: this creates the workspace
-    // and records the referral the invite link carried.
-    const defaultBusinessId = await this.provisioning.ensureDefaultWorkspace(user.id, { referralCode });
-    return this.signedInResponse(user, signedIn.sessionId, client, defaultBusinessId);
+    // Also completes an account created elsewhere that has no workspace yet.
+    const defaultBusinessId = await this.provisioning.ensureDefaultWorkspace(user.id, referralCode ? { referralCode } : undefined);
+    return this.signedInResponse(user, sessionId, client, defaultBusinessId);
   }
 
   // Shared by register/login/resetPassword: records the device for Device
@@ -271,6 +279,10 @@ export class UserAuthService {
 
     await this.devices.endAll(user.id);
     const sessionId = await this.sessions.create(user.id, client);
+    // With two-step on, the new password alone doesn't sign in: the reset
+    // ended every trusted computer, so the code is asked for.
+    const pending = await this.twoStep.gate(user, sessionId, 'user');
+    if (pending) return pending;
     const defaultBusinessId = await this.provisioning.ensureDefaultWorkspace(user.id);
     return this.signedInResponse(user, sessionId, client, defaultBusinessId);
   }

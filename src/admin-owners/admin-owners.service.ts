@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { BillingCycle, Prisma, UserStatus } from '@prisma/client';
 import { AccountsService } from '../accounts/accounts.service.js';
 import { AuthSessionsService } from '../auth/auth-sessions.service.js';
@@ -7,6 +7,7 @@ import { SubscriptionsService } from '../billing/subscriptions.service.js';
 import { END_USER_WHERE } from '../common/roles.js';
 import { generateTempPassword } from '../common/temp-password.js';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { TwoStepService } from '../two-step/two-step.service.js';
 import { ChangeOwnerPlanDto } from './dto/change-owner-plan.dto.js';
 import { ListOwnersQueryDto } from './dto/list-owners-query.dto.js';
 import { SuspendOwnerDto } from './dto/suspend-owner.dto.js';
@@ -26,6 +27,7 @@ export class AdminOwnersService {
     private readonly sessions: AuthSessionsService,
     private readonly credentials: CredentialsService,
     private readonly subscriptions?: SubscriptionsService,
+    private readonly twoStep?: TwoStepService,
   ) {}
 
   // A temporary password for a customer who can't get in, shown to the
@@ -53,6 +55,24 @@ export class AdminOwnersService {
     });
 
     return { temporaryPassword };
+  }
+
+  // A customer who lost their phone and their backup codes: a super admin
+  // turns two-step sign-in off, so the password alone signs in again. The
+  // customer gets a bell row and an email; the audit log keeps who did it.
+  async disableTwoStep(userId: string, adminId: string, ipAddress?: string) {
+    const owner = await this.prisma.user.findUnique({ where: { id: userId, ...END_USER_WHERE }, select: { id: true } });
+    if (!owner) {
+      throw new NotFoundException('Owner not found');
+    }
+    if (!(await this.twoStep!.removeAll(userId))) {
+      throw new ConflictException('Two-step sign-in is already off for this customer.');
+    }
+    await this.prisma.auditLog.create({
+      data: { adminUserId: adminId, action: 'OWNER_TWO_STEP_DISABLED', entityType: 'User', entityId: userId, ipAddress },
+    });
+    await this.twoStep!.notifyCustomer(userId, 'OFF_BY_SUPPORT');
+    return { success: true };
   }
 
   async list(query: ListOwnersQueryDto) {
@@ -155,6 +175,7 @@ export class AdminOwnersService {
       include: {
         ownedBusinesses: { where: { deletedAt: null }, include: { plan: true } },
         subscription: { include: { plan: { select: { id: true, name: true, billingCycle: true, price: true } } } },
+        twoFactor: { select: { enabledAt: true } },
       },
     });
     if (!owner) throw new NotFoundException('Owner not found');
@@ -178,6 +199,8 @@ export class AdminOwnersService {
       status: owner.status,
       createdAt: owner.createdAt,
       lastLoginAt: owner.lastLoginAt,
+      // Two-step sign-in with an authenticator app (Settings > Security).
+      twoFactorEnabled: Boolean(owner.twoFactor?.enabledAt),
       businessId: business?.id ?? null,
       businessName: business?.name ?? null,
       // What kind of workspace this is, as on the list's rows.

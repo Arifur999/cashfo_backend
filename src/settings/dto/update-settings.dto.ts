@@ -59,4 +59,9 @@ export class UpdateSettingsDto {
   @Min(1)
   @Max(720)
   billingCheckoutHours?: number;
+
+  // Security > Admin team > "Require it for everyone" (two-step sign-in).
+  @IsOptional()
+  @IsBoolean()
+  adminTwoStepRequired?: boolean;
 }

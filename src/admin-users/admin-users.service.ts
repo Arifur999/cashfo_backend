@@ -4,6 +4,7 @@ import { CredentialsService } from '../auth/credentials.service.js';
 import { ADMIN_USER_WHERE } from '../common/roles.js';
 import { generateTempPassword } from '../common/temp-password.js';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { TwoStepService } from '../two-step/two-step.service.js';
 import { CreateAdminDto } from './dto/create-admin.dto.js';
 import { UpdateAdminDto } from './dto/update-admin.dto.js';
 
@@ -17,6 +18,7 @@ export class AdminUsersService {
     private readonly prisma: PrismaService,
     private readonly credentials: CredentialsService,
     private readonly sessions: AuthSessionsService,
+    private readonly twoStep: TwoStepService,
   ) {}
 
   // Minimal read used to populate "assign to admin" / filter dropdowns
@@ -30,12 +32,15 @@ export class AdminUsersService {
     });
   }
 
-  list() {
-    return this.prisma.user.findMany({
+  // Each admin with whether they use two-step sign-in (Admin team's
+  // "Two-step" column and "Only 2 of 5 admins use two-step sign-in").
+  async list() {
+    const admins = await this.prisma.user.findMany({
       where: ADMIN_USER_WHERE,
-      select: ADMIN_ACCOUNT_SELECT,
+      select: { ...ADMIN_ACCOUNT_SELECT, twoFactor: { select: { enabledAt: true } } },
       orderBy: { createdAt: 'asc' },
     });
+    return admins.map(({ twoFactor, ...admin }) => ({ ...admin, twoFactorEnabled: Boolean(twoFactor?.enabledAt) }));
   }
 
   async create(dto: CreateAdminDto, creatorId: string, ipAddress?: string) {
@@ -175,6 +180,55 @@ export class AdminUsersService {
     });
 
     return { temporaryPassword };
+  }
+
+  // AdminForgotPassword: "a super admin can set a new password for you" --
+  // one the super admin chooses (resetPassword above generates one). The
+  // admin is signed out everywhere; the password itself is never logged.
+  async setPassword(id: string, password: string, currentAdminId: string, ipAddress?: string) {
+    if (id === currentAdminId) {
+      throw new BadRequestException('Change your own password from My account.');
+    }
+    await this.requireAdmin(id);
+    await this.credentials.set(id, password);
+    await this.sessions.revokeAllForUser(id);
+    await this.prisma.auditLog.create({
+      data: {
+        adminUserId: currentAdminId,
+        action: 'ADMIN_PASSWORD_SET_BY_ADMIN',
+        entityType: 'AdminUser',
+        entityId: id,
+        newValue: { note: 'New password chosen by a super admin; value not logged.' },
+        ipAddress,
+      },
+    });
+    return { success: true };
+  }
+
+  // "Turn off two-step" for an admin who lost their phone and backup codes.
+  // Not for yourself (My account does that, with your password and a code).
+  // The admin is signed out everywhere; if two-step is required for every
+  // admin, their next sign-in sets it up again.
+  async disableTwoStep(id: string, currentAdminId: string, ipAddress?: string) {
+    if (id === currentAdminId) {
+      throw new BadRequestException('Turn off your own two-step sign-in from My account.');
+    }
+    await this.requireAdmin(id);
+    if (!(await this.twoStep.removeAll(id))) {
+      throw new ConflictException('Two-step sign-in is already off for this admin.');
+    }
+    await this.sessions.revokeAllForUser(id);
+    await this.prisma.auditLog.create({
+      data: {
+        adminUserId: currentAdminId,
+        action: 'ADMIN_TWO_STEP_DISABLED',
+        entityType: 'AdminUser',
+        entityId: id,
+        newValue: { by: 'super_admin' },
+        ipAddress,
+      },
+    });
+    return { success: true };
   }
 
   private async requireAdmin(id: string) {

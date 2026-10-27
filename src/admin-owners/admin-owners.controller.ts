@@ -59,6 +59,14 @@ export class AdminOwnersController {
     return this.adminOwnersService.changePlan(userId, dto, admin.id, req.ip);
   }
 
+  // Turns off two-step sign-in for a customer who lost their phone and
+  // backup codes. SUPER_ADMIN only, audited, and the customer is told.
+  @Roles(AdminRole.SUPER_ADMIN)
+  @Post(':userId/two-step/disable')
+  disableTwoStep(@Param('userId') userId: string, @CurrentAdmin() admin: RequestAdminUser, @Req() req: Request) {
+    return this.adminOwnersService.disableTwoStep(userId, admin.id, req.ip);
+  }
+
   // SUPER_ADMIN only -- this permanently wipes a real owner's business/
   // financial data, same bar as AdminUsersController's suspend/ban/reset-password.
   @Roles(AdminRole.SUPER_ADMIN)

@@ -7,6 +7,7 @@ import { AccountTemplatesModule } from './account-templates/account-templates.mo
 import { AccountsModule } from './accounts/accounts.module.js';
 import { AdminAuthModule } from './admin-auth/admin-auth.module.js';
 import { AdminFeedModule } from './admin-feed/admin-feed.module.js';
+import { AdminInvitesModule } from './admin-invites/admin-invites.module.js';
 import { AdminOwnersModule } from './admin-owners/admin-owners.module.js';
 import { AdminUsersModule } from './admin-users/admin-users.module.js';
 import { AdminWorkspacesModule } from './admin-workspaces/admin-workspaces.module.js';
@@ -60,6 +61,7 @@ import { TicketsModule } from './tickets/tickets.module.js';
 import { TodosModule } from './todos/todos.module.js';
 import { TransactionsModule } from './transactions/transactions.module.js';
 import { TranslationsModule } from './translations/translations.module.js';
+import { TwoStepModule } from './two-step/two-step.module.js';
 import { UserAuthModule } from './user-auth/user-auth.module.js';
 import { UserNotificationsModule } from './user-notifications/user-notifications.module.js';
 
@@ -79,10 +81,14 @@ import { UserNotificationsModule } from './user-notifications/user-notifications
     // The five-minute tidy-up timer other modules register jobs with.
     HousekeepingModule,
     AuthModule,
+    // Two-step sign-in (TOTP, backup codes, trusted computers), both sides.
+    TwoStepModule,
     BusinessAccessModule,
     HealthModule,
     AdminAuthModule,
     AdminUsersModule,
+    // Admin invites by email link, and the admin forgot-password email.
+    AdminInvitesModule,
     AdminWorkspacesModule,
     AdminOwnersModule,
     PlatformUsersModule,
