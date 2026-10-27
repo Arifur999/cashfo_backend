@@ -5,6 +5,7 @@ import {
   Delete,
   Get,
   Param,
+  ParseUUIDPipe,
   Patch,
   Post,
   Query,
@@ -27,7 +28,10 @@ import { RegisterDto } from './dto/register.dto.js';
 import { SessionExchangeDto } from './dto/session-exchange.dto.js';
 import { CheckResetTokenDto } from './dto/check-reset-token.dto.js';
 import { ResetPasswordDto } from './dto/reset-password.dto.js';
+import { ResetCodeDto } from './dto/reset-code.dto.js';
+import { UpdateAlertsDto } from './dto/update-alerts.dto.js';
 import { UpdateLanguageDto } from './dto/update-language.dto.js';
+import { UpdatePreferencesDto } from './dto/update-preferences.dto.js';
 import { UpdateProfileDto } from './dto/update-profile.dto.js';
 import { CurrentUser } from './decorators/current-user.decorator.js';
 import { LoginRateLimitFilter } from './filters/login-rate-limit.filter.js';
@@ -37,6 +41,7 @@ import { userAvatarMulterOptions } from './user-avatar-upload.js';
 import { UserAuthService } from './user-auth.service.js';
 import { UserProfileService } from './user-profile.service.js';
 import { UserSessionsService } from './user-sessions.service.js';
+import { SecurityAlertsService } from './security-alerts.service.js';
 import { ImgbbService } from '../uploads/imgbb.service.js';
 
 @Controller('api/auth')
@@ -46,6 +51,7 @@ export class UserAuthController {
     private readonly userProfileService: UserProfileService,
     private readonly userSessionsService: UserSessionsService,
     private readonly imgbbService: ImgbbService,
+    private readonly securityAlertsService: SecurityAlertsService,
   ) {}
 
   // req.ip already honours TRUST_PROXY, and the frontend forwards the
@@ -106,7 +112,21 @@ export class UserAuthController {
   @Throttle({ default: { limit: 5, ttl: 15 * 60 * 1000 } })
   @Post('reset-password')
   resetPassword(@Body() dto: ResetPasswordDto, @Req() req: Request) {
-    return this.userAuthService.resetPassword(dto.token, dto.newPassword, this.resolveClientInfo(req));
+    return this.userAuthService.resetPassword(dto.token, dto.newPassword, this.resolveClientInfo(req), { challengeId: dto.challengeId, code: dto.code });
+  }
+
+  // "Ask for a code before a password reset": the code that goes with the
+  // link. The code service itself keeps resends a minute apart, five at most.
+  @Throttle({ default: { limit: 5, ttl: 15 * 60 * 1000 } })
+  @Post('reset-password/code')
+  sendResetCode(@Body() dto: ResetCodeDto) {
+    return this.userAuthService.sendResetCode(dto.token);
+  }
+
+  @Throttle({ default: { limit: 5, ttl: 15 * 60 * 1000 } })
+  @Post('reset-password/code/:challengeId/resend')
+  resendResetCode(@Param('challengeId', ParseUUIDPipe) challengeId: string, @Body() dto: ResetCodeDto) {
+    return this.userAuthService.resendResetCode(dto.token, challengeId);
   }
 
   @Post('logout')
@@ -124,6 +144,13 @@ export class UserAuthController {
   @Patch('language')
   updateLanguage(@CurrentUser() user: RequestUser, @Body() dto: UpdateLanguageDto) {
     return this.userProfileService.updateLanguage(user.id, dto);
+  }
+
+  // Settings > App > Numbers and dates.
+  @UseGuards(UserAuthGuard)
+  @Patch('preferences')
+  updatePreferences(@CurrentUser() user: RequestUser, @Body() dto: UpdatePreferencesDto) {
+    return this.userProfileService.updatePreferences(user.id, dto);
   }
 
   @UseGuards(UserAuthGuard)
@@ -150,6 +177,19 @@ export class UserAuthController {
   @Post('change-password')
   changePassword(@CurrentUser() user: RequestUser, @Body() dto: ChangePasswordDto) {
     return this.userAuthService.changePassword(user.id, user.sessionId, dto);
+  }
+
+  // Settings > Security > Alerts.
+  @UseGuards(UserAuthGuard)
+  @Get('alerts')
+  alerts(@CurrentUser() user: RequestUser) {
+    return this.securityAlertsService.settings(user.id);
+  }
+
+  @UseGuards(UserAuthGuard)
+  @Patch('alerts')
+  updateAlerts(@CurrentUser() user: RequestUser, @Body() dto: UpdateAlertsDto) {
+    return this.securityAlertsService.updateSettings(user.id, dto);
   }
 
   @UseGuards(UserAuthGuard)

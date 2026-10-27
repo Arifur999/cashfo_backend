@@ -1,6 +1,8 @@
 import { Module } from '@nestjs/common';
 import { AccountsModule } from '../accounts/accounts.module.js';
+import { EmailVerificationModule } from '../email-verification/email-verification.module.js';
 import { MailModule } from '../mail/mail.module.js';
+import { OneTimeCodesModule } from '../one-time-codes/one-time-codes.module.js';
 import { SettingsModule } from '../settings/settings.module.js';
 import { UploadsModule } from '../uploads/uploads.module.js';
 import { UserAuthController } from './user-auth.controller.js';
@@ -8,6 +10,7 @@ import { UserAuthService } from './user-auth.service.js';
 import { UserProfileService } from './user-profile.service.js';
 import { UserProvisioningService } from './user-provisioning.service.js';
 import { UserSessionsService } from './user-sessions.service.js';
+import { SecurityAlertsService } from './security-alerts.service.js';
 import { LoginRateLimitFilter } from './filters/login-rate-limit.filter.js';
 import { UserAuthGuard } from './guards/user-auth.guard.js';
 
@@ -23,10 +26,14 @@ import { UserAuthGuard } from './guards/user-auth.guard.js';
   // referralCode. Deliberately NOT ReferralsModule itself (that would be
   // circular -- see UserProvisioningService's comment on this). MailModule:
   // MailService, for the welcome and password-reset emails.
-  imports: [AccountsModule, UploadsModule, SettingsModule, MailModule],
+  // EmailVerificationModule: the signup's verification email (sent from the
+  // first device row). OneTimeCodesModule: the emailed code a password reset
+  // asks for when the owner turned that on (Settings > Security > Alerts).
+  imports: [AccountsModule, UploadsModule, SettingsModule, MailModule, EmailVerificationModule, OneTimeCodesModule],
   controllers: [UserAuthController],
-  providers: [UserAuthService, UserProfileService, UserSessionsService, UserProvisioningService, UserAuthGuard, LoginRateLimitFilter],
+  providers: [UserAuthService, UserProfileService, UserSessionsService, UserProvisioningService, SecurityAlertsService, UserAuthGuard, LoginRateLimitFilter],
   // UserAuthService: the unified sign-in (SignInModule) hands end users to it.
-  exports: [UserAuthGuard, UserAuthService],
+  // SecurityAlertsService: a wrong two-step code counts as a failed try.
+  exports: [UserAuthGuard, UserAuthService, SecurityAlertsService],
 })
 export class UserAuthModule {}

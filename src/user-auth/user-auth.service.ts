@@ -2,19 +2,39 @@ import { BadRequestException, ConflictException, ForbiddenException, Injectable,
 import { ConfigService } from '@nestjs/config';
 import { Role, type User } from '@prisma/client';
 import { createHash, randomBytes } from 'crypto';
+import { AccountDeletionService } from '../account-deletion/account-deletion.service.js';
+import { isPurgeDue, isRestorable } from '../account-deletion/deletion-rules.js';
 import { AuthSessionsService, type ClientInfo } from '../auth/auth-sessions.service.js';
 import { CredentialsService } from '../auth/credentials.service.js';
 import { SessionTokensService } from '../auth/session-tokens.service.js';
 import { MailService } from '../mail/mail.service.js';
+import { CODE_MESSAGES } from '../one-time-codes/one-time-codes.js';
+import { OneTimeCodesService, type Challenge } from '../one-time-codes/one-time-codes.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { areSignupsOpen, SIGNUPS_CLOSED_MESSAGE, SIGNUPS_CLOSED_REASON } from '../settings/signups.js';
 import { TwoStepService } from '../two-step/two-step.service.js';
 import { ChangePasswordDto } from './dto/change-password.dto.js';
 import { LoginDto } from './dto/login.dto.js';
 import { RegisterDto } from './dto/register.dto.js';
+import { SecurityAlertsService } from './security-alerts.service.js';
 import { UserProvisioningService } from './user-provisioning.service.js';
 import { UserSessionsService } from './user-sessions.service.js';
 
 const INVALID_RESET_LINK = 'This reset link is invalid or has expired. Please request a new one.';
+
+// A refusal the reset page can act on by its reason.
+const resetRefusal = (reason: string, message: string, extra: Record<string, unknown> = {}) =>
+  new BadRequestException({ statusCode: 400, error: 'Bad Request', message, reason, ...extra });
+
+// What the emailed code confirms, worded for the code email.
+const RESET_CODE_ACTION = { en: 'reset your password', bn: 'পাসওয়ার্ড রিসেট' };
+
+// "Ask for a code before a password reset": the emailed code that goes
+// with the link (Settings > Security > Alerts).
+export interface ResetCodeProof {
+  challengeId?: string;
+  code?: string;
+}
 
 @Injectable()
 export class UserAuthService {
@@ -30,17 +50,30 @@ export class UserAuthService {
     private readonly devices: UserSessionsService,
     private readonly provisioning: UserProvisioningService,
     private readonly twoStep: TwoStepService,
+    private readonly deletion: AccountDeletionService,
+    private readonly codes: OneTimeCodesService,
+    private readonly alerts: SecurityAlertsService,
   ) {}
 
+  // An account that may still sign in: active, or waiting out the 30 days
+  // after "Delete my account" (signing in restores it).
+  private canSignIn(user: Pick<User, 'status' | 'deletionScheduledFor'>, now = new Date()): boolean {
+    return user.status === 'ACTIVE' || isRestorable(user, now);
+  }
+
   async register(dto: RegisterDto, client: ClientInfo) {
+    // Settings "Allow new sign-ups" off: refuse before anything is created.
+    if (!(await areSignupsOpen(this.prisma))) {
+      throw new ForbiddenException({ statusCode: 403, error: 'Forbidden', message: SIGNUPS_CLOSED_MESSAGE, reason: SIGNUPS_CLOSED_REASON });
+    }
     const existing = await this.prisma.user.findUnique({ where: { email: dto.email } });
     if (existing) {
       throw new ConflictException('An account with this email already exists');
     }
 
     // better-auth creates the account and its credential, then signs it in.
-    // emailVerifiedAt stays null -- an email verification flow is still a
-    // separate future feature.
+    // emailVerifiedAt stays null until the link from the verification email
+    // (sent after the first sign-in, SecurityAlertsService) is opened.
     const signedIn = await this.sessions.signUpWithPassword(
       { name: dto.name, email: dto.email, password: dto.password, phone: dto.phone, preferredLanguage: dto.preferredLanguage },
       client,
@@ -69,6 +102,14 @@ export class UserAuthService {
       await this.recordLoginAttempt(dto.email, client, false, 'account_not_found');
       throw new UnauthorizedException('Invalid email or password');
     }
+    // Deleted and its 30 days are up: purge it now, then answer as if it
+    // never existed. Inside the 30 days the sign-in goes on and restores it
+    // (finishSignIn), only once the password -- and the code -- check out.
+    if (isPurgeDue(user, new Date())) {
+      await this.deletion.purge(user.id);
+      await this.recordLoginAttempt(dto.email, client, false, 'account_not_found');
+      throw new UnauthorizedException('Invalid email or password');
+    }
     if (user.status === 'SUSPENDED') {
       await this.recordLoginAttempt(dto.email, client, false, 'account_suspended');
       throw new ForbiddenException('Your account has been suspended. Contact support for assistance.');
@@ -77,6 +118,9 @@ export class UserAuthService {
     const signedIn = await this.sessions.signInWithPassword(dto.email, dto.password, client);
     if (!signedIn) {
       await this.recordLoginAttempt(dto.email, client, false, 'invalid_password');
+      // "Warn me about unusual sign-in tries". Not awaited: the answer must
+      // stay the same, and as quick, as for an email with no account.
+      this.alerts.afterFailedTry(dto.email, client);
       throw new UnauthorizedException('Invalid email or password');
     }
 
@@ -99,7 +143,12 @@ export class UserAuthService {
     if (user.role !== Role.USER) {
       throw new ForbiddenException('This account signs in to the admin panel');
     }
-    if (user.status !== 'ACTIVE') {
+    if (isPurgeDue(user, new Date())) {
+      await this.sessions.revoke(signedIn.sessionId);
+      await this.deletion.purge(user.id);
+      throw new UnauthorizedException('No signed-in session to exchange');
+    }
+    if (!this.canSignIn(user)) {
       throw new ForbiddenException('Your account has been suspended. Contact support for assistance.');
     }
 
@@ -114,6 +163,9 @@ export class UserAuthService {
   // stamps it, writes the login history, makes sure the account has its
   // workspace, and issues the tokens.
   async finishSignIn(user: User, sessionId: string, client: ClientInfo, referralCode?: string) {
+    // A sign-in inside the 30 days after "Delete my account" restores the
+    // account; one after them purges it and is refused.
+    const { restored } = await this.deletion.restoreOnSignIn(user);
     await this.prisma.$transaction([
       this.prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } }),
       this.prisma.loginAttempt.create({
@@ -122,17 +174,20 @@ export class UserAuthService {
     ]);
     // Also completes an account created elsewhere that has no workspace yet.
     const defaultBusinessId = await this.provisioning.ensureDefaultWorkspace(user.id, referralCode ? { referralCode } : undefined);
-    return this.signedInResponse(user, sessionId, client, defaultBusinessId);
+    return this.signedInResponse(user, sessionId, client, defaultBusinessId, restored);
   }
 
   // Shared by register/login/resetPassword: records the device for Device
   // Management and issues the token pair bound to its session.
-  private async signedInResponse(user: User, sessionId: string, client: ClientInfo, defaultBusinessId: string) {
+  // restoredFromDeletion: this sign-in brought back an account that was
+  // waiting to be deleted, so the app can say so.
+  private async signedInResponse(user: User, sessionId: string, client: ClientInfo, defaultBusinessId: string, restoredFromDeletion = false) {
     await this.devices.record(user.id, sessionId, client);
     return {
       ...this.tokens.issue('user', { sub: user.id, sid: sessionId, role: user.role }),
       user: { id: user.id, name: user.name, email: user.email, preferredLanguage: user.preferredLanguage },
       defaultBusinessId,
+      ...(restoredFromDeletion && { restoredFromDeletion: true }),
     };
   }
 
@@ -198,7 +253,9 @@ export class UserAuthService {
   async forgotPassword(email: string): Promise<{ success: true }> {
     const user = await this.prisma.user.findUnique({ where: { email } });
 
-    if (user && user.status === 'ACTIVE' && user.role === Role.USER) {
+    // An account waiting to be deleted may reset too: a forgotten password
+    // must not cost the owner their account. The reset restores it.
+    if (user && this.canSignIn(user) && user.role === Role.USER) {
       const rawToken = randomBytes(32).toString('hex');
       // sha256, not bcrypt -- the token already carries 256 bits of its own
       // entropy (unlike a human password), so a deterministic hash is fine
@@ -236,21 +293,68 @@ export class UserAuthService {
   // Whether a reset link still works, without using it, so the reset page
   // can say an expired or used link up front instead of after the new
   // password is typed twice. The same rules as resetPassword(); only a
-  // yes or no comes back.
-  async checkResetToken(rawToken: string): Promise<{ valid: boolean }> {
+  // yes or no comes back, and whether the page must ask for the emailed
+  // code too (codeRequired).
+  async checkResetToken(rawToken: string): Promise<{ valid: boolean; codeRequired: boolean }> {
     const tokenHash = createHash('sha256').update(rawToken).digest('hex');
     const resetToken = await this.prisma.passwordResetToken.findUnique({ where: { tokenHash }, select: { usedAt: true, expiresAt: true, userId: true } });
-    if (!resetToken || resetToken.usedAt || resetToken.expiresAt < new Date()) return { valid: false };
-    const owner = await this.prisma.user.findUnique({ where: { id: resetToken.userId }, select: { status: true, role: true } });
-    return { valid: owner?.status === 'ACTIVE' && owner.role === Role.USER };
+    if (!resetToken || resetToken.usedAt || resetToken.expiresAt < new Date()) return { valid: false, codeRequired: false };
+    const owner = await this.prisma.user.findUnique({
+      where: { id: resetToken.userId },
+      select: { status: true, role: true, deletionScheduledFor: true, askCodeBeforeReset: true },
+    });
+    const valid = !!owner && this.canSignIn(owner) && owner.role === Role.USER;
+    return { valid, codeRequired: valid && owner.askCodeBeforeReset };
   }
 
-  async resetPassword(rawToken: string, newPassword: string, client: ClientInfo) {
+  // "Ask for a code before a password reset" is on: the link alone isn't
+  // enough, a six-digit code goes to the account's email too. The code is
+  // bound to this link (payload.resetTokenId).
+  async sendResetCode(rawToken: string): Promise<Challenge> {
+    const { resetToken, owner } = await this.openResetLink(rawToken);
+    if (!owner.askCodeBeforeReset) throw resetRefusal('CODE_NOT_REQUIRED', 'This reset link does not need a code.');
+    return this.codes.issue(owner, 'PASSWORD_RESET', { resetTokenId: resetToken.id }, RESET_CODE_ACTION);
+  }
+
+  async resendResetCode(rawToken: string, challengeId: string): Promise<Challenge> {
+    const { resetToken, owner } = await this.openResetLink(rawToken);
+    const row = await this.prisma.oneTimeCode.findFirst({ where: { id: challengeId, userId: owner.id, purpose: 'PASSWORD_RESET' }, select: { payload: true } });
+    if (row && resetTokenIdOf(row.payload) !== resetToken.id) throw resetRefusal('CODE_EXPIRED', CODE_MESSAGES.CODE_EXPIRED);
+    return this.codes.resend(owner, challengeId, 'PASSWORD_RESET', RESET_CODE_ACTION);
+  }
+
+  // A reset link that still works, and its owner: the same rules as
+  // checkResetToken(), refused with reason LINK_INVALID.
+  private async openResetLink(rawToken: string) {
+    const tokenHash = createHash('sha256').update(rawToken).digest('hex');
+    const resetToken = await this.prisma.passwordResetToken.findUnique({ where: { tokenHash } });
+    if (!resetToken || resetToken.usedAt || resetToken.expiresAt < new Date()) throw resetRefusal('LINK_INVALID', INVALID_RESET_LINK);
+    const owner = await this.prisma.user.findUnique({ where: { id: resetToken.userId } });
+    if (!owner || !this.canSignIn(owner) || owner.role !== Role.USER) throw resetRefusal('LINK_INVALID', INVALID_RESET_LINK);
+    return { resetToken, owner };
+  }
+
+  // When the owner asks for a code before a reset: checks the typed one
+  // (the try counts) and that it was sent for this very link. Returns the
+  // code's id, to use up with the link, or null when no code is needed.
+  private async checkResetCode(resetToken: { id: string; userId: string }, proof: ResetCodeProof): Promise<string | null> {
+    const owner = await this.prisma.user.findUnique({ where: { id: resetToken.userId }, select: { askCodeBeforeReset: true } });
+    if (!owner?.askCodeBeforeReset) return null;
+    if (!proof.challengeId || !proof.code) throw resetRefusal('CODE_REQUIRED', 'Enter the code we emailed you to reset your password.');
+    const row = await this.codes.verify(resetToken.userId, proof.challengeId, 'PASSWORD_RESET', proof.code);
+    if (resetTokenIdOf(row.payload) !== resetToken.id) throw resetRefusal('CODE_EXPIRED', CODE_MESSAGES.CODE_EXPIRED);
+    return row.id;
+  }
+
+  async resetPassword(rawToken: string, newPassword: string, client: ClientInfo, proof: ResetCodeProof = {}) {
     const tokenHash = createHash('sha256').update(rawToken).digest('hex');
     const resetToken = await this.prisma.passwordResetToken.findUnique({ where: { tokenHash } });
     if (!resetToken || resetToken.usedAt || resetToken.expiresAt < new Date()) {
       throw new BadRequestException(INVALID_RESET_LINK);
     }
+    // Checked before the link is claimed below, so a wrong code doesn't
+    // use the link up.
+    const codeId = await this.checkResetCode(resetToken, proof);
 
     const user = await this.prisma.$transaction(async (tx) => {
       // Claim the token first, conditionally: two requests racing with the
@@ -270,9 +374,11 @@ export class UserAuthService {
       // log the user in, bypassing login()'s status checks. Same generic
       // message, so the link doesn't reveal the account's status.
       const owner = await tx.user.findUnique({ where: { id: resetToken.userId } });
-      if (owner?.status !== 'ACTIVE' || owner.role !== Role.USER) {
+      if (!owner || !this.canSignIn(owner) || owner.role !== Role.USER) {
         throw new BadRequestException(INVALID_RESET_LINK);
       }
+      // The code goes with the link: a double submit uses it once.
+      if (codeId && !(await this.codes.consume(tx, codeId))) throw resetRefusal('CODE_USED', CODE_MESSAGES.CODE_USED);
       await this.credentials.set(owner.id, newPassword, tx);
       return owner;
     });
@@ -283,7 +389,14 @@ export class UserAuthService {
     // ended every trusted computer, so the code is asked for.
     const pending = await this.twoStep.gate(user, sessionId, 'user');
     if (pending) return pending;
+    const { restored } = await this.deletion.restoreOnSignIn(user);
     const defaultBusinessId = await this.provisioning.ensureDefaultWorkspace(user.id);
-    return this.signedInResponse(user, sessionId, client, defaultBusinessId);
+    return this.signedInResponse(user, sessionId, client, defaultBusinessId, restored);
   }
+}
+
+// The reset link a password-reset code was sent for.
+function resetTokenIdOf(payload: unknown): string | null {
+  const value = payload && typeof payload === 'object' ? (payload as { resetTokenId?: unknown }).resetTokenId : null;
+  return typeof value === 'string' ? value : null;
 }

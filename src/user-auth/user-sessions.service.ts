@@ -1,7 +1,9 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { AuthSessionsService, type ClientInfo } from '../auth/auth-sessions.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { parseDeviceLabel } from './device-label.js';
+import { SecurityAlertsService } from './security-alerts.service.js';
 
 // Settings > Security: the devices an end user is signed in on, and their
 // login history. A device is a better-auth session -- which alone decides
@@ -13,16 +15,30 @@ export class UserSessionsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly sessions: AuthSessionsService,
+    private readonly alerts: SecurityAlertsService,
   ) {}
 
-  // Upsert: one session can be exchanged for tokens more than once (a
-  // reloaded Google sign-in page), and it is still one device.
+  // One session can be exchanged for tokens more than once (a reloaded
+  // Google sign-in page), and it is still one device: a second record only
+  // touches it. A row created here is a sign-in on a device, which the
+  // security alerts look at once the sign-in has answered (a new device;
+  // the signup's verification email).
   async record(userId: string, sessionId: string, { ipAddress, userAgent }: ClientInfo): Promise<void> {
-    await this.prisma.userSession.upsert({
-      where: { jti: sessionId },
-      create: { userId, jti: sessionId, deviceLabel: parseDeviceLabel(userAgent), ipAddress: ipAddress ?? 'unknown', userAgent },
-      update: { lastUsedAt: new Date() },
-    });
+    const existing = await this.prisma.userSession.findUnique({ where: { jti: sessionId }, select: { id: true } });
+    if (existing) {
+      await this.prisma.userSession.update({ where: { id: existing.id }, data: { lastUsedAt: new Date() } });
+      return;
+    }
+    try {
+      const created = await this.prisma.userSession.create({
+        data: { userId, jti: sessionId, deviceLabel: parseDeviceLabel(userAgent), ipAddress: ipAddress ?? 'unknown', userAgent },
+      });
+      this.alerts.afterNewSession(created);
+    } catch (error) {
+      // Two exchanges of the same session racing: the other one created it.
+      if (!(error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002')) throw error;
+      await this.prisma.userSession.updateMany({ where: { jti: sessionId }, data: { lastUsedAt: new Date() } });
+    }
   }
 
   async touch(sessionId: string): Promise<void> {

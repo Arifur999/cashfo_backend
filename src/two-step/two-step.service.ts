@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, HttpException, HttpStatus, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, HttpException, HttpStatus, Injectable, Logger, NotFoundException, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { Prisma, type TwoStepPurpose } from '@prisma/client';
@@ -11,6 +11,7 @@ import { MailService } from '../mail/mail.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { SettingsService } from '../settings/settings.service.js';
 import { parseDeviceLabel } from '../user-auth/device-label.js';
+import { SecurityAlertsService } from '../user-auth/security-alerts.service.js';
 import { generateTotpSecret, groupSecret, matchTotp, otpauthUrl } from './totp.js';
 import {
   CHALLENGE_TTL_MS,
@@ -104,6 +105,8 @@ export class TwoStepService {
     private readonly credentials: CredentialsService,
     private readonly settings: SettingsService,
     private readonly mail: MailService,
+    // A wrong code counts towards "Warn me about unusual sign-in tries".
+    @Optional() private readonly alerts?: SecurityAlertsService,
   ) {}
 
   // ---- Sign-in ----
@@ -273,6 +276,26 @@ export class TwoStepService {
     }
     if (!(await this.checkProof(userId, proof))) throw refuse(proof.backupCode ? 'BACKUP_CODE_WRONG' : 'CODE_WRONG', HttpStatus.BAD_REQUEST);
     await this.removeAll(userId);
+  }
+
+  // The check before something that can't be taken back (deleting the
+  // account): the password, or a recent sign-in for a Google-only account,
+  // and -- with two-step on -- a code from the app or a backup code too.
+  async confirmSensitiveAction(userId: string, reauth: Reauth, proof: TwoStepProof): Promise<void> {
+    await this.confirmIdentity(userId, reauth);
+    if (!(await this.isEnabled(userId))) return;
+    if (!proof.code && !proof.backupCode) {
+      throw new HttpException(
+        {
+          statusCode: 400,
+          error: 'Bad Request',
+          message: 'Enter the 6-digit code from your authenticator app, or a backup code.',
+          reason: 'TWO_STEP_CODE_REQUIRED',
+        },
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    if (!(await this.checkProof(userId, proof))) throw refuse(proof.backupCode ? 'BACKUP_CODE_WRONG' : 'CODE_WRONG', HttpStatus.BAD_REQUEST);
   }
 
   // Someone else (a super admin) turning it off for an account that lost
@@ -489,6 +512,7 @@ export class TwoStepService {
     await this.prisma.loginAttempt.create({
       data: { email: user.email, ipAddress: client.ipAddress ?? 'unknown', userAgent: client.userAgent, success: false, failureReason: 'two_step_failed' },
     });
+    this.alerts?.afterFailedTry(user.email, client);
   }
 
   private encryptionKey(): Buffer {

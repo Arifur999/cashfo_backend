@@ -6,5 +6,7 @@ import { AccountExportService } from './account-export.service.js';
 @Module({
   controllers: [AccountExportController],
   providers: [AccountExportService],
+  // AdminOwnersModule: an admin's "Download a copy" before a reset.
+  exports: [AccountExportService],
 })
 export class AccountExportModule {}

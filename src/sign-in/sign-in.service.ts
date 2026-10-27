@@ -20,6 +20,9 @@ export interface SignInResult {
   account: { id: string; name: string; email: string; role: Role };
   // End users only: the workspace the app opens first.
   defaultBusinessId?: string;
+  // End users only: this sign-in restored an account that was waiting out
+  // the 30 days after "Delete my account".
+  restoredFromDeletion?: boolean;
 }
 
 // The second step finished: the usual result, plus the 30-day token when
@@ -32,7 +35,13 @@ export interface TwoStepSignInResult extends SignInResult {
 }
 
 type AdminSignedIn = { accessToken: string; refreshToken: string; adminUser: SignInResult['account'] };
-type UserSignedIn = { accessToken: string; refreshToken: string; user: { id: string; name: string; email: string }; defaultBusinessId: string };
+type UserSignedIn = {
+  accessToken: string;
+  refreshToken: string;
+  user: { id: string; name: string; email: string };
+  defaultBusinessId: string;
+  restoredFromDeletion?: boolean;
+};
 
 // One sign-in for the whole site. The account's role decides which side
 // signs it in -- AdminAuthService or UserAuthService, unchanged, with their
@@ -89,7 +98,11 @@ export class SignInService {
     }
     const { userId, backupCodesLeft } = await this.twoStep.answerChallenge(dto.challengeToken, { code: dto.code, backupCode: dto.backupCode }, client);
     const account = await this.prisma.user.findUnique({ where: { id: userId } });
-    if (!account || account.status !== 'ACTIVE') {
+    // A customer waiting out the 30 days after "Delete my account" may
+    // finish signing in; finish() restores the account (or purges it, and
+    // refuses, if its day has passed).
+    const pendingDeletion = account?.status === 'PENDING_DELETION' && account.role === 'USER';
+    if (!account || (account.status !== 'ACTIVE' && !pendingDeletion)) {
       throw new UnauthorizedException('This account is not active');
     }
     const sessionId = await this.sessions.create(userId, client);
@@ -119,8 +132,15 @@ export class SignInService {
 
   private userResult(result: TwoStepPending | UserSignedIn): SignInResult | TwoStepPending {
     if (isTwoStepPending(result)) return result;
-    const { accessToken, refreshToken, user, defaultBusinessId } = result;
-    return { audience: 'user', accessToken, refreshToken, account: { id: user.id, name: user.name, email: user.email, role: 'USER' }, defaultBusinessId };
+    const { accessToken, refreshToken, user, defaultBusinessId, restoredFromDeletion } = result;
+    return {
+      audience: 'user',
+      accessToken,
+      refreshToken,
+      account: { id: user.id, name: user.name, email: user.email, role: 'USER' },
+      defaultBusinessId,
+      ...(restoredFromDeletion && { restoredFromDeletion: true }),
+    };
   }
 
   private async isAdmin(where: { email: string } | { id: string }): Promise<boolean> {

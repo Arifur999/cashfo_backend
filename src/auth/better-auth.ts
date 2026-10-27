@@ -3,6 +3,8 @@ import { LanguagePreference, PrismaClient, Role, UserStatus } from '@prisma/clie
 import { betterAuth } from 'better-auth';
 import { prismaAdapter } from 'better-auth/adapters/prisma';
 import { APIError } from 'better-auth/api';
+import { isRestorable } from '../account-deletion/deletion-rules.js';
+import { areSignupsOpen, SIGNUPS_CLOSED_MESSAGE, SIGNUPS_CLOSED_OAUTH_CODE } from '../settings/signups.js';
 import { hashPassword, verifyPassword } from './password.js';
 
 // Where better-auth's own endpoints live -- also the path Google redirects
@@ -68,15 +70,33 @@ export const createAuth = ({ prisma, secret, baseURL, trustedOrigins, google, da
         }
       : undefined,
     databaseHooks: {
+      user: {
+        create: {
+          // Every account better-auth creates is a new customer: email
+          // sign-up and a first Google sign-in alike (admins are created by
+          // the admin panel straight in the database, so this never stops
+          // them). Settings "Allow new sign-ups" off refuses them here. The
+          // code makes Google's callback redirect to the frontend's error
+          // page with ?error=signups_closed instead of answering with JSON.
+          before: async () => {
+            if (!(await areSignupsOpen(prisma))) {
+              throw new APIError('FORBIDDEN', { code: SIGNUPS_CLOSED_OAUTH_CODE, message: SIGNUPS_CLOSED_MESSAGE });
+            }
+          },
+        },
+      },
       session: {
         create: {
           // Every way in -- email, Google, the dashboard -- creates a session
           // here, so a suspended or deleted account is stopped at one place.
+          // A customer who asked to delete their account may still sign in
+          // within the 30 days: finishing that sign-in restores it
+          // (UserAuthService.finishSignIn), Google included.
           before: async (session) => {
-            const user = await prisma.user.findUnique({ where: { id: session.userId }, select: { status: true } });
-            if (user?.status !== UserStatus.ACTIVE) {
-              throw new APIError('FORBIDDEN', { message: 'This account is not active' });
-            }
+            const user = await prisma.user.findUnique({ where: { id: session.userId }, select: { status: true, role: true, deletionScheduledFor: true } });
+            if (user?.status === UserStatus.ACTIVE) return;
+            if (user?.role === Role.USER && isRestorable(user, new Date())) return;
+            throw new APIError('FORBIDDEN', { message: 'This account is not active' });
           },
         },
       },

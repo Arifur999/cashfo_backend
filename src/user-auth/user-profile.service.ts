@@ -1,8 +1,17 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common';
+import type { User } from '@prisma/client';
 import { CredentialsService } from '../auth/credentials.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { UpdateLanguageDto } from './dto/update-language.dto.js';
+import { UpdatePreferencesDto } from './dto/update-preferences.dto.js';
 import { UpdateProfileDto } from './dto/update-profile.dto.js';
+
+const preferencesOf = (user: Pick<User, 'digitStyle' | 'numberGrouping' | 'dateStyle' | 'weekStart'>) => ({
+  digitStyle: user.digitStyle,
+  numberGrouping: user.numberGrouping,
+  dateStyle: user.dateStyle,
+  weekStart: user.weekStart,
+});
 
 // The signed-in user's own account details: the /me payload with their
 // workspaces, and the profile fields Settings lets them change.
@@ -42,7 +51,17 @@ export class UserProfileService {
       avatarUrl: user.avatarUrl,
       preferredLanguage: user.preferredLanguage,
       emailVerifiedAt: user.emailVerifiedAt,
+      emailVerified: user.emailVerified,
       passwordChangedAt: user.passwordChangedAt,
+      // "Member since" (Settings > Profile).
+      createdAt: user.createdAt,
+      // Settings > App > Numbers and dates; the app formats every amount and
+      // date with these (digitStyle null = follow the language).
+      preferences: preferencesOf(user),
+      // Settings > Security > Alerts, and the monthly summary email
+      // (Settings > App > Reminders). Sent once email is set up.
+      alerts: { alertNewDevice: user.alertNewDevice, alertFailedTries: user.alertFailedTries, askCodeBeforeReset: user.askCodeBeforeReset },
+      monthlySummaryEmail: user.monthlySummaryEmail,
       // False for a Google-only account: Settings offers to set a password
       // instead of changing one.
       hasPassword: await this.credentials.has(user.id),
@@ -64,6 +83,22 @@ export class UserProfileService {
       })),
       impersonatedBy: impersonatedBy ? { name: admin?.name ?? 'An admin', email: admin?.email ?? null } : null,
     };
+  }
+
+  // Settings > App > Numbers and dates. Only the fields sent change; a null
+  // digitStyle goes back to following the language.
+  async updatePreferences(userId: string, dto: UpdatePreferencesDto) {
+    const user = await this.prisma.user.update({
+      where: { id: userId },
+      data: {
+        ...(dto.digitStyle !== undefined && { digitStyle: dto.digitStyle }),
+        ...(dto.numberGrouping !== undefined && { numberGrouping: dto.numberGrouping }),
+        ...(dto.dateStyle !== undefined && { dateStyle: dto.dateStyle }),
+        ...(dto.weekStart !== undefined && { weekStart: dto.weekStart }),
+      },
+      select: { digitStyle: true, numberGrouping: true, dateStyle: true, weekStart: true },
+    });
+    return preferencesOf(user);
   }
 
   async updateLanguage(userId: string, dto: UpdateLanguageDto) {
