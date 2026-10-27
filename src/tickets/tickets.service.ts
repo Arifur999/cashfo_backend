@@ -14,9 +14,10 @@ import { UpdateTicketDto } from './dto/update-ticket.dto.js';
 const RESOLVED_STATUSES: TicketStatus[] = [TicketStatus.RESOLVED, TicketStatus.CLOSED];
 
 // A list row's newest message: it says whether the user is waiting on an
-// answer.
+// answer. Notes for admins are left out: the customer never saw them, so
+// one is neither the team's answer nor the conversation's last word.
 const LIST_INCLUDE = {
-  messages: { orderBy: { createdAt: 'desc' }, take: 1, select: { senderType: true, createdAt: true } },
+  messages: { where: { isInternal: false }, orderBy: { createdAt: 'desc' }, take: 1, select: { senderType: true, createdAt: true } },
 } satisfies Prisma.SupportTicketInclude;
 
 type NewestMessage = { senderType: string; createdAt: Date };
@@ -63,6 +64,11 @@ export interface Requester {
   email: string;
   plan: { id: string; name: string } | null;
 }
+
+// Where a ticket goes after an admin writes on it: the status they picked,
+// else a reply takes an OPEN ticket IN_PROGRESS; a note leaves it alone.
+export const nextStatus = (current: TicketStatus, isInternal: boolean, picked?: TicketStatus): TicketStatus =>
+  picked ?? (!isInternal && current === TicketStatus.OPEN ? TicketStatus.IN_PROGRESS : current);
 
 const isStatusGroup = (status: TicketStatusFilter): status is keyof typeof TICKET_STATUS_GROUPS => status in TICKET_STATUS_GROUPS;
 
@@ -165,11 +171,13 @@ export class TicketsService {
       throw new NotFoundException('Ticket not found');
     }
 
-    const [{ requesters, customerIds }, assignedAdmin] = await Promise.all([
+    const adminSenderIds = [...new Set(ticket.messages.flatMap((message) => (message.senderType === 'ADMIN' ? [message.senderId] : [])))];
+    const [{ requesters, customerIds }, assignedAdmin, adminSenders] = await Promise.all([
       this.findRequesters([ticket.platformUserId]),
       ticket.assignedToAdminId
         ? this.prisma.user.findUnique({ where: { id: ticket.assignedToAdminId, ...ADMIN_USER_WHERE }, select: { id: true, name: true } })
         : Promise.resolve(null),
+      adminSenderIds.length > 0 ? this.prisma.user.findMany({ where: { id: { in: adminSenderIds } }, select: { id: true, name: true } }) : Promise.resolve([]),
     ]);
 
     // The person's other tickets: how many, and how many were solved.
@@ -178,8 +186,16 @@ export class TicketsService {
       this.prisma.supportTicket.count({ where: { platformUserId: ticket.platformUserId, id: { not: id }, status: { in: RESOLVED_STATUSES } } }),
     ]);
     const person = requesters.get(ticket.platformUserId) ?? null;
+    // Who wrote each message: the admin by their account, the customer's
+    // side by the requester (an admin relaying a phone call writes as them).
+    const adminById = new Map(adminSenders.map((admin) => [admin.id, admin]));
+    const messages = ticket.messages.map((message) => ({
+      ...message,
+      author: message.senderType === 'ADMIN' ? (adminById.get(message.senderId) ?? null) : person && { id: person.id, name: person.name },
+    }));
     return {
       ...ticket,
+      messages,
       platformUser: person,
       // Who wrote in, named as a feature request names its requester:
       // isCustomer when it is a customer's account, whose record the page
@@ -252,22 +268,52 @@ export class TicketsService {
     return result;
   }
 
-  async addMessage(id: string, dto: AddMessageDto, adminId: string) {
+  // A reply to the customer, or (isInternal) a note for the other admins.
+  // A note is never shown to the customer, sends no bell or email, and
+  // leaves the ticket as it was; only a status sent with it moves it.
+  // `status` is the reply box's "After sending, set to", applied once the
+  // message is saved and audited like a status change from update().
+  async addMessage(id: string, dto: AddMessageDto, adminId: string, ipAddress?: string) {
     const ticket = await this.requireTicket(id);
+    const isInternal = dto.isInternal === true;
 
     const message = await this.prisma.ticketMessage.create({
-      data: { ticketId: id, senderType: 'ADMIN', senderId: adminId, message: dto.message, attachmentUrl: dto.attachmentUrl },
+      data: { ticketId: id, senderType: 'ADMIN', senderId: adminId, message: dto.message, attachmentUrl: dto.attachmentUrl, isInternal },
     });
 
+    const status = nextStatus(ticket.status, isInternal, dto.status);
+    const statusChanged = status !== ticket.status;
     // A reply is activity on the ticket: "in progress for over 24 hours"
-    // reads updatedAt, which a new message alone doesn't move.
-    await this.prisma.supportTicket.update({
-      where: { id },
-      data: { updatedAt: new Date(), ...(ticket.status === TicketStatus.OPEN && { status: TicketStatus.IN_PROGRESS }) },
-    });
+    // reads updatedAt, which a new message alone doesn't move. A note isn't
+    // (the customer's list is ordered by updatedAt too), unless it moved
+    // the status.
+    let updated = ticket;
+    if (!isInternal || statusChanged) {
+      updated = await this.prisma.supportTicket.update({
+        where: { id },
+        data: {
+          updatedAt: new Date(),
+          ...(statusChanged && { status, resolvedAt: RESOLVED_STATUSES.includes(status) ? new Date() : null }),
+        },
+      });
+    }
 
-    await this.tellCustomer(ticket, message.id, dto.message);
-    return message;
+    if (dto.status !== undefined && statusChanged) {
+      await this.prisma.auditLog.create({
+        data: {
+          adminUserId: adminId,
+          action: 'TICKET_UPDATED',
+          entityType: 'SupportTicket',
+          entityId: id,
+          oldValue: { status: ticket.status },
+          newValue: { status: updated.status },
+          ipAddress,
+        },
+      });
+    }
+
+    if (!isInternal) await this.tellCustomer(ticket, message.id, dto.message);
+    return { ...message, ticket: { id, status: updated.status, resolvedAt: updated.resolvedAt } };
   }
 
   // A screenshot a customer attached (Settings > Help).
@@ -335,7 +381,10 @@ export class TicketsService {
         // The first admin reply on each ticket opened in the last 30 days.
         this.prisma.supportTicket.findMany({
           where: { createdAt: { gte: monthAgo } },
-          select: { createdAt: true, messages: { where: { senderType: 'ADMIN' }, orderBy: { createdAt: 'asc' }, take: 1, select: { createdAt: true } } },
+          select: {
+            createdAt: true,
+            messages: { where: { senderType: 'ADMIN', isInternal: false }, orderBy: { createdAt: 'asc' }, take: 1, select: { createdAt: true } },
+          },
         }),
         // The tickets that owe the customer a reply, and since when: the
         // list's "waiting on us", which list(awaitingReply) shows.

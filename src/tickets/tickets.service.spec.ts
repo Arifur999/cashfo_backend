@@ -2,9 +2,9 @@ import { NotFoundException } from '@nestjs/common';
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
 import { ListTicketsQueryDto } from './dto/list-tickets-query.dto.js';
-import { TicketsService } from './tickets.service.js';
+import { nextStatus, TicketsService } from './tickets.service.js';
 
-type Message = { senderType: 'USER' | 'ADMIN'; createdAt: Date };
+type Message = { senderType: 'USER' | 'ADMIN'; senderId: string; isInternal: boolean; createdAt: Date };
 type Ticket = {
   id: string;
   platformUserId: string;
@@ -26,8 +26,10 @@ const HOUR = 60 * 60 * 1000;
 const NOW = Date.now();
 // When something happened, in hours before now.
 const ago = (hours: number) => new Date(NOW - hours * HOUR);
-const asked = (hoursAgo: number): Message => ({ senderType: 'USER', createdAt: ago(hoursAgo) });
-const answered = (hoursAgo: number): Message => ({ senderType: 'ADMIN', createdAt: ago(hoursAgo) });
+const asked = (hoursAgo: number): Message => ({ senderType: 'USER', senderId: 'cust-rahim', isInternal: false, createdAt: ago(hoursAgo) });
+const answered = (hoursAgo: number): Message => ({ senderType: 'ADMIN', senderId: 'admin-nadia', isInternal: false, createdAt: ago(hoursAgo) });
+// A note for admins: the customer never sees it.
+const noted = (hoursAgo: number): Message => ({ ...answered(hoursAgo), isInternal: true });
 
 const ticket = (id: string, over: Partial<Ticket> = {}): Ticket => {
   const createdAt = over.createdAt ?? ago(48);
@@ -161,7 +163,7 @@ describe('TicketsService.list', () => {
       orderBy: [{ assignedToAdminId: { sort: 'asc', nulls: 'first' } }, { priority: 'desc' }, { createdAt: 'desc' }],
       skip: 5,
       take: 5,
-      include: { messages: { orderBy: { createdAt: 'desc' }, take: 1, select: { senderType: true, createdAt: true } } },
+      include: { messages: { where: { isInternal: false }, orderBy: { createdAt: 'desc' }, take: 1, select: { senderType: true, createdAt: true } } },
     });
     expect(result.meta).toEqual({ page: 2, limit: 5, total: 7, totalPage: 2 });
 
@@ -338,6 +340,97 @@ describe('TicketsService.getById', () => {
 
   it('is a 404 for an unknown ticket', async () => {
     await expect(setup([]).service.getById('nope')).rejects.toBeInstanceOf(NotFoundException);
+  });
+});
+
+describe('notes for admins (isInternal)', () => {
+  // The customer wrote, then an admin left only a note: still owed a reply.
+  const NOTED = [
+    ticket('noted', { messages: [asked(30), noted(1)] }),
+    ticket('answered', { status: 'IN_PROGRESS', createdAt: ago(10), messages: [asked(10), answered(9), noted(2)] }),
+  ];
+
+  it("is not the team replying: the ticket still waits, and its last message is the customer's", async () => {
+    const { service } = setup(NOTED);
+    const stats = await service.stats();
+    expect(stats).toMatchObject({ needsReplyCount: 1, needsReplyOver24hCount: 1, avgFirstReplyHours: 1 });
+    const result = await service.list({ awaitingReply: true });
+    expect(ids(result)).toEqual(['noted']);
+    expect(result.data[0]).toMatchObject({ lastMessageFrom: 'USER', lastMessageAt: ago(30) });
+    expect((await service.list({ sort: 'waiting' })).data.map((row) => row.id)).toEqual(['noted', 'answered']);
+  });
+
+  it('shows on the admin ticket page, marked, with who wrote each message', async () => {
+    const { service } = setup(NOTED);
+    const result = await service.getById('answered');
+    expect(result.messages.map((m) => [m.isInternal, m.author])).toEqual([
+      [false, { id: 'cust-rahim', name: 'Rahim Uddin' }],
+      [false, { id: 'admin-nadia', name: 'Nadia Akter' }],
+      [true, { id: 'admin-nadia', name: 'Nadia Akter' }],
+    ]);
+  });
+});
+
+describe('TicketsService.addMessage', () => {
+  const setupWrite = (status: Ticket['status'] = 'OPEN') => {
+    const row = { id: 't1', platformUserId: 'cust-rahim', subject: 'PDF export', status, resolvedAt: null as Date | null };
+    const prisma = {
+      supportTicket: {
+        findUnique: vi.fn(async () => ({ ...row })),
+        update: vi.fn(async ({ data }: { data: Row }) => Object.assign(row, data)),
+      },
+      ticketMessage: { create: vi.fn(async ({ data }: { data: Row }) => ({ id: 'm1', createdAt: new Date(), ...data })) },
+      auditLog: { create: vi.fn(async () => ({})) },
+      user: { findFirst: vi.fn(async () => ({ id: 'cust-rahim', name: 'Rahim Uddin', email: 'rahim@example.com' })) },
+      userNotification: { createMany: vi.fn(async () => ({ count: 1 })) },
+    };
+    const mail = { sendSupportReplyEmail: vi.fn(async () => undefined) };
+    const config = { get: vi.fn(() => 're_key') };
+    return { service: new TicketsService(prisma as never, mail as never, config as never), prisma, mail };
+  };
+
+  it('a reply tells the customer and takes an OPEN ticket IN_PROGRESS, without an audit row', async () => {
+    const { service, prisma, mail } = setupWrite();
+    const result = await service.addMessage('t1', { message: 'Fixed now' }, 'admin-nadia', '1.2.3.4');
+    expect(prisma.ticketMessage.create.mock.calls[0][0].data).toMatchObject({ isInternal: false, senderType: 'ADMIN' });
+    expect(result.ticket).toMatchObject({ status: 'IN_PROGRESS', resolvedAt: null });
+    expect(prisma.userNotification.createMany).toHaveBeenCalledTimes(1);
+    expect(mail.sendSupportReplyEmail).toHaveBeenCalledTimes(1);
+    expect(prisma.auditLog.create).not.toHaveBeenCalled();
+  });
+
+  it('a note sends no bell or email and leaves the ticket alone', async () => {
+    const { service, prisma, mail } = setupWrite();
+    const result = await service.addMessage('t1', { message: 'Flag was off', isInternal: true }, 'admin-nadia');
+    expect(prisma.ticketMessage.create.mock.calls[0][0].data).toMatchObject({ isInternal: true });
+    expect(prisma.supportTicket.update).not.toHaveBeenCalled();
+    expect(result.ticket.status).toBe('OPEN');
+    expect(prisma.userNotification.createMany).not.toHaveBeenCalled();
+    expect(mail.sendSupportReplyEmail).not.toHaveBeenCalled();
+  });
+
+  it('"After sending, set to" moves the ticket, sets resolvedAt like update() does, and is audited', async () => {
+    const { service, prisma } = setupWrite('IN_PROGRESS');
+    const result = await service.addMessage('t1', { message: 'Done', status: 'RESOLVED' }, 'admin-nadia', '1.2.3.4');
+    expect(result.ticket.status).toBe('RESOLVED');
+    expect(result.ticket.resolvedAt).toBeInstanceOf(Date);
+    expect(prisma.auditLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ action: 'TICKET_UPDATED', oldValue: { status: 'IN_PROGRESS' }, newValue: { status: 'RESOLVED' }, ipAddress: '1.2.3.4' }),
+    });
+
+    // A note can carry one too.
+    const note = setupWrite('OPEN');
+    const noted = await note.service.addMessage('t1', { message: 'Asked them', isInternal: true, status: 'WAITING_ON_USER' }, 'admin-nadia');
+    expect(noted.ticket.status).toBe('WAITING_ON_USER');
+    expect(note.prisma.auditLog.create).toHaveBeenCalledTimes(1);
+    expect(note.prisma.userNotification.createMany).not.toHaveBeenCalled();
+  });
+
+  it('nextStatus: the picked status wins; a reply opens work; a note changes nothing', () => {
+    expect(nextStatus('OPEN', false)).toBe('IN_PROGRESS');
+    expect(nextStatus('OPEN', true)).toBe('OPEN');
+    expect(nextStatus('WAITING_ON_USER', false)).toBe('WAITING_ON_USER');
+    expect(nextStatus('OPEN', false, 'WAITING_ON_USER')).toBe('WAITING_ON_USER');
   });
 });
 
