@@ -1,10 +1,24 @@
 import { renderBillingReceiptEmail } from './billing-receipt-email.js';
+import { renderOneTimeCodeEmail } from './one-time-code-email.js';
 import { renderPasswordResetEmail } from './password-reset-email.js';
+import { renderPayoutNoticeEmail, type PayoutNotice } from './payout-notice-email.js';
 import { renderPlanNoticeEmail } from './plan-notice-email.js';
 import { renderSupportReplyEmail } from './support-reply-email.js';
 import { renderWelcomeEmail } from './welcome-email.js';
 
 const OLD_NAME = 'Money Management Tracker';
+
+const PAYOUT_PAID: PayoutNotice = {
+  kind: 'PAID',
+  name: 'Nasrin',
+  displayId: 'WD-1047',
+  amount: '2,160',
+  destination: 'Nagad 01819-•••310',
+  trxId: '8K2M4N7QXA',
+  reason: null,
+  incomeWallet: 'Cash',
+  link: 'https://app.example/referrals?tab=withdrawals',
+};
 
 const templates = {
   welcome: (platformName: string) => renderWelcomeEmail('Nadia', platformName),
@@ -18,6 +32,13 @@ const templates = {
     renderPlanNoticeEmail('en', { kind: 'ENDING', name: 'Nadia', planName: 'Monthly Pro', trial: false, date: '30 Oct 2026', link: 'https://x' }, platformName),
   'trial ended (Bangla)': (platformName: string) =>
     renderPlanNoticeEmail('bn', { kind: 'ENDED', name: 'Nadia', planName: 'Monthly Pro', trial: true, date: '৩০ অক্টোবর ২০২৬', link: 'https://x' }, platformName),
+  'one-time code': (platformName: string) =>
+    renderOneTimeCodeEmail('en', { name: 'Nadia', code: '481527', action: 'withdraw ৳ 1,000 to bKash 01711-•••915', minutes: 10 }, platformName),
+  'one-time code (Bangla)': (platformName: string) =>
+    renderOneTimeCodeEmail('bn', { name: 'Nadia', code: '481527', action: 'বিকাশ 01711-•••915-এ ৳ ১,০০০ তোলা', minutes: 10 }, platformName),
+  'payout paid': (platformName: string) => renderPayoutNoticeEmail('en', PAYOUT_PAID, platformName),
+  'payout rejected (Bangla)': (platformName: string) =>
+    renderPayoutNoticeEmail('bn', { ...PAYOUT_PAID, kind: 'REJECTED', trxId: null, incomeWallet: null, reason: 'নাম মেলেনি' }, platformName),
 };
 
 describe.each(Object.entries(templates))('the %s email', (_label, render) => {
@@ -59,6 +80,30 @@ describe('billing emails', () => {
   it('escape the plan name', () => {
     const email = renderPlanNoticeEmail('en', { kind: 'ENDED', name: 'N', planName: '<i>Pro</i>', trial: false, date: '1 Nov 2026', link: 'https://x' }, 'Smartly');
     expect(email.html).not.toContain('<i>Pro</i>');
+  });
+});
+
+describe('referral emails', () => {
+  it('put the code in the subject and the body, and say how long it lasts', () => {
+    const email = renderOneTimeCodeEmail('en', { name: 'Khaled', code: '004815', action: 'withdraw ৳ 1,000 to bKash', minutes: 10 }, 'Smartly');
+    expect(email.subject).toBe('Your code: 004815');
+    expect(email.text).toContain('Enter this code to withdraw ৳ 1,000 to bKash:');
+    expect(email.text).toContain('for 10 minutes');
+  });
+
+  it('give a paid payout its transaction id and the wallet the income went to', () => {
+    const email = renderPayoutNoticeEmail('en', PAYOUT_PAID, 'Smartly');
+    expect(email.subject).toBe('Your withdrawal WD-1047 is paid');
+    expect(email.text).toContain('We sent ৳ 2,160 to Nagad 01819-•••310.');
+    expect(email.text).toContain('Transaction ID: 8K2M4N7QXA');
+    expect(email.text).toContain('Cash wallet');
+  });
+
+  it('tell a rejected request the reason and that the money is back', () => {
+    const email = renderPayoutNoticeEmail('en', { ...PAYOUT_PAID, kind: 'REJECTED', trxId: null, incomeWallet: null, reason: '<b>Name</b> did not match' }, 'Smartly');
+    expect(email.text).toContain('Reason: <b>Name</b> did not match');
+    expect(email.text).toContain('back in your referral balance');
+    expect(email.html).not.toContain('<b>Name</b>');
   });
 });
 

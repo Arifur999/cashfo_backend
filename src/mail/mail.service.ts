@@ -3,7 +3,9 @@ import { ConfigService } from '@nestjs/config';
 import { Resend } from 'resend';
 import { DEFAULT_PLATFORM_NAME, SettingsService } from '../settings/settings.service.js';
 import { renderBillingReceiptEmail, type ReceiptEmail } from './templates/billing-receipt-email.js';
+import { renderOneTimeCodeEmail, type OneTimeCodeEmail } from './templates/one-time-code-email.js';
 import { renderPasswordResetEmail } from './templates/password-reset-email.js';
+import { renderPayoutNoticeEmail, type PayoutNotice } from './templates/payout-notice-email.js';
 import { renderPlanNoticeEmail, type PlanNotice } from './templates/plan-notice-email.js';
 import { renderSupportReplyEmail } from './templates/support-reply-email.js';
 import { renderWelcomeEmail } from './templates/welcome-email.js';
@@ -67,6 +69,14 @@ export class MailService {
 
   async sendPlanNoticeEmail(to: string, locale: 'en' | 'bn', notice: PlanNotice): Promise<void> {
     await this.sendEmail({ to, ...renderPlanNoticeEmail(locale, notice, await this.platformName()) });
+  }
+
+  async sendOneTimeCodeEmail(to: string, locale: 'en' | 'bn', email: OneTimeCodeEmail): Promise<void> {
+    await this.sendEmail({ to, ...renderOneTimeCodeEmail(locale, email, await this.platformName()) });
+  }
+
+  async sendPayoutNoticeEmail(to: string, locale: 'en' | 'bn', notice: PayoutNotice): Promise<void> {
+    await this.sendEmail({ to, ...renderPayoutNoticeEmail(locale, notice, await this.platformName()) });
   }
 
   // Whether sendEmail() can work at all (RESEND_API_KEY is set).
