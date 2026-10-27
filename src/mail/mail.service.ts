@@ -2,12 +2,15 @@ import { Injectable, InternalServerErrorException, Logger } from '@nestjs/common
 import { ConfigService } from '@nestjs/config';
 import { Resend } from 'resend';
 import { DEFAULT_PLATFORM_NAME, SettingsService } from '../settings/settings.service.js';
+import { renderAdminInviteEmail, type AdminInviteEmail } from './templates/admin-invite-email.js';
+import { renderAdminPasswordResetEmail, type AdminPasswordResetEmail } from './templates/admin-password-reset-email.js';
 import { renderBillingReceiptEmail, type ReceiptEmail } from './templates/billing-receipt-email.js';
 import { renderOneTimeCodeEmail, type OneTimeCodeEmail } from './templates/one-time-code-email.js';
 import { renderPasswordResetEmail } from './templates/password-reset-email.js';
 import { renderPayoutNoticeEmail, type PayoutNotice } from './templates/payout-notice-email.js';
 import { renderPlanNoticeEmail, type PlanNotice } from './templates/plan-notice-email.js';
 import { renderSupportReplyEmail } from './templates/support-reply-email.js';
+import { renderTwoStepNoticeEmail, type TwoStepNotice } from './templates/two-step-notice-email.js';
 import { renderWelcomeEmail } from './templates/welcome-email.js';
 
 export interface SendEmailOptions {
@@ -79,9 +82,46 @@ export class MailService {
     await this.sendEmail({ to, ...renderPayoutNoticeEmail(locale, notice, await this.platformName()) });
   }
 
+  async sendTwoStepNoticeEmail(to: string, locale: 'en' | 'bn', notice: TwoStepNotice): Promise<void> {
+    await this.sendEmail({ to, ...renderTwoStepNoticeEmail(locale, notice, await this.platformName()) });
+  }
+
+  // The two admin emails that carry a link someone must open (an invite, a
+  // password reset). In development they can be logged instead (devLog).
+  async sendAdminInviteEmail(to: string, invite: AdminInviteEmail): Promise<void> {
+    await this.sendOrLog({ to, ...renderAdminInviteEmail(invite, await this.platformName()) }, `Admin invite link for ${to}: ${invite.link}`);
+  }
+
+  async sendAdminPasswordResetEmail(to: string, locale: 'en' | 'bn', email: AdminPasswordResetEmail): Promise<void> {
+    await this.sendOrLog(
+      { to, ...renderAdminPasswordResetEmail(locale, email, await this.platformName()) },
+      `Admin password reset link for ${to}: ${email.link}`,
+    );
+  }
+
   // Whether sendEmail() can work at all (RESEND_API_KEY is set).
   get configured(): boolean {
     return Boolean(this.configService.get<string>('RESEND_API_KEY'));
+  }
+
+  // Development only: with OTP_DEV_LOG=1 (never in production) and no
+  // RESEND_API_KEY, link emails are written to the server log instead, the
+  // same switch the one-time codes use, so the flows can be tried locally.
+  get devLog(): boolean {
+    return !this.configured && this.configService.get<string>('NODE_ENV') !== 'production' && this.configService.get<string>('OTP_DEV_LOG') === '1';
+  }
+
+  // Whether a link email reaches the person one way or the other.
+  get canDeliver(): boolean {
+    return this.configured || this.devLog;
+  }
+
+  private async sendOrLog(options: SendEmailOptions, devLine: string): Promise<void> {
+    if (this.devLog) {
+      this.logger.warn(`${devLine} (OTP_DEV_LOG=1, not sent)`);
+      return;
+    }
+    await this.sendEmail(options);
   }
 
   async sendEmail(options: SendEmailOptions): Promise<void> {

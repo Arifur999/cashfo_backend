@@ -1,9 +1,12 @@
+import { renderAdminInviteEmail } from './admin-invite-email.js';
+import { renderAdminPasswordResetEmail } from './admin-password-reset-email.js';
 import { renderBillingReceiptEmail } from './billing-receipt-email.js';
 import { renderOneTimeCodeEmail } from './one-time-code-email.js';
 import { renderPasswordResetEmail } from './password-reset-email.js';
 import { renderPayoutNoticeEmail, type PayoutNotice } from './payout-notice-email.js';
 import { renderPlanNoticeEmail } from './plan-notice-email.js';
 import { renderSupportReplyEmail } from './support-reply-email.js';
+import { renderTwoStepNoticeEmail } from './two-step-notice-email.js';
 import { renderWelcomeEmail } from './welcome-email.js';
 
 const OLD_NAME = 'Money Management Tracker';
@@ -37,6 +40,16 @@ const templates = {
   'one-time code (Bangla)': (platformName: string) =>
     renderOneTimeCodeEmail('bn', { name: 'Nadia', code: '481527', action: 'বিকাশ 01711-•••915-এ ৳ ১,০০০ তোলা', minutes: 10 }, platformName),
   'payout paid': (platformName: string) => renderPayoutNoticeEmail('en', PAYOUT_PAID, platformName),
+  'two-step on': (platformName: string) => renderTwoStepNoticeEmail('en', { kind: 'ON', name: 'Nadia', link: 'https://x/settings/security' }, platformName),
+  'two-step off by support (Bangla)': (platformName: string) =>
+    renderTwoStepNoticeEmail('bn', { kind: 'OFF_BY_SUPPORT', name: 'Nadia', link: 'https://x/settings/security' }, platformName),
+  'admin invite': (platformName: string) =>
+    renderAdminInviteEmail(
+      { name: null, inviterName: 'Nadia Rahman', role: { en: 'Finance admin', bn: 'ফাইন্যান্স অ্যাডমিন' }, link: 'https://x/admin/invite?token=t', expires: { en: '3 Nov 2026', bn: '৩ নভেম্বর ২০২৬' } },
+      platformName,
+    ),
+  'admin password reset (Bangla)': (platformName: string) =>
+    renderAdminPasswordResetEmail('bn', { name: 'Imran', link: 'https://x/admin/reset-password?token=t', minutes: 30 }, platformName),
   'payout rejected (Bangla)': (platformName: string) =>
     renderPayoutNoticeEmail('bn', { ...PAYOUT_PAID, kind: 'REJECTED', trxId: null, incomeWallet: null, reason: 'নাম মেলেনি' }, platformName),
 };
@@ -121,5 +134,31 @@ describe('subjects', () => {
     const email = renderSupportReplyEmail('Nadia', 'Export failed', 'ok', 'https://x', 'Smartly');
     expect(email.text.endsWith('- Smartly support')).toBe(true);
     expect(email.html).toContain('Smartly support</p>');
+  });
+});
+
+describe('security emails', () => {
+  it('invite in English and Bangla, with the link and the end date', () => {
+    const email = renderAdminInviteEmail(
+      { name: 'Rumana', inviterName: '<b>Nadia</b>', role: { en: 'Finance admin', bn: 'ফাইন্যান্স অ্যাডমিন' }, link: 'https://x/admin/invite?token=t', expires: { en: '3 Nov 2026', bn: '৩ নভেম্বর ২০২৬' } },
+      'Smartly',
+    );
+    expect(email.text).toContain('as Finance admin');
+    expect(email.text).toContain('ফাইন্যান্স অ্যাডমিন হিসেবে');
+    expect(email.text).toContain('ends on 3 Nov 2026');
+    expect(email.text).toContain('https://x/admin/invite?token=t');
+    expect(email.html).not.toContain('<b>Nadia</b>');
+  });
+
+  it('give the admin reset link its 30 minutes and say two-step stays on', () => {
+    const email = renderAdminPasswordResetEmail('en', { name: 'Imran', link: 'https://x/admin/reset-password?token=t', minutes: 30 }, 'Smartly');
+    expect(email.subject).toBe('Reset your Smartly admin password');
+    expect(email.text).toContain('for 30 minutes');
+    expect(email.text).toContain('Two-step sign-in stays on.');
+  });
+
+  it('warn the customer when two-step changed without them', () => {
+    expect(renderTwoStepNoticeEmail('en', { kind: 'OFF', name: 'N', link: 'https://x' }, 'Smartly').text).toContain("If this wasn't you");
+    expect(renderTwoStepNoticeEmail('en', { kind: 'OFF_BY_SUPPORT', name: 'N', link: 'https://x' }, 'Smartly').text).not.toContain("If this wasn't you");
   });
 });
