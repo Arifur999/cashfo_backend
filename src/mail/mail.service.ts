@@ -2,7 +2,9 @@ import { Injectable, InternalServerErrorException, Logger } from '@nestjs/common
 import { ConfigService } from '@nestjs/config';
 import { Resend } from 'resend';
 import { DEFAULT_PLATFORM_NAME, SettingsService } from '../settings/settings.service.js';
+import { renderBillingReceiptEmail, type ReceiptEmail } from './templates/billing-receipt-email.js';
 import { renderPasswordResetEmail } from './templates/password-reset-email.js';
+import { renderPlanNoticeEmail, type PlanNotice } from './templates/plan-notice-email.js';
 import { renderSupportReplyEmail } from './templates/support-reply-email.js';
 import { renderWelcomeEmail } from './templates/welcome-email.js';
 
@@ -57,6 +59,19 @@ export class MailService {
 
   async sendSupportReplyEmail(to: string, name: string, subject: string, reply: string, link: string): Promise<void> {
     await this.sendEmail({ to, ...renderSupportReplyEmail(name, subject, reply, link, await this.platformName()) });
+  }
+
+  async sendBillingReceiptEmail(to: string, locale: 'en' | 'bn', receipt: ReceiptEmail): Promise<void> {
+    await this.sendEmail({ to, ...renderBillingReceiptEmail(locale, receipt, await this.platformName()) });
+  }
+
+  async sendPlanNoticeEmail(to: string, locale: 'en' | 'bn', notice: PlanNotice): Promise<void> {
+    await this.sendEmail({ to, ...renderPlanNoticeEmail(locale, notice, await this.platformName()) });
+  }
+
+  // Whether sendEmail() can work at all (RESEND_API_KEY is set).
+  get configured(): boolean {
+    return Boolean(this.configService.get<string>('RESEND_API_KEY'));
   }
 
   async sendEmail(options: SendEmailOptions): Promise<void> {

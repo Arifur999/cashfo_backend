@@ -17,6 +17,7 @@ import { AppService } from './app.service.js';
 import { AssetsModule } from './assets/assets.module.js';
 import { AuthModule } from './auth/auth.module.js';
 import { AuditLogsModule } from './audit-logs/audit-logs.module.js';
+import { BillingModule } from './billing/billing.module.js';
 import { BudgetsModule } from './budgets/budgets.module.js';
 import { BusinessAccessModule } from './business-access/business-access.module.js';
 import { BusinessesModule } from './businesses/businesses.module.js';
@@ -29,6 +30,7 @@ import { GroupExpensesModule } from './group-expenses/group-expenses.module.js';
 import { BooksModule } from './books/books.module.js';
 import { HabitsModule } from './habits/habits.module.js';
 import { HealthModule } from './health/health.module.js';
+import { HousekeepingModule } from './housekeeping/housekeeping.module.js';
 import { InvoicesModule } from './invoices/invoices.module.js';
 import { LegalDocumentsModule } from './legal-documents/legal-documents.module.js';
 import { NotificationsModule } from './notifications/notifications.module.js';
@@ -74,6 +76,8 @@ import { UserNotificationsModule } from './user-notifications/user-notifications
       { name: 'perIp', ttl: 60_000, limit: 100 },
     ]),
     PrismaModule,
+    // The five-minute tidy-up timer other modules register jobs with.
+    HousekeepingModule,
     AuthModule,
     BusinessAccessModule,
     HealthModule,
@@ -131,6 +135,8 @@ import { UserNotificationsModule } from './user-notifications/user-notifications
     SupportModule,
     AccountExportModule,
     AdminFeedModule,
+    // Customer plans, the in-app checkout and plan expiry (api/billing).
+    BillingModule,
   ],
   controllers: [AppController],
   providers: [AppService, { provide: APP_GUARD, useClass: ThrottlerGuard }, { provide: APP_FILTER, useClass: GlobalExceptionFilter }],

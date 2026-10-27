@@ -15,6 +15,8 @@ const OPEN_DURING_MAINTENANCE = [
   '/api/auth/session/exchange',
   '/api/auth/refresh',
   '/api/auth/logout',
+  // A payment gateway confirming a payment: the money has moved either way.
+  '/api/billing/webhooks',
 ];
 
 // Maintenance mode (Settings > General) closes the customer API: every other

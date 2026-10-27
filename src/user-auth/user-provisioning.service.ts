@@ -65,6 +65,11 @@ export class UserProvisioningService {
       // The default workspace never exists without its starter Chart of
       // Accounts -- seeded in this same transaction, all-or-nothing.
       await this.accountsService.seedDefaultAccounts(business.id, WorkspaceType.PERSONAL, tx);
+      // The customer's plan (UserSubscription, src/billing): the free plan,
+      // which the workspace above mirrors.
+      if (freePlan) {
+        await tx.userSubscription.upsert({ where: { userId }, create: { userId, planId: freePlan.id, status: 'ACTIVE' }, update: {} });
+      }
       return business.id;
     });
 
