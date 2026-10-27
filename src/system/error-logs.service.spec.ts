@@ -1,6 +1,6 @@
 import { BadRequestException, ValidationPipe } from '@nestjs/common';
 import { ListErrorLogsQueryDto } from './dto/list-error-logs-query.dto.js';
-import { ErrorLogsService } from './error-logs.service.js';
+import { ErrorLogsService, errorGroupConditions, resolveAllWhere } from './error-logs.service.js';
 
 const setup = ({ logs = [] as object[], total = 0 } = {}) => {
   const prisma = { errorLog: { findMany: vi.fn().mockResolvedValue(logs), count: vi.fn().mockResolvedValue(total) } };
@@ -100,5 +100,80 @@ describe('ListErrorLogsQueryDto', () => {
   it('refuses a reference sent twice', async () => {
     // ?digest=a&digest=b arrives as an array.
     expect(await refusal({ digest: ['2683523098', '1234'] })).toContain('digest must be a string');
+  });
+});
+
+describe('errorGroupConditions', () => {
+  const now = new Date('2026-10-28T06:00:00.000Z');
+  const sqlOf = (query: Parameters<typeof errorGroupConditions>[0]) => {
+    const parts = errorGroupConditions(query, now);
+    return { sql: parts.map((part) => part.sql), values: parts.flatMap((part) => part.values) };
+  };
+
+  it('filters nothing for an empty query', () => {
+    expect(sqlOf({})).toEqual({ sql: [], values: [] });
+  });
+
+  it('turns each filter into a bound condition', () => {
+    expect(sqlOf({ resolved: 'false', source: 'BACKEND_API', severity: 'HIGH', within: '24h' })).toEqual({
+      sql: ['"resolved" = false', '"source" = CAST(? AS "ErrorSource")', '"severity" = CAST(? AS "Severity")', '"createdAt" >= ?'],
+      values: ['BACKEND_API', 'HIGH', new Date('2026-10-27T06:00:00.000Z')],
+    });
+    expect(sqlOf({ from: '2026-10-01T00:00:00.000Z', to: '2026-10-02T00:00:00.000Z' }).values).toEqual([
+      new Date('2026-10-01T00:00:00.000Z'),
+      new Date('2026-10-02T00:00:00.000Z'),
+    ]);
+  });
+});
+
+describe('ErrorLogsService.groups', () => {
+  it('answers a page of groups with the admin-list meta', async () => {
+    const group = { message: 'boom', source: 'BACKEND_API', severity: 'HIGH', count: 5 };
+    const prisma = {
+      $queryRaw: vi
+        .fn()
+        .mockResolvedValueOnce([group])
+        .mockResolvedValueOnce([{ total: 41 }]),
+    };
+    const service = new ErrorLogsService(prisma as never);
+    await expect(service.groups({ page: 3, limit: 20 })).resolves.toEqual({ data: [group], meta: { page: 3, limit: 20, total: 41, totalPage: 3 } });
+  });
+});
+
+describe('ErrorLogsService.resolveAll', () => {
+  const setup = (count: number) => {
+    const tx = { errorLog: { updateMany: vi.fn().mockResolvedValue({ count }) }, auditLog: { create: vi.fn() } };
+    const prisma = { $transaction: vi.fn((run: (client: typeof tx) => unknown) => run(tx)) };
+    return { service: new ErrorLogsService(prisma as never), tx };
+  };
+
+  it('needs something to say which errors', async () => {
+    expect(resolveAllWhere({})).toBeNull();
+    expect(resolveAllWhere({ ids: [] })).toBeNull();
+    await expect(setup(0).service.resolveAll({}, 'admin-1')).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it("closes a group's open rows with one audit entry", async () => {
+    const { service, tx } = setup(5);
+    await expect(service.resolveAll({ message: 'boom', source: 'BACKEND_API' }, 'admin-1', '1.2.3.4')).resolves.toEqual({ resolved: 5 });
+    expect(tx.errorLog.updateMany).toHaveBeenCalledWith({
+      where: { resolved: false, message: 'boom', source: 'BACKEND_API' },
+      data: { resolved: true, resolvedBy: 'admin-1', resolvedAt: expect.any(Date) },
+    });
+    expect(tx.auditLog.create).toHaveBeenCalledWith({
+      data: {
+        adminUserId: 'admin-1',
+        action: 'ERROR_LOGS_RESOLVED',
+        entityType: 'ErrorLog',
+        newValue: { message: 'boom', source: 'BACKEND_API', count: 5 },
+        ipAddress: '1.2.3.4',
+      },
+    });
+  });
+
+  it('writes no audit entry when nothing was open', async () => {
+    const { service, tx } = setup(0);
+    await expect(service.resolveAll({ ids: ['0b8f7a3e-1c2d-4e5f-8a9b-0c1d2e3f4a5b'] }, 'admin-1')).resolves.toEqual({ resolved: 0 });
+    expect(tx.auditLog.create).not.toHaveBeenCalled();
   });
 });

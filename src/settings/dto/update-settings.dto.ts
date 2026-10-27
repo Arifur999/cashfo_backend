@@ -28,6 +28,18 @@ export class UpdateSettingsDto {
   @IsString()
   maintenanceMessage?: string;
 
+  // The maintenance notice in Bangla. Blank falls back to the default text.
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  maintenanceMessageBn?: string;
+
+  // Off refuses new customer accounts (POST /api/auth/register and a first
+  // Google sign-in).
+  @IsOptional()
+  @IsBoolean()
+  signupsOpen?: boolean;
+
   @IsOptional()
   @IsNumber()
   @IsPositive()

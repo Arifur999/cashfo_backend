@@ -21,6 +21,12 @@ const DEFAULTS = {
   default_timezone: 'Asia/Dhaka',
   maintenance_mode: false,
   maintenance_message: "We're currently performing scheduled maintenance. Please check back soon.",
+  // The same notice in Bangla, for customers using the app in Bangla.
+  maintenance_message_bn: 'আমরা এখন নির্ধারিত রক্ষণাবেক্ষণের কাজ করছি। একটু পরে আবার চেষ্টা করুন।',
+  // Security > "Allow new sign-ups". Off refuses every new customer
+  // account (email sign-up and a first Google sign-in); admins the panel
+  // creates are not affected.
+  signups_open: true,
   // The old Referral Program rule's flat reward per sign-up. Only old
   // referrals carry it now; the commission rules are the referral_* keys in
   // referral-settings.ts (Admin > Referrals & Payouts > Settings).
@@ -48,6 +54,8 @@ const KEY_TO_FIELD: Record<string, keyof PlatformSettings> = {
   default_timezone: 'defaultTimezone',
   maintenance_mode: 'maintenanceMode',
   maintenance_message: 'maintenanceMessage',
+  maintenance_message_bn: 'maintenanceMessageBn',
+  signups_open: 'signupsOpen',
   referral_reward_amount: 'referralRewardAmount',
   billing_manual_instructions_en: 'billingManualInstructionsEn',
   billing_manual_instructions_bn: 'billingManualInstructionsBn',
@@ -63,6 +71,8 @@ export interface PlatformSettings {
   defaultTimezone: string;
   maintenanceMode: boolean;
   maintenanceMessage: string;
+  maintenanceMessageBn: string;
+  signupsOpen: boolean;
   referralRewardAmount: number;
   billingManualInstructionsEn: string;
   billingManualInstructionsBn: string;
@@ -112,6 +122,8 @@ export class SettingsService {
       defaultTimezone: (byKey.get('default_timezone') as string | undefined) ?? DEFAULTS.default_timezone,
       maintenanceMode: (byKey.get('maintenance_mode') as boolean | undefined) ?? DEFAULTS.maintenance_mode,
       maintenanceMessage: (byKey.get('maintenance_message') as string | undefined) ?? DEFAULTS.maintenance_message,
+      maintenanceMessageBn: (byKey.get('maintenance_message_bn') as string | undefined) || DEFAULTS.maintenance_message_bn,
+      signupsOpen: (byKey.get('signups_open') as boolean | undefined) ?? DEFAULTS.signups_open,
       referralRewardAmount: (byKey.get('referral_reward_amount') as number | undefined) ?? DEFAULTS.referral_reward_amount,
       billingManualInstructionsEn: (byKey.get('billing_manual_instructions_en') as string | undefined) || DEFAULTS.billing_manual_instructions_en,
       billingManualInstructionsBn: (byKey.get('billing_manual_instructions_bn') as string | undefined) || DEFAULTS.billing_manual_instructions_bn,
@@ -207,6 +219,8 @@ export class SettingsService {
     if (dto.defaultTimezone !== undefined) updates.push(['default_timezone', dto.defaultTimezone]);
     if (dto.maintenanceMode !== undefined) updates.push(['maintenance_mode', dto.maintenanceMode]);
     if (dto.maintenanceMessage !== undefined) updates.push(['maintenance_message', dto.maintenanceMessage]);
+    if (dto.maintenanceMessageBn !== undefined) updates.push(['maintenance_message_bn', dto.maintenanceMessageBn]);
+    if (dto.signupsOpen !== undefined) updates.push(['signups_open', dto.signupsOpen]);
     if (dto.referralRewardAmount !== undefined) updates.push(['referral_reward_amount', dto.referralRewardAmount]);
     if (dto.billingManualInstructionsEn !== undefined) updates.push(['billing_manual_instructions_en', dto.billingManualInstructionsEn]);
     if (dto.billingManualInstructionsBn !== undefined) updates.push(['billing_manual_instructions_bn', dto.billingManualInstructionsBn]);

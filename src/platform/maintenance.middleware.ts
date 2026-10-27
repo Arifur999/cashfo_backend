@@ -47,6 +47,12 @@ export class MaintenanceMiddleware implements NestMiddleware {
     }
 
     res.setHeader('Retry-After', '300');
-    res.status(503).json({ statusCode: 503, error: 'Service Unavailable', message: settings.maintenanceMessage, maintenance: true });
+    res.status(503).json({
+      statusCode: 503,
+      error: 'Service Unavailable',
+      message: settings.maintenanceMessage,
+      messageBn: settings.maintenanceMessageBn,
+      maintenance: true,
+    });
   }
 }

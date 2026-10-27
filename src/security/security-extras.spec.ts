@@ -1,4 +1,12 @@
-import { failedSignInsDescription, type KnownAccount, pausedNetworks, signedInAfter } from './security-extras.js';
+import {
+  failedSignInsDescription,
+  type KnownAccount,
+  locationDedupeKey,
+  pausedNetworks,
+  signedInAfter,
+  signInsFromNewCountries,
+  unusualLocationDescription,
+} from './security-extras.js';
 
 const at = (hour: number, minute: number) => new Date(Date.UTC(2026, 9, 2, hour, minute));
 
@@ -55,5 +63,48 @@ describe('signedInAfter', () => {
     expect(signedInAfter({ email: 'tanzila@example.com', createdAt: at(1, 0) }, successes)).toBeNull();
     expect(signedInAfter({ email: 'nadia@example.com', createdAt: at(3, 5) }, successes)).toBeNull();
     expect(signedInAfter({ email: 'shakil@example.com', createdAt: new Date(at(2, 2).getTime() - 25 * 60 * 60 * 1000) }, successes)).toBeNull();
+  });
+});
+
+describe('signInsFromNewCountries', () => {
+  const signIn = (code: string, name: string, minute: number) => ({ code, name, ipAddress: `ip-${code}`, createdAt: at(10, minute) });
+
+  it('reports a country the account never signed in from, once', () => {
+    const earlier = new Map([['BD', 'Bangladesh']]);
+    const found = signInsFromNewCountries(earlier, [
+      signIn('BD', 'Bangladesh', 1),
+      signIn('AE', 'United Arab Emirates', 2),
+      signIn('AE', 'United Arab Emirates', 3),
+    ]);
+    expect(found).toEqual([{ signIn: signIn('AE', 'United Arab Emirates', 2), earlierCountries: ['Bangladesh'] }]);
+  });
+
+  it('has nothing to compare a first placed sign-in with', () => {
+    expect(signInsFromNewCountries(new Map(), [signIn('BD', 'Bangladesh', 1)])).toEqual([]);
+    // ...but it becomes the baseline for the next one.
+    expect(signInsFromNewCountries(new Map(), [signIn('BD', 'Bangladesh', 1), signIn('IN', 'India', 2)])).toEqual([
+      { signIn: signIn('IN', 'India', 2), earlierCountries: ['Bangladesh'] },
+    ]);
+  });
+
+  it('stays quiet for known countries', () => {
+    expect(
+      signInsFromNewCountries(
+        new Map([
+          ['BD', 'Bangladesh'],
+          ['IN', 'India'],
+        ]),
+        [signIn('IN', 'India', 1)],
+      ),
+    ).toEqual([]);
+  });
+});
+
+describe('unusualLocationDescription', () => {
+  it('names the account, the new country and the earlier ones', () => {
+    expect(unusualLocationDescription('Tanzila Haque', 'tanzila@example.com', 'United Arab Emirates', ['Bangladesh', 'India'])).toBe(
+      'Tanzila Haque (tanzila@example.com) signed in from United Arab Emirates, a country this account has never signed in from before. Earlier sign-ins: Bangladesh, India.',
+    );
+    expect(locationDedupeKey('u1', 'AE')).toBe('location:u1:AE');
   });
 });
