@@ -18,8 +18,9 @@ export class InvoicesService {
         ...(query.dateTo && { lte: new Date(query.dateTo) }),
       };
     }
-    if (query.platformUserId) {
-      where.payment = { platformUserId: query.platformUserId };
+    const person = query.userId ?? query.platformUserId;
+    if (person) {
+      where.payment = { OR: [{ userId: person }, { platformUserId: person }] };
     }
 
     const [data, total] = await Promise.all([
@@ -29,7 +30,7 @@ export class InvoicesService {
         orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
         skip: (page - 1) * limit,
         take: limit,
-        include: { payment: { select: { id: true, platformUserId: true, planId: true } } },
+        include: { payment: { select: { id: true, userId: true, platformUserId: true, planId: true } } },
       }),
       this.prisma.invoice.count({ where }),
     ]);

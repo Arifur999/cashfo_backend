@@ -1,6 +1,7 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { PaymentStatus } from '@prisma/client';
 import { dhakaMonthStart, dhakaToday } from '../common/dhaka.js';
+import { requesterPeople } from '../admin-feed/requester-names.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { computeCouponStatus } from './coupon-status.js';
 import { CreateCouponDto } from './dto/create-coupon.dto.js';
@@ -60,6 +61,7 @@ export class CouponsService {
           validFrom: new Date(dto.validFrom),
           validUntil: new Date(dto.validUntil),
           applicablePlans: dto.applicablePlans ?? [],
+          oncePerPerson: dto.oncePerPerson ?? false,
         },
       });
 
@@ -99,6 +101,7 @@ export class CouponsService {
           ...(dto.validUntil !== undefined && { validUntil }),
           ...(dto.applicablePlans !== undefined && { applicablePlans: dto.applicablePlans }),
           ...(dto.isActive !== undefined && { isActive: dto.isActive }),
+          ...(dto.oncePerPerson !== undefined && { oncePerPerson: dto.oncePerPerson }),
         },
       });
 
@@ -155,20 +158,18 @@ export class CouponsService {
       include: { plan: { select: { id: true, name: true } } },
     });
 
-    // CouponRedemption.platformUserId is a loose reference (no Prisma
-    // relation defined), so the matching PlatformUser names are fetched
-    // separately and merged in here.
-    const userIds = [...new Set(redemptions.map((r) => r.platformUserId))];
-    const users = await this.prisma.platformUser.findMany({
-      where: { id: { in: userIds } },
-      select: { id: true, name: true, email: true },
-    });
-    const userById = new Map(users.map((u) => [u.id, u]));
+    // The person is a loose reference: a customer's userId, or for an old
+    // sandbox row a PlatformUser id. `platformUser` keeps its old name for
+    // the panel and holds whoever it was.
+    const people = await requesterPeople(
+      this.prisma,
+      redemptions.map((r) => r.userId ?? r.platformUserId),
+    );
 
-    return redemptions.map((r) => ({
-      ...r,
-      platformUser: userById.get(r.platformUserId) ?? null,
-    }));
+    return redemptions.map((r) => {
+      const personId = r.userId ?? r.platformUserId;
+      return { ...r, platformUser: personId ? (people.get(personId) ?? null) : null };
+    });
   }
 
   private async requireCoupon(id: string) {

@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { END_USER_WHERE } from '../common/roles.js';
 import { PrismaService } from '../prisma/prisma.service.js';
-import { requesterNames } from './requester-names.js';
+import { payerIdOf, requesterNames } from './requester-names.js';
 
 const PER_KIND = 5;
 // "PAY-20931AB" or "#482AB" (how the panel shortens ids), or a bare prefix.
@@ -34,7 +34,7 @@ export class AdminSearchService {
     });
     const personIds = people.map((person) => person.id);
 
-    const paymentWhere: Prisma.PaymentWhereInput[] = [{ gatewayReferenceId: contains }, { platformUserId: { in: personIds } }];
+    const paymentWhere: Prisma.PaymentWhereInput[] = [{ gatewayReferenceId: contains }, { userId: { in: personIds } }, { platformUserId: { in: personIds } }];
     const ticketWhere: Prisma.SupportTicketWhereInput[] = [{ subject: contains }, { platformUserId: { in: personIds } }];
     if (idPrefix) {
       paymentWhere.push({ id: { startsWith: idPrefix } });
@@ -45,15 +45,18 @@ export class AdminSearchService {
         where: { OR: paymentWhere },
         orderBy: { createdAt: 'desc' },
         take: PER_KIND,
-        select: { id: true, platformUserId: true, amount: true, currency: true, gateway: true, status: true, createdAt: true },
+        select: { id: true, userId: true, platformUserId: true, amount: true, currency: true, gateway: true, status: true, createdAt: true },
       }),
       this.prisma.supportTicket.findMany({ where: { OR: ticketWhere }, orderBy: { updatedAt: 'desc' }, take: PER_KIND, select: { id: true, subject: true, category: true, status: true, platformUserId: true } }),
     ]);
 
-    const names = await requesterNames(this.prisma, [...payments.map((p) => p.platformUserId), ...tickets.map((t) => t.platformUserId)]);
+    const names = await requesterNames(this.prisma, [...payments.map(payerIdOf), ...tickets.map((t) => t.platformUserId)]);
     return {
       people: people.map(({ ownedBusinesses, ...person }) => ({ ...person, plan: ownedBusinesses[0]?.plan?.name ?? null, trialEndsAt: ownedBusinesses[0]?.trialEndsAt ?? null })),
-      payments: payments.map(({ platformUserId, amount, ...payment }) => ({ ...payment, amount: amount.toFixed(2), name: names.get(platformUserId) ?? null })),
+      payments: payments.map(({ userId, platformUserId, amount, ...payment }) => {
+        const payer = userId ?? platformUserId;
+        return { ...payment, amount: amount.toFixed(2), name: payer ? (names.get(payer) ?? null) : null };
+      }),
       tickets: tickets.map(({ platformUserId, ...ticket }) => ({ ...ticket, name: names.get(platformUserId) ?? null })),
     };
   }

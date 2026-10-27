@@ -1,5 +1,5 @@
 import { Transform } from 'class-transformer';
-import { ArrayUnique, IsArray, IsDateString, IsEnum, IsInt, IsOptional, IsPositive, IsString, Min } from 'class-validator';
+import { ArrayUnique, IsArray, IsBoolean, IsDateString, IsEnum, IsInt, IsOptional, IsPositive, IsString, Min } from 'class-validator';
 import { DiscountType } from '@prisma/client';
 
 export class CreateCouponDto {
@@ -30,4 +30,9 @@ export class CreateCouponDto {
   @ArrayUnique()
   @IsString({ each: true })
   applicablePlans?: string[];
+
+  // Each customer may use it once.
+  @IsOptional()
+  @IsBoolean()
+  oncePerPerson?: boolean;
 }

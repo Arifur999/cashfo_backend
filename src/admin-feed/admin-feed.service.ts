@@ -1,10 +1,11 @@
 import { Injectable } from '@nestjs/common';
 import { FlagStatus, TicketStatus } from '@prisma/client';
+import { REAL_FAILURE_WHERE } from '../billing/payment-reasons.js';
 import type { RequestAdminUser } from '../admin-auth/interfaces/request-admin-user.interface.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { PAUSE_MS, pausedNetworks } from '../security/security-extras.js';
 import { arrangeFeed, feedGroupsFor, mostCommon, type FeedItem } from './admin-feed.js';
-import { requesterNames } from './requester-names.js';
+import { payerIdOf, requesterNames } from './requester-names.js';
 
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
@@ -25,7 +26,7 @@ export class AdminFeedService {
     const now = Date.now();
     const [me, money, support, system] = await Promise.all([
       this.prisma.user.findUnique({ where: { id: admin.id }, select: { adminFeedSeenAt: true } }),
-      groups.includes('MONEY') ? this.failedPayments(now) : [],
+      groups.includes('MONEY') ? this.moneyItems(now) : [],
       groups.includes('SUPPORT') ? this.waitingTickets(now) : [],
       groups.includes('SYSTEM') ? this.systemItems(now) : [],
     ]);
@@ -37,23 +38,49 @@ export class AdminFeedService {
     return { seenAt: adminFeedSeenAt };
   }
 
-  // Failed payments of the last week.
-  private async failedPayments(now: number): Promise<FeedItem[]> {
-    const rows = await this.prisma.payment.findMany({
-      where: { status: 'FAILED', createdAt: { gte: new Date(now - 7 * DAY_MS) } },
-      orderBy: { createdAt: 'desc' },
-      take: PER_SOURCE,
-      select: { id: true, platformUserId: true, amount: true, gateway: true, failureReason: true, createdAt: true, plan: { select: { name: true } } },
-    });
-    const names = await requesterNames(this.prisma, rows.map((row) => row.platformUserId));
-    return rows.map((row) => ({
-      id: `payment:${row.id}`,
-      group: 'MONEY',
-      kind: 'PAYMENT_FAILED',
-      data: { name: names.get(row.platformUserId) ?? null, plan: row.plan.name, gateway: row.gateway, reason: row.failureReason, amount: row.amount.toFixed(2) },
-      at: row.createdAt,
-      href: `/admin/payments/${row.id}`,
-    }));
+  // Failed payments of the last week, and customers' checkouts waiting for
+  // an admin's Mark paid.
+  private async moneyItems(now: number): Promise<FeedItem[]> {
+    const select = { id: true, userId: true, platformUserId: true, amount: true, gateway: true, failureReason: true, createdAt: true, plan: { select: { name: true } } } as const;
+    const [failed, pending] = await Promise.all([
+      // A checkout the customer replaced or cancelled, or one that lapsed,
+      // is not a failure anyone needs to look at.
+      this.prisma.payment.findMany({
+        where: { status: 'FAILED', createdAt: { gte: new Date(now - 7 * DAY_MS) }, ...REAL_FAILURE_WHERE },
+        orderBy: { createdAt: 'desc' },
+        take: PER_SOURCE,
+        select,
+      }),
+      this.prisma.payment.findMany({
+        where: { status: 'PENDING', userId: { not: null }, OR: [{ expiresAt: null }, { expiresAt: { gt: new Date(now) } }] },
+        orderBy: { createdAt: 'desc' },
+        take: PER_SOURCE,
+        select,
+      }),
+    ]);
+    const names = await requesterNames(this.prisma, [...failed, ...pending].map(payerIdOf));
+    const nameOf = (row: (typeof failed)[number]) => {
+      const payer = payerIdOf(row);
+      return payer ? (names.get(payer) ?? null) : null;
+    };
+    return [
+      ...failed.map((row): FeedItem => ({
+        id: `payment:${row.id}`,
+        group: 'MONEY',
+        kind: 'PAYMENT_FAILED',
+        data: { name: nameOf(row), plan: row.plan.name, gateway: row.gateway, reason: row.failureReason, amount: row.amount.toFixed(2) },
+        at: row.createdAt,
+        href: `/admin/payments/${row.id}`,
+      })),
+      ...pending.map((row): FeedItem => ({
+        id: `payment-pending:${row.id}`,
+        group: 'MONEY',
+        kind: 'PAYMENT_PENDING',
+        data: { name: nameOf(row), plan: row.plan.name, gateway: row.gateway, amount: row.amount.toFixed(2), paymentId: row.id },
+        at: row.createdAt,
+        href: `/admin/payments/${row.id}`,
+      })),
+    ];
   }
 
   // Open tickets whose last word is the customer's, unanswered for a while.

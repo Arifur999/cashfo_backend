@@ -1,3 +1,4 @@
+import { payerIdOf, requesterNames } from '../admin-feed/requester-names.js';
 import type { PrismaService } from '../prisma/prisma.service.js';
 
 type Labeler = (prisma: PrismaService, ids: string[]) => Promise<Array<{ id: string; label: string }>>;
@@ -35,14 +36,14 @@ const LABELERS: Record<string, Labeler> = {
       id: row.id,
       label: row.description,
     })),
-  // Payment.platformUserId is a loose reference, so the payer is a second read.
+  // A payment answers with its payer: the customer (userId), or for an old
+  // sandbox payment its PlatformUser -- both loose, so a second read.
   Payment: async (prisma, ids) => {
-    const payments = await prisma.payment.findMany({ where: where(ids), select: { id: true, platformUserId: true } });
-    const payerIds = [...new Set(payments.map((payment) => payment.platformUserId))];
-    const payers = await prisma.platformUser.findMany({ where: where(payerIds), select: { id: true, name: true } });
-    const nameById = new Map(payers.map((payer) => [payer.id, payer.name]));
+    const payments = await prisma.payment.findMany({ where: where(ids), select: { id: true, userId: true, platformUserId: true } });
+    const nameById = await requesterNames(prisma, payments.map(payerIdOf));
     return payments.flatMap((payment) => {
-      const name = nameById.get(payment.platformUserId);
+      const payer = payerIdOf(payment);
+      const name = payer ? nameById.get(payer) : undefined;
       return name ? [{ id: payment.id, label: name }] : [];
     });
   },

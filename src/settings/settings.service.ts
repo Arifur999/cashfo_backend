@@ -22,6 +22,17 @@ const DEFAULTS = {
   // "Referral Program" menu's admin-configured reward per confirmed
   // referral -- 100 BDT is the product owner's explicit demo default.
   referral_reward_amount: 100,
+  // Billing (src/billing). The manual checkout's instructions, with
+  // {amount}, {reference} and {method} filled in per payment; the number
+  // is the admin's to set.
+  billing_manual_instructions_en:
+    'Send ৳ {amount} by {method} to 01XXXXXXXXX (Send Money) and write {reference} as the reference. We confirm your payment within 1 working day.',
+  billing_manual_instructions_bn:
+    '{method}-এ 01XXXXXXXXX নম্বরে ৳ {amount} সেন্ড মানি করুন এবং রেফারেন্সে {reference} লিখুন। আমরা ১ কর্মদিবসের মধ্যে আপনার পেমেন্ট নিশ্চিত করব।',
+  // Days a plan stays after its period ends without a renewal.
+  billing_grace_days: 3,
+  // Hours an unpaid checkout stays open.
+  billing_checkout_hours: 48,
 } as const;
 
 const KEY_TO_FIELD: Record<string, keyof PlatformSettings> = {
@@ -32,6 +43,10 @@ const KEY_TO_FIELD: Record<string, keyof PlatformSettings> = {
   maintenance_mode: 'maintenanceMode',
   maintenance_message: 'maintenanceMessage',
   referral_reward_amount: 'referralRewardAmount',
+  billing_manual_instructions_en: 'billingManualInstructionsEn',
+  billing_manual_instructions_bn: 'billingManualInstructionsBn',
+  billing_grace_days: 'billingGraceDays',
+  billing_checkout_hours: 'billingCheckoutHours',
 };
 
 export interface PlatformSettings {
@@ -42,7 +57,20 @@ export interface PlatformSettings {
   maintenanceMode: boolean;
   maintenanceMessage: string;
   referralRewardAmount: number;
+  billingManualInstructionsEn: string;
+  billingManualInstructionsBn: string;
+  billingGraceDays: number;
+  billingCheckoutHours: number;
 }
+
+// The invited friend's first-payment discount. Read here for checkout
+// prices; the referral settings page (chunk 2) is where admins change it.
+export interface ReferralPriceSettings {
+  programLive: boolean;
+  friendDiscountPct: number;
+}
+
+const REFERRAL_PRICE_DEFAULTS = { referral_program_live: true, referral_friend_discount_pct: 10 } as const;
 
 // How long getCached() may serve a copy. The maintenance switch reads
 // settings on every customer request; a few seconds of delay after an admin
@@ -78,6 +106,21 @@ export class SettingsService {
       maintenanceMode: (byKey.get('maintenance_mode') as boolean | undefined) ?? DEFAULTS.maintenance_mode,
       maintenanceMessage: (byKey.get('maintenance_message') as string | undefined) ?? DEFAULTS.maintenance_message,
       referralRewardAmount: (byKey.get('referral_reward_amount') as number | undefined) ?? DEFAULTS.referral_reward_amount,
+      billingManualInstructionsEn: (byKey.get('billing_manual_instructions_en') as string | undefined) || DEFAULTS.billing_manual_instructions_en,
+      billingManualInstructionsBn: (byKey.get('billing_manual_instructions_bn') as string | undefined) || DEFAULTS.billing_manual_instructions_bn,
+      billingGraceDays: (byKey.get('billing_grace_days') as number | undefined) ?? DEFAULTS.billing_grace_days,
+      billingCheckoutHours: (byKey.get('billing_checkout_hours') as number | undefined) ?? DEFAULTS.billing_checkout_hours,
+    };
+  }
+
+  async getReferralPrice(): Promise<ReferralPriceSettings> {
+    const rows = await this.prisma.platformSetting.findMany({ where: { key: { in: Object.keys(REFERRAL_PRICE_DEFAULTS) } } });
+    const byKey = new Map(rows.map((r) => [r.key, r.value]));
+    const live = byKey.get('referral_program_live');
+    const pct = byKey.get('referral_friend_discount_pct');
+    return {
+      programLive: typeof live === 'boolean' ? live : REFERRAL_PRICE_DEFAULTS.referral_program_live,
+      friendDiscountPct: typeof pct === 'number' && pct >= 0 && pct <= 100 ? pct : REFERRAL_PRICE_DEFAULTS.referral_friend_discount_pct,
     };
   }
 
@@ -107,6 +150,10 @@ export class SettingsService {
     if (dto.maintenanceMode !== undefined) updates.push(['maintenance_mode', dto.maintenanceMode]);
     if (dto.maintenanceMessage !== undefined) updates.push(['maintenance_message', dto.maintenanceMessage]);
     if (dto.referralRewardAmount !== undefined) updates.push(['referral_reward_amount', dto.referralRewardAmount]);
+    if (dto.billingManualInstructionsEn !== undefined) updates.push(['billing_manual_instructions_en', dto.billingManualInstructionsEn]);
+    if (dto.billingManualInstructionsBn !== undefined) updates.push(['billing_manual_instructions_bn', dto.billingManualInstructionsBn]);
+    if (dto.billingGraceDays !== undefined) updates.push(['billing_grace_days', dto.billingGraceDays]);
+    if (dto.billingCheckoutHours !== undefined) updates.push(['billing_checkout_hours', dto.billingCheckoutHours]);
 
     // Every field and its audit entry together: a failure half-way used to
     // leave some settings changed with no record of who changed them.

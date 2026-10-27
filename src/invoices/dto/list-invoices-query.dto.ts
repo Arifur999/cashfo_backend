@@ -10,9 +10,15 @@ export class ListInvoicesQueryDto {
   @IsISO8601()
   dateTo?: string;
 
+  // One person's invoices: a customer's User id (or a legacy PlatformUser id).
   @IsOptional()
   @IsString()
   platformUserId?: string;
+
+  // The same as platformUserId, by its proper name.
+  @IsOptional()
+  @IsString()
+  userId?: string;
 
   @IsOptional()
   @Type(() => Number)

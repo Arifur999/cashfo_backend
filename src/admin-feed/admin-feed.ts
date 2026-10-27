@@ -4,7 +4,7 @@ import { AdminRole } from '../common/roles.js';
 // system (security and errors).
 export type FeedGroup = 'MONEY' | 'SUPPORT' | 'SYSTEM';
 
-export type FeedKind = 'PAYMENT_FAILED' | 'TICKET_WAITING' | 'SECURITY_FLAG' | 'SIGN_INS_PAUSED' | 'ERRORS';
+export type FeedKind = 'PAYMENT_FAILED' | 'PAYMENT_PENDING' | 'TICKET_WAITING' | 'SECURITY_FLAG' | 'SIGN_INS_PAUSED' | 'ERRORS';
 
 export interface FeedItem {
   // Stable across reads ("payment:<id>"), for the list's keys.
