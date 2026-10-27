@@ -1,6 +1,9 @@
 // The reading streak and this week's pages, worked out from the Asia/Dhaka
 // days a person read on. Pure, so it is tested on its own.
 
+import type { WeekStart } from '@prisma/client';
+import { weekStartOf } from '../common/week-start.js';
+
 export interface ReadingDay {
   date: string; // YYYY-MM-DD
   pages: number;
@@ -12,14 +15,15 @@ export interface ReadingSummary {
   streak: number;
   // The longest such run ever.
   best: number;
-  // Saturday to Friday of this week (the app's weeks start on Saturday):
-  // the pages read each day, 0 for a day with none or still to come.
+  // The seven days of this week, opening on the customer's week start
+  // (Saturday unless they chose Sunday or Monday): the pages read each day,
+  // 0 for a day with none or still to come.
   week: ReadingDay[];
 }
 
 const shift = (day: string, by: number): string => new Date(Date.parse(`${day}T00:00:00.000Z`) + by * 86_400_000).toISOString().slice(0, 10);
 
-export function readingSummary(days: ReadingDay[], today: string): ReadingSummary {
+export function readingSummary(days: ReadingDay[], today: string, weekStart: WeekStart = 'SATURDAY'): ReadingSummary {
   const pages = new Map(days.filter((day) => day.pages > 0).map((day) => [day.date, day.pages]));
 
   let streak = 0;
@@ -34,10 +38,9 @@ export function readingSummary(days: ReadingDay[], today: string): ReadingSummar
     previous = date;
   }
 
-  // getUTCDay: 0 Sunday ... 6 Saturday; Saturday opens the week.
-  const saturday = shift(today, -((new Date(`${today}T00:00:00.000Z`).getUTCDay() + 1) % 7));
+  const opens = weekStartOf(today, weekStart);
   const week = Array.from({ length: 7 }, (_, i) => {
-    const date = shift(saturday, i);
+    const date = shift(opens, i);
     return { date, pages: pages.get(date) ?? 0 };
   });
 

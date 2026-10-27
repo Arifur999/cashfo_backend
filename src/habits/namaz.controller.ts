@@ -1,7 +1,8 @@
-import { Body, Controller, Delete, Get, Param, ParseUUIDPipe, Post, Put, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, ParseUUIDPipe, Post, Put, Query, UseGuards } from '@nestjs/common';
 import { CurrentUser } from '../user-auth/decorators/current-user.decorator.js';
 import { UserAuthGuard } from '../user-auth/guards/user-auth.guard.js';
 import type { RequestUser } from '../user-auth/interfaces/request-user.interface.js';
+import { NamazTodayQueryDto } from './dto/namaz-today.dto.js';
 import { LogQazaDto, SetQazaSinceDto, UpdatePrayerSettingsDto } from './dto/qaza.dto.js';
 import { NamazService } from './namaz.service.js';
 
@@ -16,6 +17,13 @@ export class NamazController {
   @Get('settings')
   settings(@CurrentUser() user: RequestUser) {
     return this.namazService.settings(user.id);
+  }
+
+  // The day's prayer times from the person's settings, so the app no
+  // longer has to work them out itself.
+  @Get('today')
+  today(@CurrentUser() user: RequestUser, @Query() query: NamazTodayQueryDto) {
+    return this.namazService.today(user.id, query.date);
   }
 
   @Put('settings')

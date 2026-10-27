@@ -1,8 +1,9 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import type { AsrSchool } from '@prisma/client';
-import { dhakaDateOnly } from '../common/dhaka.js';
+import { dhakaDateKey, dhakaDateOnly } from '../common/dhaka.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { LogQazaDto, SetQazaSinceDto, UpdatePrayerSettingsDto } from './dto/qaza.dto.js';
+import { namazDay, type NamazDay } from './namaz-today.js';
 import { dayKey, missedSince, type PrayerCounts, zeroCounts } from './qaza.js';
 
 // How many logged qaza come back with the summary.
@@ -40,6 +41,13 @@ export interface PrayerSettingsView {
 // Bangladesh follow, Hanafi Asr, the Hijri date as calculated.
 const DEFAULT_SETTINGS: PrayerSettingsView = { city: 'Dhaka', latitude: 23.8103, longitude: 90.4125, method: 'Karachi', asrSchool: 'HANAFI', hijriAdjust: 0 };
 
+export interface NamazTodayView extends NamazDay {
+  date: string;
+  city: string;
+  method: string;
+  asrSchool: AsrSchool;
+}
+
 const settingsView = (row: PrayerSettingsView | null): PrayerSettingsView =>
   row ? { city: row.city, latitude: row.latitude, longitude: row.longitude, method: row.method, asrSchool: row.asrSchool, hijriAdjust: row.hijriAdjust } : DEFAULT_SETTINGS;
 
@@ -57,6 +65,14 @@ export class NamazService {
   async updateSettings(userId: string, dto: UpdatePrayerSettingsDto): Promise<PrayerSettingsView> {
     const row = await this.prisma.prayerSettings.upsert({ where: { userId }, create: { userId, ...dto }, update: dto });
     return settingsView(row);
+  }
+
+  // One day's times (today in Dhaka unless a date is given), from the saved
+  // settings or the defaults the reminders use too.
+  async today(userId: string, date?: string): Promise<NamazTodayView> {
+    const day = date ?? dhakaDateKey(new Date());
+    const settings = await this.settings(userId);
+    return { date: day, city: settings.city, method: settings.method, asrSchool: settings.asrSchool, ...namazDay(settings, day) };
   }
 
   async qaza(userId: string): Promise<QazaView> {
