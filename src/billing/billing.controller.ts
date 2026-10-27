@@ -5,15 +5,18 @@ import {
   Controller,
   Delete,
   Get,
+  Header,
   HttpCode,
   NotFoundException,
   Param,
   Post,
   Query,
   Req,
+  StreamableFile,
   UseGuards,
 } from '@nestjs/common';
 import type { Request } from 'express';
+import { InvoicePdfService } from '../invoices/invoice-pdf.service.js';
 import { CurrentUser } from '../user-auth/decorators/current-user.decorator.js';
 import { UserAuthGuard } from '../user-auth/guards/user-auth.guard.js';
 import type { RequestUser } from '../user-auth/interfaces/request-user.interface.js';
@@ -27,7 +30,10 @@ import { PaymentConfirmationService } from './payment-confirmation.service.js';
 @UseGuards(UserAuthGuard)
 @Controller('api/billing')
 export class BillingController {
-  constructor(private readonly billing: BillingService) {}
+  constructor(
+    private readonly billing: BillingService,
+    private readonly invoicePdf: InvoicePdfService,
+  ) {}
 
   @Get()
   overview(@CurrentUser() user: RequestUser) {
@@ -42,6 +48,14 @@ export class BillingController {
   @Get('payments')
   payments(@CurrentUser() user: RequestUser, @Query() query: BillingPaymentsQueryDto) {
     return this.billing.payments(user.id, query.page ?? 1, query.limit ?? 10);
+  }
+
+  // The customer's own invoice as a PDF; anyone else's is a 404.
+  @Get('invoices/:id/pdf')
+  @Header('Cache-Control', 'private, no-store')
+  async invoicePdfFile(@CurrentUser() user: RequestUser, @Param('id') id: string) {
+    const pdf = await this.invoicePdf.render(id, user.id);
+    return new StreamableFile(pdf.data, { type: 'application/pdf', disposition: `attachment; filename="${pdf.fileName}"` });
   }
 
   @Post('trial')

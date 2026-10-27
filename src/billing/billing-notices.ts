@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { Prisma } from '@prisma/client';
-import { MailService } from '../mail/mail.service.js';
+import { MailService, type EmailAttachment } from '../mail/mail.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { dateLabel, formatTaka, localeOf } from './billing-text.js';
 import { toPaisa } from './pricing.js';
@@ -43,9 +43,15 @@ export class BillingNotices {
     return count > 0;
   }
 
-  // A payment was confirmed: the bell, and a receipt by email.
-  async paid(payment: { id: string; userId: string | null; amount: { toString(): string }; periodEnd: Date | null }, planName: string, invoiceNumber: string) {
-    if (!payment.userId) return;
+  // A payment was confirmed: the bell, and a receipt by email, with the
+  // invoice PDF when `attachment` makes one. True when the receipt went.
+  async paid(
+    payment: { id: string; userId: string | null; amount: { toString(): string }; periodEnd: Date | null },
+    planName: string,
+    invoiceNumber: string,
+    attachment?: () => Promise<EmailAttachment | null>,
+  ): Promise<boolean> {
+    if (!payment.userId) return false;
     const fresh = await this.bell(payment.userId, {
       key: `payment:${payment.id}:paid`,
       data: {
@@ -57,17 +63,23 @@ export class BillingNotices {
         invoiceNumber,
       },
     });
-    if (!fresh) return;
-    await this.email(payment.userId, async (user, locale) =>
-      this.mail.sendBillingReceiptEmail(user.email, locale, {
-        name: user.name,
-        planName,
-        amount: formatTaka(toPaisa(payment.amount), locale),
-        invoiceNumber,
-        paidUntil: payment.periodEnd ? dateLabel(payment.periodEnd, locale) : null,
-        link: this.link(),
-      }),
-    );
+    if (!fresh) return false;
+    return this.email(payment.userId, async (user, locale) => {
+      const file = attachment ? await attachment() : null;
+      await this.mail.sendBillingReceiptEmail(
+        user.email,
+        locale,
+        {
+          name: user.name,
+          planName,
+          amount: formatTaka(toPaisa(payment.amount), locale),
+          invoiceNumber,
+          paidUntil: payment.periodEnd ? dateLabel(payment.periodEnd, locale) : null,
+          link: this.link(),
+        },
+        file ? [file] : undefined,
+      );
+    });
   }
 
   // A plan is ending soon, or has ended: the bell, and an email.
@@ -90,14 +102,17 @@ export class BillingNotices {
     return `${this.config.get<string>('USER_FRONTEND_URL') ?? 'http://localhost:3000'}${BILLING_PATH}`;
   }
 
-  private async email(userId: string, send: (user: { name: string; email: string }, locale: 'en' | 'bn') => Promise<void>) {
-    if (!this.mail.configured) return;
+  // True when the email went.
+  private async email(userId: string, send: (user: { name: string; email: string }, locale: 'en' | 'bn') => Promise<void>): Promise<boolean> {
+    if (!this.mail.configured) return false;
     try {
       const user = await this.prisma.user.findUnique({ where: { id: userId }, select: { name: true, email: true, preferredLanguage: true } });
-      if (!user) return;
+      if (!user) return false;
       await send(user, localeOf(user.preferredLanguage));
+      return true;
     } catch (error) {
       this.logger.warn(`Billing email for user ${userId} failed: ${error instanceof Error ? error.message : String(error)}`);
+      return false;
     }
   }
 }

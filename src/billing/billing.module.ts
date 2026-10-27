@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { InvoicePdfModule } from '../invoices/invoice-pdf.module.js';
 import { MailModule } from '../mail/mail.module.js';
 import { SettingsModule } from '../settings/settings.module.js';
 import { UserAuthModule } from '../user-auth/user-auth.module.js';
@@ -17,7 +18,8 @@ import { SubscriptionsService } from './subscriptions.service.js';
 // Mark paid, or a gateway's webhook) and the plan's expiry. The admin
 // payments and owners modules import it for Mark paid and Change plan.
 @Module({
-  imports: [UserAuthModule, SettingsModule, MailModule],
+  // InvoicePdfModule: the invoice PDF for the receipt and the customer's download.
+  imports: [UserAuthModule, SettingsModule, MailModule, InvoicePdfModule],
   controllers: [BillingController, BillingWebhooksController],
   providers: [
     BillingService,

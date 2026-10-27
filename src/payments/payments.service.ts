@@ -1,5 +1,6 @@
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { BillingCycle, PaymentStatus, Prisma } from '@prisma/client';
+import { toCsv } from '../account-export/csv.js';
 import { payerIdOf, requesterPeople, type RequesterPerson } from '../admin-feed/requester-names.js';
 import { BillingHooks } from '../billing/billing-hooks.js';
 import { BillingNotices } from '../billing/billing-notices.js';
@@ -14,8 +15,12 @@ import { PrismaService } from '../prisma/prisma.service.js';
 import { ListPaymentsQueryDto } from './dto/list-payments-query.dto.js';
 import type { MarkPaidDto } from './dto/mark-paid.dto.js';
 import { DUPLICATE_WINDOW_MS, countByStatus, duplicateOf, paymentIdPrefix, type DuplicateCandidate } from './payment-extras.js';
+import { EXPORT_ROW_CAP, PAYMENT_EXPORT_HEADERS, paymentExportRow, paymentsExportFileName } from './payments-export.js';
 import { RefundPaymentDto } from './dto/refund-payment.dto.js';
 import { SimulatePaymentDto } from './dto/simulate-payment.dto.js';
+
+// Billing tickets this close to a payment (either side) show on its page.
+const RELATED_TICKET_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
 
 @Injectable()
 export class PaymentsService {
@@ -32,9 +37,95 @@ export class PaymentsService {
     const page = query.page ?? 1;
     const limit = query.limit ?? 10;
 
-    // Every filter but the status. The status tabs are counted over these,
-    // so beside a gateway, a plan, a search or dates each tab says how many
+    // The status tabs are counted over every filter but the status, so
+    // beside a gateway, a plan, a search or dates each tab says how many
     // rows it would show.
+    const narrowed = await this.narrowedWhere(query);
+    const status = forcedStatus ?? query.status;
+    const where: Prisma.PaymentWhereInput = status ? { ...narrowed, status } : narrowed;
+
+    const [payments, byStatus] = await Promise.all([
+      this.prisma.payment.findMany({
+        where,
+        // The id breaks ties, so a page never repeats or skips a payment
+        // that shares its timestamp (the all-pages export reads every page).
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        skip: (page - 1) * limit,
+        take: limit,
+        include: {
+          plan: { select: { id: true, name: true, slug: true } },
+          invoice: { select: { id: true, invoiceNumber: true, emailedAt: true } },
+          // Enough of the refund to tell a partial one from a full one;
+          // null when there is none.
+          refund: { select: { amount: true, status: true, createdAt: true } },
+        },
+      }),
+      this.prisma.payment.groupBy({ by: ['status'], where: narrowed, _count: true }),
+    ]);
+
+    // The total is read off the same counts (every payment has exactly one
+    // status), so the open tab's count and the pager's "of N" always agree.
+    const statusCounts = countByStatus(byStatus);
+    const total = status ? statusCounts[status] : Object.values(statusCounts).reduce((sum, count) => sum + count, 0);
+
+    return { data: await this.attachExtras(payments), meta: { page, limit, total, totalPage: Math.ceil(total / limit), statusCounts } };
+  }
+
+  // Every payment the list's filters (status included) match, as a CSV,
+  // newest first, up to EXPORT_ROW_CAP rows. The page and limit are
+  // ignored. Audited, since it hands out customers' names and emails.
+  async exportCsv(query: ListPaymentsQueryDto, adminId: string, ipAddress?: string) {
+    const narrowed = await this.narrowedWhere(query);
+    const where: Prisma.PaymentWhereInput = query.status ? { ...narrowed, status: query.status } : narrowed;
+    const found = await this.prisma.payment.findMany({
+      where,
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      // One more than the cap tells whether it was cut short.
+      take: EXPORT_ROW_CAP + 1,
+      select: {
+        id: true,
+        userId: true,
+        platformUserId: true,
+        createdAt: true,
+        purpose: true,
+        gateway: true,
+        status: true,
+        listPrice: true,
+        discountApplied: true,
+        amount: true,
+        gatewayReferenceId: true,
+        paidAt: true,
+        plan: { select: { name: true } },
+        invoice: { select: { invoiceNumber: true } },
+        refund: { select: { amount: true, status: true } },
+      },
+    });
+    const truncated = found.length > EXPORT_ROW_CAP;
+    const payments = truncated ? found.slice(0, EXPORT_ROW_CAP) : found;
+    const payers = await requesterPeople(this.prisma, payments.map(payerIdOf));
+    const data = toCsv(
+      PAYMENT_EXPORT_HEADERS,
+      payments.map((payment) => {
+        const payerId = payerIdOf(payment);
+        return paymentExportRow(payment, payerId ? (payers.get(payerId) ?? null) : null);
+      }),
+    );
+
+    const { page: _page, limit: _limit, ...filters } = query;
+    await this.prisma.auditLog.create({
+      data: {
+        adminUserId: adminId,
+        action: 'PAYMENTS_EXPORTED',
+        entityType: 'Payment',
+        newValue: { filters: { ...filters }, rows: payments.length, truncated },
+        ipAddress,
+      },
+    });
+    return { fileName: paymentsExportFileName(), data, rows: payments.length, truncated };
+  }
+
+  // Every filter of the list but the status.
+  private async narrowedWhere(query: ListPaymentsQueryDto): Promise<Prisma.PaymentWhereInput> {
     const narrowed: Prisma.PaymentWhereInput = {};
     if (query.gateway) narrowed.gateway = query.gateway;
     if (query.planId) narrowed.planId = query.planId;
@@ -70,35 +161,7 @@ export class PaymentsService {
         ...(idPrefix ? [{ id: { startsWith: idPrefix } }] : []),
       ];
     }
-
-    const status = forcedStatus ?? query.status;
-    const where: Prisma.PaymentWhereInput = status ? { ...narrowed, status } : narrowed;
-
-    const [payments, byStatus] = await Promise.all([
-      this.prisma.payment.findMany({
-        where,
-        // The id breaks ties, so a page never repeats or skips a payment
-        // that shares its timestamp (the all-pages export reads every page).
-        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
-        skip: (page - 1) * limit,
-        take: limit,
-        include: {
-          plan: { select: { id: true, name: true, slug: true } },
-          invoice: { select: { id: true, invoiceNumber: true } },
-          // Enough of the refund to tell a partial one from a full one;
-          // null when there is none.
-          refund: { select: { amount: true, status: true, createdAt: true } },
-        },
-      }),
-      this.prisma.payment.groupBy({ by: ['status'], where: narrowed, _count: true }),
-    ]);
-
-    // The total is read off the same counts (every payment has exactly one
-    // status), so the open tab's count and the pager's "of N" always agree.
-    const statusCounts = countByStatus(byStatus);
-    const total = status ? statusCounts[status] : Object.values(statusCounts).reduce((sum, count) => sum + count, 0);
-
-    return { data: await this.attachExtras(payments), meta: { page, limit, total, totalPage: Math.ceil(total / limit), statusCounts } };
+    return narrowed;
   }
 
   failed(query: ListPaymentsQueryDto) {
@@ -169,7 +232,8 @@ export class PaymentsService {
     if (!payment) {
       throw new NotFoundException('Payment not found');
     }
-    const [[withExtras], otherPayments, subscription] = await Promise.all([
+    const payerId = payerIdOf(payment);
+    const [[withExtras], otherPayments, subscription, relatedTickets] = await Promise.all([
       this.attachExtras([payment]),
       // The same person's other payments, newest first.
       this.prisma.payment.findMany({
@@ -185,10 +249,29 @@ export class PaymentsService {
             select: { status: true, currentPeriodEnd: true, trialEndsAt: true, cancelAtPeriodEnd: true, plan: { select: { id: true, name: true } } },
           })
         : null,
+      // The payer's billing tickets from around the payment ("charged
+      // twice?"), newest first. SupportTicket.platformUserId holds the
+      // customer's User id.
+      payerId
+        ? this.prisma.supportTicket.findMany({
+            where: {
+              category: 'BILLING',
+              platformUserId: payerId,
+              createdAt: {
+                gte: new Date(payment.createdAt.getTime() - RELATED_TICKET_WINDOW_MS),
+                lte: new Date(payment.createdAt.getTime() + RELATED_TICKET_WINDOW_MS),
+              },
+            },
+            orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+            take: 10,
+            select: { id: true, subject: true, status: true, priority: true, category: true, createdAt: true },
+          })
+        : [],
     ]);
     return {
       ...withExtras,
       otherPayments,
+      relatedTickets,
       subscription: subscription && {
         planId: subscription.plan.id,
         planName: subscription.plan.name,

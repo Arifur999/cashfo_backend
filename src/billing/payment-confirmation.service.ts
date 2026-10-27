@@ -1,5 +1,7 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PaymentStatus, Prisma } from '@prisma/client';
+import { InvoicePdfService } from '../invoices/invoice-pdf.service.js';
+import type { EmailAttachment } from '../mail/mail.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { SettingsService } from '../settings/settings.service.js';
 import { BillingHooks } from './billing-hooks.js';
@@ -30,12 +32,15 @@ const HOUR_MS = 60 * 60 * 1000;
 // whatever else listens (BillingHooks); the bell and the receipt follow.
 @Injectable()
 export class PaymentConfirmationService {
+  private readonly logger = new Logger(PaymentConfirmationService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly subscriptions: SubscriptionsService,
     private readonly hooks: BillingHooks,
     private readonly notices: BillingNotices,
     private readonly settingsService: SettingsService,
+    private readonly invoicePdf?: InvoicePdfService,
   ) {}
 
   async markPaid(id: string, input: MarkPaidInput, actor: Actor | null) {
@@ -129,9 +134,12 @@ export class PaymentConfirmationService {
       };
     });
 
-    await this.notices.paid(result.payment, result.planName, result.invoice.invoiceNumber);
+    // The receipt carries the invoice PDF; when it went, the invoice is
+    // marked emailed. Neither may fail the Mark paid that already happened.
+    const emailed = await this.notices.paid(result.payment, result.planName, result.invoice.invoiceNumber, () => this.invoiceAttachment(result.invoice.id));
+    const invoice = emailed ? await this.stampEmailed(result.invoice) : result.invoice;
     const { planName: _planName, ...answer } = result;
-    return answer;
+    return { ...answer, invoice };
   }
 
   async markFailed(id: string, reason: string, actor: Actor | null) {
@@ -198,6 +206,30 @@ export class PaymentConfirmationService {
       });
       return tx.payment.findUniqueOrThrow({ where: { id } });
     });
+  }
+
+  // The invoice PDF for the receipt, or null (the receipt goes without it)
+  // when it can't be made.
+  private async invoiceAttachment(invoiceId: string): Promise<EmailAttachment | null> {
+    if (!this.invoicePdf) return null;
+    try {
+      const pdf = await this.invoicePdf.render(invoiceId);
+      return { filename: pdf.fileName, content: pdf.data };
+    } catch (error) {
+      this.logger.warn(`Invoice PDF for the receipt of invoice ${invoiceId} failed: ${error instanceof Error ? error.message : String(error)}`);
+      return null;
+    }
+  }
+
+  private async stampEmailed<T extends { id: string; emailedAt: Date | null }>(invoice: T): Promise<T> {
+    const emailedAt = new Date();
+    try {
+      await this.prisma.invoice.update({ where: { id: invoice.id }, data: { emailedAt } });
+      return { ...invoice, emailedAt };
+    } catch (error) {
+      this.logger.warn(`Could not mark invoice ${invoice.id} emailed: ${error instanceof Error ? error.message : String(error)}`);
+      return invoice;
+    }
   }
 
   private async refuse(tx: Prisma.TransactionClient, id: string, what: string): Promise<never> {
