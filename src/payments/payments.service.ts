@@ -224,7 +224,8 @@ export class PaymentsService {
     const payment = await this.prisma.payment.findUnique({
       where: { id },
       include: {
-        plan: { select: { id: true, name: true, slug: true } },
+        // The cycle and list price word the Plan row: "Monthly Pro · ৳ 299 a month".
+        plan: { select: { id: true, name: true, slug: true, billingCycle: true, price: true } },
         invoice: true,
         refund: true,
       },
