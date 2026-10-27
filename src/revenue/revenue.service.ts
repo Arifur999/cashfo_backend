@@ -179,7 +179,10 @@ export class RevenueService {
     const leftThisMonth = [...paidAtLastMonthEnd].filter((person) => !paidNow.has(person)).length;
     // Joined: paid now, never inside a paid period before this month began.
     const paidBefore = everyone(peopleAt(new Date(thisMonthStart.getTime() - 1)));
-    const joinedThisMonth = [...paidNow].filter((person) => !paidBefore.has(person)).length;
+    const joined = [...paidNow].filter((person) => !paidBefore.has(person));
+    const joinedThisMonth = joined.length;
+    // Of those, how many a friend brought in ("From referrals: 4 of 11").
+    const joinedFromReferral = joined.length ? await this.prisma.referral.count({ where: { referredUserId: { in: joined } } }) : 0;
 
     const thisMonth = payments.filter((payment) => payment.createdAt >= thisMonthStart);
     const net = (payment: (typeof payments)[number]) => Number(payment.amount) - (payment.refund?.status === 'COMPLETED' ? Number(payment.refund.amount) : 0);
@@ -200,7 +203,7 @@ export class RevenueService {
         lastMonthEnd && mrrHistory[mrrHistory.length - 2].mrr > 0
           ? Math.round(((mrrHistory[mrrHistory.length - 1].mrr - mrrHistory[mrrHistory.length - 2].mrr) / mrrHistory[mrrHistory.length - 2].mrr) * 1000) / 10
           : null,
-      paidPeople: { now: paidNow.size, joinedThisMonth, leftThisMonth },
+      paidPeople: { now: paidNow.size, joinedThisMonth, joinedFromReferral, leftThisMonth },
       churn,
       mrrHistory,
       byPlan: plans
