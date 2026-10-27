@@ -90,6 +90,7 @@ model SubscriptionPlan {
   couponUsages  CouponRedemption[]
   payments      Payment[]
   businesses    Business[] // end-user app (Prompt 1): workspaces on this plan
+  subscriptions UserSubscription[]
 }
 
 enum BillingCycle {
@@ -109,6 +110,8 @@ model Coupon {
   validUntil      DateTime
   applicablePlans String[] // array of SubscriptionPlan.id, empty = applies to all
   isActive        Boolean            @default(true)
+  // A person may use it once (checked against CouponRedemption.userId).
+  oncePerPerson   Boolean            @default(false)
   createdAt       DateTime           @default(now())
   redemptions     CouponRedemption[]
 }
@@ -122,27 +125,90 @@ model CouponRedemption {
   id             String           @id @default(uuid())
   couponId       String
   coupon         Coupon           @relation(fields: [couponId], references: [id])
-  platformUserId String
+  // Legacy sandbox rows only; a customer's redemption sets userId instead.
+  platformUserId String?
+  // The customer (User.id) who used it -- a loose reference, like the rest.
+  userId         String?
+  // The payment it took money off: one redemption per payment.
+  paymentId      String?          @unique
   planId         String
   plan           SubscriptionPlan @relation(fields: [planId], references: [id])
   redeemedAt     DateTime         @default(now())
+
+  @@index([couponId, userId])
 }
 
 model PlanChangeLog {
   id             String   @id @default(uuid())
-  platformUserId String
+  // Legacy sandbox rows only; a customer's change sets userId instead.
+  platformUserId String?
+  userId         String?
   fromPlanId     String?
   toPlanId       String
   changedBy      String // AdminUser id, or "SYSTEM" if automated
   reason         String?
   createdAt      DateTime @default(now())
+
+  @@index([userId, createdAt])
+}
+
+// A customer's plan: one row per customer, the source of truth for "my
+// plan" (src/billing/subscriptions.service.ts). Their workspaces'
+// Business.planId stays a mirror of planId, written by
+// SubscriptionsService.applyPlan(), so everything that reads a workspace's
+// plan (MRR, feature flags, announcements, owners, search, campaigns)
+// keeps working unchanged.
+model UserSubscription {
+  id                 String             @id @default(uuid())
+  userId             String             @unique
+  user               User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  planId             String
+  plan               SubscriptionPlan   @relation(fields: [planId], references: [id])
+  status             SubscriptionStatus
+  trialEndsAt        DateTime?
+  currentPeriodStart DateTime?
+  // When the paid period ends. Null on the free plan, and on a paid plan an
+  // admin set by hand: that never expires until an admin sets an end.
+  currentPeriodEnd   DateTime?
+  cancelAtPeriodEnd  Boolean            @default(false)
+  // The list price paid for the running period: a new plan price starts at
+  // each person's next renewal.
+  lockedPrice        Decimal?           @db.Decimal(10, 2)
+  // One free trial per person.
+  trialUsedAt        DateTime?
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  @@index([status, currentPeriodEnd])
+}
+
+enum SubscriptionStatus {
+  TRIALING
+  ACTIVE
+  // The period ended without a renewal; the plan stays for the grace days.
+  PAST_DUE
+  // Ended by the customer's cancel or a full refund (now on the free plan).
+  CANCELLED
+  // The period or the trial ran out (now on the free plan).
+  EXPIRED
+}
+
+enum PaymentPurpose {
+  NEW
+  RENEWAL
+  UPGRADE
 }
 
 // --- Prompt 4: Payments (payments, invoices, refunds). ---
 
 model Payment {
   id                 String           @id @default(uuid())
-  platformUserId     String
+  // Legacy sandbox payments (POST /admin/dev/simulate-payment) only; a
+  // customer's payment sets userId instead.
+  platformUserId     String?
+  userId             String?
+  user               User?            @relation(fields: [userId], references: [id], onDelete: SetNull)
+  purpose            PaymentPurpose   @default(NEW)
   planId             String
   plan               SubscriptionPlan @relation(fields: [planId], references: [id])
   amount             Decimal          @db.Decimal(10, 2)
@@ -154,12 +220,26 @@ model Payment {
   status             PaymentStatus
   failureReason      String?
   paidAt             DateTime?
+  // The plan's price at checkout, before any discount.
+  listPrice          Decimal?         @db.Decimal(10, 2)
+  // The friend's first-payment discount, when it beat the coupon.
+  referralDiscount   Decimal?         @db.Decimal(10, 2)
+  // The paid period this payment bought (set when it is marked paid).
+  periodStart        DateTime?
+  periodEnd          DateTime?
+  // The number the money came from, typed in at Mark paid.
+  payerAccount       String?
+  // An unpaid checkout lapses at this time.
+  expiresAt          DateTime?
+  // The admin who marked it paid.
+  markedPaidBy       String?
   createdAt          DateTime         @default(now())
   invoice            Invoice?
   refund             Refund?
 
   @@index([platformUserId, createdAt])
-  @@index([status])
+  @@index([userId, createdAt])
+  @@index([status, expiresAt])
 }
 
 enum PaymentGateway {
@@ -729,6 +809,8 @@ model User {
   notifications       UserNotification[]
   pushSubscriptions   PushSubscription[]
   reminders           Reminder[]
+  subscription        UserSubscription?
+  payments            Payment[]
 
   // No separate @@index([email]) -- @unique above already creates a unique
   // index covering lookups by email (same reasoning as PlatformUser).
@@ -2188,6 +2270,8 @@ enum UserNotificationType {
   SUPPORT_REPLY
   // A Habit Tracker reminder came due (RemindersScheduler).
   REMINDER
+  // A payment was confirmed, failed or refunded, or the plan is ending.
+  BILLING
 }
 
 // A browser or phone that gets web push notifications for one customer
