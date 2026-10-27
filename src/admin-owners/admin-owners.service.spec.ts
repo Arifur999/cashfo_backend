@@ -116,6 +116,21 @@ describe('AdminOwnersService.list', () => {
     const { items } = await service.list({});
     expect(items[0]).toMatchObject({ businessId: 'ws-shop', businessType: 'BUSINESS', businessIsDefault: false });
   });
+
+  it('gives the end of a running trial, and nothing for one that has run out or a paid plan', async () => {
+    const future = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000);
+    const past = new Date(Date.now() - 60 * 1000);
+    const rows = [
+      { status: 'TRIALING', trialEndsAt: future },
+      { status: 'TRIALING', trialEndsAt: past },
+      { status: 'ACTIVE', trialEndsAt: future },
+      null,
+    ];
+    const { service, prisma } = reads(renamedPersonal);
+    prisma.user.findMany.mockResolvedValue(rows.map((subscription) => ({ ...owner(renamedPersonal), subscription })));
+    const { items } = await service.list({});
+    expect(items.map((item) => item.trialEndsAt)).toEqual([future, null, null, null]);
+  });
 });
 
 describe('AdminOwnersService.getById', () => {

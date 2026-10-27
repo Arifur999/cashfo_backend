@@ -19,9 +19,17 @@ import { OWNERS_EXPORT_LIMIT, ownersCsv } from './owners-export.js';
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
-type OwnerWithBusinesses = Prisma.UserGetPayload<{
-  include: { ownedBusinesses: { include: { plan: true } } };
-}>;
+function trialEndsAt(subscription: { status: string; trialEndsAt: Date | null } | null, now = new Date()): Date | null {
+  if (subscription?.status !== 'TRIALING' || !subscription.trialEndsAt) return null;
+  return subscription.trialEndsAt > now ? subscription.trialEndsAt : null;
+}
+
+const OWNER_LIST_INCLUDE = {
+  ownedBusinesses: { where: { deletedAt: null }, include: { plan: true } },
+  subscription: { select: { status: true, trialEndsAt: true } },
+} satisfies Prisma.UserInclude;
+
+type OwnerWithBusinesses = Prisma.UserGetPayload<{ include: typeof OWNER_LIST_INCLUDE }>;
 
 @Injectable()
 export class AdminOwnersService {
@@ -92,7 +100,7 @@ export class AdminOwnersService {
         skip: (page - 1) * limit,
         take: limit,
         orderBy: ownerOrderBy(query.sort),
-        include: { ownedBusinesses: { where: { deletedAt: null }, include: { plan: true } } },
+        include: OWNER_LIST_INCLUDE,
       }),
       this.prisma.user.count({ where }),
       this.prisma.user.groupBy({ by: ['status'], where: baseWhere, _count: true }),
@@ -119,7 +127,7 @@ export class AdminOwnersService {
       where,
       take: OWNERS_EXPORT_LIMIT + 1,
       orderBy: ownerOrderBy(query.sort),
-      include: { ownedBusinesses: { where: { deletedAt: null }, include: { plan: true } } },
+      include: OWNER_LIST_INCLUDE,
     });
     const truncated = owners.length > OWNERS_EXPORT_LIMIT;
     const rows = owners.slice(0, OWNERS_EXPORT_LIMIT).map((owner) => this.summarizeOwner(owner));
@@ -198,6 +206,9 @@ export class AdminOwnersService {
       businessIsDefault: business?.isDefault ?? null,
       planId: business?.planId ?? null,
       planName: business?.plan?.name ?? null,
+      // A running free trial: the day it ends (the plan chip reads "Trial
+      // ends 4 Oct"). Null once it has run out, even before the lazy expiry.
+      trialEndsAt: trialEndsAt(owner.subscription),
       workspaceCount: owner.ownedBusinesses.length,
       lastLoginAt: owner.lastLoginAt,
       daysUsing,
