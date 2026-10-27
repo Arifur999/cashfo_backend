@@ -38,11 +38,12 @@ export class AdminFeedService {
     return { seenAt: adminFeedSeenAt };
   }
 
-  // Failed payments of the last week, and customers' checkouts waiting for
-  // an admin's Mark paid.
+  // Failed payments of the last week, customers' checkouts waiting for an
+  // admin's Mark paid, and referral withdrawals to approve or send.
   private async moneyItems(now: number): Promise<FeedItem[]> {
     const select = { id: true, userId: true, platformUserId: true, amount: true, gateway: true, failureReason: true, createdAt: true, plan: { select: { name: true } } } as const;
-    const [failed, pending] = await Promise.all([
+    const payoutSelect = { id: true, number: true, amount: true, status: true, methodSnapshot: true, createdAt: true, approvedAt: true, user: { select: { name: true } } } as const;
+    const [failed, pending, payouts] = await Promise.all([
       // A checkout the customer replaced or cancelled, or one that lapsed,
       // is not a failure anyone needs to look at.
       this.prisma.payment.findMany({
@@ -57,6 +58,7 @@ export class AdminFeedService {
         take: PER_SOURCE,
         select,
       }),
+      this.prisma.payoutRequest.findMany({ where: { status: { in: ['REQUESTED', 'APPROVED'] } }, orderBy: { createdAt: 'desc' }, take: PER_SOURCE, select: payoutSelect }),
     ]);
     const names = await requesterNames(this.prisma, [...failed, ...pending].map(payerIdOf));
     const nameOf = (row: (typeof failed)[number]) => {
@@ -79,6 +81,22 @@ export class AdminFeedService {
         data: { name: nameOf(row), plan: row.plan.name, gateway: row.gateway, amount: row.amount.toFixed(2), paymentId: row.id },
         at: row.createdAt,
         href: `/admin/payments/${row.id}`,
+      })),
+      // REQUESTED: to approve or reject; APPROVED: to send and mark paid.
+      ...payouts.map((row): FeedItem => ({
+        id: `payout:${row.id}`,
+        group: 'MONEY',
+        kind: 'PAYOUT_REQUESTED',
+        data: {
+          payoutId: row.id,
+          displayId: `WD-${row.number}`,
+          name: row.user.name,
+          amount: row.amount.toFixed(2),
+          method: (row.methodSnapshot as { type?: string } | null)?.type ?? null,
+          status: row.status,
+        },
+        at: row.approvedAt ?? row.createdAt,
+        href: `/admin/referrals?payout=${row.id}`,
       })),
     ];
   }

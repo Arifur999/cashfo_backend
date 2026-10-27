@@ -36,6 +36,17 @@ const LABELERS: Record<string, Labeler> = {
       id: row.id,
       label: row.description,
     })),
+  // A referral withdrawal answers with its number and member; a referral
+  // with "referrer → friend".
+  PayoutRequest: async (prisma, ids) =>
+    (await prisma.payoutRequest.findMany({ where: where(ids), select: { id: true, number: true, user: { select: { name: true } } } })).map((row) => ({
+      id: row.id,
+      label: `WD-${row.number} ${row.user.name}`,
+    })),
+  Referral: async (prisma, ids) =>
+    (await prisma.referral.findMany({ where: where(ids), select: { id: true, referrer: { select: { name: true } }, referredUser: { select: { name: true } } } })).map(
+      (row) => ({ id: row.id, label: `${row.referrer.name} → ${row.referredUser.name}` }),
+    ),
   // A payment answers with its payer: the customer (userId), or for an old
   // sandbox payment its PlatformUser -- both loose, so a second read.
   Payment: async (prisma, ids) => {

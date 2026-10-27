@@ -1,7 +1,9 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service.js';
+import type { UpdateReferralSettingsDto } from './dto/update-referral-settings.dto.js';
 import { UpdateSettingsDto } from './dto/update-settings.dto.js';
+import { parseReferralSettings, REFERRAL_SETTING_KEYS, type ReferralSettings } from './referral-settings.js';
 
 // Fixed, curated set of general platform settings backed by the generic
 // PlatformSetting key-value table from Prompt 1 (never used until now). Kept
@@ -19,8 +21,9 @@ const DEFAULTS = {
   default_timezone: 'Asia/Dhaka',
   maintenance_mode: false,
   maintenance_message: "We're currently performing scheduled maintenance. Please check back soon.",
-  // "Referral Program" menu's admin-configured reward per confirmed
-  // referral -- 100 BDT is the product owner's explicit demo default.
+  // The old Referral Program rule's flat reward per sign-up. Only old
+  // referrals carry it now; the commission rules are the referral_* keys in
+  // referral-settings.ts (Admin > Referrals & Payouts > Settings).
   referral_reward_amount: 100,
   // Billing (src/billing). The manual checkout's instructions, with
   // {amount}, {reference} and {method} filled in per payment; the number
@@ -63,14 +66,13 @@ export interface PlatformSettings {
   billingCheckoutHours: number;
 }
 
-// The invited friend's first-payment discount. Read here for checkout
-// prices; the referral settings page (chunk 2) is where admins change it.
+// The invited friend's first-payment discount, for checkout prices.
 export interface ReferralPriceSettings {
   programLive: boolean;
   friendDiscountPct: number;
 }
 
-const REFERRAL_PRICE_DEFAULTS = { referral_program_live: true, referral_friend_discount_pct: 10 } as const;
+type Client = PrismaService | Prisma.TransactionClient;
 
 // How long getCached() may serve a copy. The maintenance switch reads
 // settings on every customer request; a few seconds of delay after an admin
@@ -114,14 +116,64 @@ export class SettingsService {
   }
 
   async getReferralPrice(): Promise<ReferralPriceSettings> {
-    const rows = await this.prisma.platformSetting.findMany({ where: { key: { in: Object.keys(REFERRAL_PRICE_DEFAULTS) } } });
-    const byKey = new Map(rows.map((r) => [r.key, r.value]));
-    const live = byKey.get('referral_program_live');
-    const pct = byKey.get('referral_friend_discount_pct');
-    return {
-      programLive: typeof live === 'boolean' ? live : REFERRAL_PRICE_DEFAULTS.referral_program_live,
-      friendDiscountPct: typeof pct === 'number' && pct >= 0 && pct <= 100 ? pct : REFERRAL_PRICE_DEFAULTS.referral_friend_discount_pct,
-    };
+    const { programLive, friendDiscountPct } = await this.getReferralSettings();
+    return { programLive, friendDiscountPct };
+  }
+
+  // The Referral Program's rules. Takes a transaction's client so a payment
+  // being confirmed reads them inside its own transaction.
+  async getReferralSettings(client: Client = this.prisma): Promise<ReferralSettings> {
+    const rows = await client.platformSetting.findMany({ where: { key: { in: Object.values(REFERRAL_SETTING_KEYS) } } });
+    return parseReferralSettings(new Map(rows.map((r) => [r.key, r.value])));
+  }
+
+  // The admin page's copy, with who changed one of them last and when.
+  async getReferralSettingsForAdmin() {
+    const [settings, latest] = await Promise.all([
+      this.getReferralSettings(),
+      this.prisma.platformSetting.findFirst({
+        where: { key: { in: Object.values(REFERRAL_SETTING_KEYS) }, updatedBy: { not: null } },
+        orderBy: { updatedAt: 'desc' },
+        select: { updatedAt: true, updatedBy: true },
+      }),
+    ]);
+    const admin = latest?.updatedBy ? await this.prisma.user.findUnique({ where: { id: latest.updatedBy }, select: { name: true } }) : null;
+    return { ...settings, lastChange: latest ? { at: latest.updatedAt, by: admin?.name ?? null } : null };
+  }
+
+  // Saves the fields sent, with one audit entry, in one transaction. A new
+  // rate applies to payments confirmed after this: each commission keeps
+  // the rate it was made with.
+  async updateReferralSettings(dto: UpdateReferralSettingsDto, adminId: string, ipAddress?: string) {
+    const fields = Object.keys(REFERRAL_SETTING_KEYS) as (keyof ReferralSettings)[];
+    const before = await this.getReferralSettings();
+    const after = { ...before } as Record<keyof ReferralSettings, unknown>;
+    for (const field of fields) if (dto[field] !== undefined) after[field] = dto[field];
+    if ((after.withdrawalFee as number) >= (after.minWithdrawal as number)) {
+      throw new BadRequestException('The withdrawal fee must be less than the minimum withdrawal');
+    }
+    const changed = fields.filter((field) => JSON.stringify(after[field]) !== JSON.stringify(before[field]));
+    if (changed.length > 0) {
+      await this.prisma.$transaction(async (tx) => {
+        for (const field of changed) {
+          const key = REFERRAL_SETTING_KEYS[field];
+          // maxPerMonth's "no limit" is stored as JSON null.
+          const value = after[field] === null ? Prisma.JsonNull : (after[field] as Prisma.InputJsonValue);
+          await tx.platformSetting.upsert({ where: { key }, update: { value, updatedBy: adminId }, create: { key, value, updatedBy: adminId } });
+        }
+        await tx.auditLog.create({
+          data: {
+            adminUserId: adminId,
+            action: 'REFERRAL_SETTINGS_UPDATED',
+            entityType: 'PlatformSetting',
+            oldValue: Object.fromEntries(changed.map((field) => [field, before[field]])) as Prisma.InputJsonValue,
+            newValue: Object.fromEntries(changed.map((field) => [field, after[field]])) as Prisma.InputJsonValue,
+            ipAddress,
+          },
+        });
+      });
+    }
+    return this.getReferralSettingsForAdmin();
   }
 
   // The admin page's copy: the settings, plus who changed one last and when
