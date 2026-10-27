@@ -24,6 +24,12 @@ function trialEndsAt(subscription: { status: string; trialEndsAt: Date | null } 
   return subscription.trialEndsAt > now ? subscription.trialEndsAt : null;
 }
 
+function auditReason(newValue: Prisma.JsonValue): string | null {
+  if (!newValue || typeof newValue !== 'object' || Array.isArray(newValue)) return null;
+  const reason = newValue.reason;
+  return typeof reason === 'string' && reason.trim() ? reason : null;
+}
+
 const OWNER_LIST_INCLUDE = {
   ownedBusinesses: { where: { deletedAt: null }, include: { plan: true } },
   subscription: { select: { status: true, trialEndsAt: true } },
@@ -294,6 +300,9 @@ export class AdminOwnersService {
         action: log.action,
         entityType: log.entityType,
         adminName: log.adminUser.name,
+        // The reason an admin gave (suspend, plan change), for the history
+        // line; the rest of the audit row stays on the audit log.
+        reason: auditReason(log.newValue),
         createdAt: log.createdAt,
       })),
       ...extras,

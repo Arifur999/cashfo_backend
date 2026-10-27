@@ -143,4 +143,18 @@ describe('AdminOwnersService.getById', () => {
     const { service } = reads([]);
     await expect(service.getById('u1')).resolves.toMatchObject({ businessId: null, businessName: null, businessType: null, businessIsDefault: null });
   });
+
+  it("gives each history line the admin's reason and nothing else from the audit row", async () => {
+    const { service, prisma } = reads(renamedPersonal);
+    const at = new Date('2026-10-01T10:00:00.000Z');
+    const log = (id: string, action: string, newValue: unknown) => ({ id, action, entityType: 'User', newValue, createdAt: at, adminUser: { id: 'a1', name: 'Imran' } });
+    prisma.auditLog.findMany.mockResolvedValue([
+      log('l1', 'USER_SUSPENDED', { status: 'SUSPENDED', reason: 'Spam invites', signedOutEverywhere: true }),
+      log('l2', 'OWNER_DATA_EXPORTED', { fileName: 'export.zip' }),
+      log('l3', 'USER_ACTIVATED', null),
+    ]);
+    const { activityLog } = await service.getById('u1');
+    expect(activityLog.map((line) => line.reason)).toEqual(['Spam invites', null, null]);
+    expect(activityLog[0]).not.toHaveProperty('newValue');
+  });
 });
