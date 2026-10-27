@@ -1,21 +1,31 @@
 import { Module } from '@nestjs/common';
+import { AdminAuthModule } from '../admin-auth/admin-auth.module.js';
+import { BillingModule } from '../billing/billing.module.js';
+import { MailModule } from '../mail/mail.module.js';
+import { OneTimeCodesModule } from '../one-time-codes/one-time-codes.module.js';
 import { SettingsModule } from '../settings/settings.module.js';
 import { TransactionsModule } from '../transactions/transactions.module.js';
 import { UserAuthModule } from '../user-auth/user-auth.module.js';
-import { ReferralsController, ReferralsWithdrawController } from './referrals.controller.js';
+import { AdminReferralsController } from './admin-referrals.controller.js';
+import { AdminReferralsService } from './admin-referrals.service.js';
+import { PayoutMethodsService } from './payout-methods.service.js';
+import { ReferralCommissionsService } from './referral-commissions.service.js';
+import { ReferralNotices } from './referral-notices.js';
+import { ReferralInviteController, ReferralsController, ReferralsWithdrawController } from './referrals.controller.js';
 import { ReferralsService } from './referrals.service.js';
+import { WithdrawalsService } from './withdrawals.service.js';
 
-// UserAuthModule: for UserAuthGuard on ReferralsController.
-// TransactionsModule: for TransactionsService.createTransaction() (withdraw()'s
-// real Income transaction).
-// SettingsModule: for SettingsService.get().referralRewardAmount.
-// Deliberately NOT the other way around -- UserAuthModule never imports
-// this module back (see UserAuthService's own comment on why it can't
-// inject ReferralsService), so there's no cycle.
+// The Referral Program: commissions (made through BillingModule's hooks when
+// an invited friend pays), payout methods, withdrawals confirmed with a
+// one-time code, and the admin payout desk and settings.
+// UserAuthModule: UserAuthGuard. AdminAuthModule: the admin guards.
+// TransactionsModule: withLocks() and the income postings. BillingModule:
+// BillingHooks and the member's plan. Nothing imports this module back
+// (UserAuthModule records a sign-up's referral itself), so there's no cycle.
 @Module({
-  imports: [UserAuthModule, TransactionsModule, SettingsModule],
-  controllers: [ReferralsController, ReferralsWithdrawController],
-  providers: [ReferralsService],
+  imports: [UserAuthModule, AdminAuthModule, TransactionsModule, SettingsModule, BillingModule, MailModule, OneTimeCodesModule],
+  controllers: [ReferralInviteController, ReferralsController, ReferralsWithdrawController, AdminReferralsController],
+  providers: [ReferralsService, ReferralCommissionsService, ReferralNotices, PayoutMethodsService, WithdrawalsService, AdminReferralsService],
   exports: [ReferralsService],
 })
 export class ReferralsModule {}

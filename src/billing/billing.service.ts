@@ -294,14 +294,16 @@ export class BillingService {
   }
 
   // The invited friend's discount on their first payment: they joined with
-  // someone's code, the program is on, and they have never paid before.
+  // someone's code (a sign-up that didn't count -- self-referral, over the
+  // referrer's monthly limit -- gets none), the program is on, and they
+  // have never paid before.
   private async referralDiscountPercent(userId: string): Promise<number | null> {
     const [referral, paidBefore, settings] = await Promise.all([
-      this.prisma.referral.findUnique({ where: { referredUserId: userId }, select: { id: true } }),
+      this.prisma.referral.findUnique({ where: { referredUserId: userId }, select: { id: true, status: true } }),
       this.prisma.payment.count({ where: { userId, status: { in: [PaymentStatus.SUCCESS, PaymentStatus.REFUNDED] } } }),
       this.settingsService.getReferralPrice(),
     ]);
-    if (!referral || paidBefore > 0 || !settings.programLive || settings.friendDiscountPct <= 0) return null;
+    if (!referral || referral.status === 'CANCELLED' || paidBefore > 0 || !settings.programLive || settings.friendDiscountPct <= 0) return null;
     return settings.friendDiscountPct;
   }
 
