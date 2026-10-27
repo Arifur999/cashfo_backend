@@ -1,5 +1,7 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { BillingCycle, Prisma, UserStatus } from '@prisma/client';
+import { AccountDeletionService } from '../account-deletion/account-deletion.service.js';
+import { AccountExportService } from '../account-export/account-export.service.js';
 import { AccountsService } from '../accounts/accounts.service.js';
 import { AuthSessionsService } from '../auth/auth-sessions.service.js';
 import { CredentialsService } from '../auth/credentials.service.js';
@@ -11,7 +13,9 @@ import { TwoStepService } from '../two-step/two-step.service.js';
 import { ChangeOwnerPlanDto } from './dto/change-owner-plan.dto.js';
 import { ListOwnersQueryDto } from './dto/list-owners-query.dto.js';
 import { SuspendOwnerDto } from './dto/suspend-owner.dto.js';
+import { ownerExtras } from './owner-detail.js';
 import { ownerDateFilters, ownerOrderBy, workspaceCount } from './owner-filters.js';
+import { OWNERS_EXPORT_LIMIT, ownersCsv } from './owners-export.js';
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
@@ -28,6 +32,8 @@ export class AdminOwnersService {
     private readonly credentials: CredentialsService,
     private readonly subscriptions?: SubscriptionsService,
     private readonly twoStep?: TwoStepService,
+    private readonly deletion?: AccountDeletionService,
+    private readonly accountExport?: AccountExportService,
   ) {}
 
   // A temporary password for a customer who can't get in, shown to the
@@ -78,42 +84,7 @@ export class AdminOwnersService {
   async list(query: ListOwnersQueryDto) {
     const page = query.page ?? 1;
     const limit = query.limit ?? 20;
-    const search = query.search?.trim();
-    // Joined, Last active and Workspaces narrow the list and its tab counts
-    // alike, like the search and the plan do.
-    const extra = ownerDateFilters(query);
-    if (query.workspaces) {
-      const owners = await this.prisma.business.groupBy({
-        by: ['ownerId'],
-        where: { deletedAt: null },
-        having: { ownerId: { _count: workspaceCount(query.workspaces) } },
-      });
-      extra.push({ id: { in: owners.map((owner) => owner.ownerId) } });
-    }
-
-    // Every real signup gets a default Business (see UserAuthService.register()),
-    // so in practice this "some non-deleted owned business" filter matches every
-    // registered user -- it just guards against the edge case of a user whose
-    // only workspace(s) were all soft-deleted.
-    // Everything but the status, so the status tabs can count what each
-    // one would show under the same search and plan.
-    const baseWhere: Prisma.UserWhereInput = {
-      ...END_USER_WHERE,
-      ownedBusinesses: { some: { deletedAt: null } },
-      ...(query.planId ? { ownedBusinesses: { some: { deletedAt: null, isDefault: true, planId: query.planId } } } : {}),
-      ...(search
-        ? {
-            OR: [
-              { name: { contains: search, mode: 'insensitive' } },
-              { email: { contains: search, mode: 'insensitive' } },
-              { phone: { contains: search, mode: 'insensitive' } },
-              { ownedBusinesses: { some: { deletedAt: null, name: { contains: search, mode: 'insensitive' } } } },
-            ],
-          }
-        : {}),
-      ...(extra.length > 0 ? { AND: extra } : {}),
-    };
-    const where: Prisma.UserWhereInput = { ...baseWhere, ...(query.status ? { status: query.status } : {}) };
+    const { baseWhere, where } = await this.listWhere(query);
 
     const [owners, totalCount, byStatus] = await Promise.all([
       this.prisma.user.findMany({
@@ -139,6 +110,77 @@ export class AdminOwnersService {
     };
   }
 
+  // Users > Export CSV: every row the list's filters match (not just the
+  // page on screen), up to OWNERS_EXPORT_LIMIT. Audited: it is a list of
+  // real people's contact details.
+  async exportList(query: ListOwnersQueryDto, adminId: string, ipAddress?: string) {
+    const { where } = await this.listWhere(query);
+    const owners = await this.prisma.user.findMany({
+      where,
+      take: OWNERS_EXPORT_LIMIT + 1,
+      orderBy: ownerOrderBy(query.sort),
+      include: { ownedBusinesses: { where: { deletedAt: null }, include: { plan: true } } },
+    });
+    const truncated = owners.length > OWNERS_EXPORT_LIMIT;
+    const rows = owners.slice(0, OWNERS_EXPORT_LIMIT).map((owner) => this.summarizeOwner(owner));
+    await this.prisma.auditLog.create({
+      data: {
+        adminUserId: adminId,
+        action: 'OWNERS_EXPORTED',
+        entityType: 'User',
+        newValue: { filters: { ...query, page: undefined, limit: undefined }, rows: rows.length, truncated } as Prisma.InputJsonValue,
+        ipAddress,
+      },
+    });
+    return { ...ownersCsv(rows), rows: rows.length, truncated };
+  }
+
+  // The list's filters as a where clause: baseWhere is everything but the
+  // status, so the status tabs can count what each would show.
+  private async listWhere(query: ListOwnersQueryDto): Promise<{ baseWhere: Prisma.UserWhereInput; where: Prisma.UserWhereInput }> {
+    const search = query.search?.trim();
+    // Joined, Last active and Workspaces narrow the list and its tab counts
+    // alike, like the search and the plan do.
+    const extra = ownerDateFilters(query);
+    if (query.workspaces) {
+      const owners = await this.prisma.business.groupBy({
+        by: ['ownerId'],
+        where: { deletedAt: null },
+        having: { ownerId: { _count: workspaceCount(query.workspaces) } },
+      });
+      extra.push({ id: { in: owners.map((owner) => owner.ownerId) } });
+    }
+
+    // Every real signup gets a default Business (see UserAuthService.register()),
+    // so in practice this "some non-deleted owned business" filter matches every
+    // registered user -- it just guards against the edge case of a user whose
+    // only workspace(s) were all soft-deleted. A purged account (DELETED) has
+    // no workspaces left and still shows, under the Deleted tab.
+    const baseWhere: Prisma.UserWhereInput = {
+      ...END_USER_WHERE,
+      AND: [
+        query.planId
+          ? { ownedBusinesses: { some: { deletedAt: null, isDefault: true, planId: query.planId } } }
+          : { OR: [{ ownedBusinesses: { some: { deletedAt: null } } }, { status: UserStatus.DELETED }] },
+        ...(search
+          ? [
+              {
+                OR: [
+                  { name: { contains: search, mode: 'insensitive' } },
+                  { email: { contains: search, mode: 'insensitive' } },
+                  { phone: { contains: search, mode: 'insensitive' } },
+                  { ownedBusinesses: { some: { deletedAt: null, name: { contains: search, mode: 'insensitive' } } } },
+                ],
+              } satisfies Prisma.UserWhereInput,
+            ]
+          : []),
+        ...extra,
+      ],
+    };
+    const where: Prisma.UserWhereInput = { ...baseWhere, ...(query.status ? { status: query.status } : {}) };
+    return { baseWhere, where };
+  }
+
   // businessType and businessIsDefault say what kind of workspace the row
   // shows, so the personal one can be labelled as such whatever it is named.
   private summarizeOwner(owner: OwnerWithBusinesses) {
@@ -160,6 +202,8 @@ export class AdminOwnersService {
       lastLoginAt: owner.lastLoginAt,
       daysUsing,
       status: owner.status,
+      // PENDING_DELETION: the day the account is purged unless they sign in.
+      deletionScheduledFor: owner.deletionScheduledFor,
     };
   }
 
@@ -174,7 +218,7 @@ export class AdminOwnersService {
       where: { id: userId, ...END_USER_WHERE },
       include: {
         ownedBusinesses: { where: { deletedAt: null }, include: { plan: true } },
-        subscription: { include: { plan: { select: { id: true, name: true, billingCycle: true, price: true } } } },
+        subscription: { include: { plan: { select: { id: true, name: true, billingCycle: true, price: true, featureLimits: true } } } },
         twoFactor: { select: { enabledAt: true } },
       },
     });
@@ -190,6 +234,7 @@ export class AdminOwnersService {
     });
 
     const lastSuspension = activityLog.find((log) => log.action === 'USER_SUSPENDED');
+    const extras = await ownerExtras(this.prisma, owner, subscription);
 
     return {
       userId: owner.id,
@@ -199,6 +244,13 @@ export class AdminOwnersService {
       status: owner.status,
       createdAt: owner.createdAt,
       lastLoginAt: owner.lastLoginAt,
+      preferredLanguage: owner.preferredLanguage,
+      // Delete my account: asked on requestedAt, purged on scheduledFor
+      // unless they sign in first (or support cancels it). Null otherwise.
+      deletion:
+        owner.status === UserStatus.PENDING_DELETION || owner.status === UserStatus.DELETED
+          ? { requestedAt: owner.deletionRequestedAt, scheduledFor: owner.deletionScheduledFor }
+          : null,
       // Two-step sign-in with an authenticator app (Settings > Security).
       twoFactorEnabled: Boolean(owner.twoFactor?.enabledAt),
       businessId: business?.id ?? null,
@@ -233,11 +285,17 @@ export class AdminOwnersService {
         adminName: log.adminUser.name,
         createdAt: log.createdAt,
       })),
+      ...extras,
     };
   }
 
   async suspend(userId: string, dto: SuspendOwnerDto, adminId: string, ipAddress?: string) {
     const owner = await this.requireOwner(userId);
+    if (owner.status === UserStatus.PENDING_DELETION || owner.status === UserStatus.DELETED) {
+      throw new ConflictException('This account is being deleted, so it cannot be suspended.');
+    }
+    // "Also sign out of every device now", on unless the admin unticks it.
+    const signOut = dto.signOutEverywhere ?? true;
 
     const { id, status } = await this.prisma.$transaction(async (tx) => {
       const updated = await tx.user.update({ where: { id: userId }, data: { status: UserStatus.SUSPENDED } });
@@ -248,19 +306,25 @@ export class AdminOwnersService {
           entityType: 'User',
           entityId: userId,
           oldValue: { status: owner.status },
-          newValue: { status: UserStatus.SUSPENDED, reason: dto.reason },
+          newValue: { status: UserStatus.SUSPENDED, reason: dto.reason, signedOutEverywhere: signOut },
           ipAddress,
         },
       });
       return updated;
     });
-    // Signed out on every device at once, not just refused on the next request.
-    await this.sessions.revokeAllForUser(userId);
+    // Signed out on every device at once. Unticked, the devices stay signed
+    // in but every request is refused while the account is suspended (the
+    // guards check the status), so they are back in once it is turned on.
+    if (signOut) await this.signOutDevices(userId);
     return { id, status };
   }
 
   async activate(userId: string, adminId: string, ipAddress?: string) {
     const owner = await this.requireOwner(userId);
+    if (owner.status === UserStatus.PENDING_DELETION) {
+      throw new ConflictException('This account is waiting to be deleted. Cancel the deletion instead.');
+    }
+    if (owner.status === UserStatus.DELETED) throw new ConflictException('This account was deleted and cannot be turned back on.');
 
     const { id, status } = await this.prisma.$transaction(async (tx) => {
       const updated = await tx.user.update({ where: { id: userId }, data: { status: UserStatus.ACTIVE } });
@@ -342,6 +406,59 @@ export class AdminOwnersService {
       });
       return { ...updated, currentPeriodEnd: periodEnd };
     });
+  }
+
+  // "Cancel the deletion" for a customer who asked support to keep their
+  // account (they could also just sign in). Only inside the 30 days.
+  async restore(userId: string, adminId: string, ipAddress?: string) {
+    const owner = await this.requireOwner(userId);
+    if (owner.status !== UserStatus.PENDING_DELETION) throw new ConflictException('This account is not waiting to be deleted.');
+    if (!(await this.deletion!.restoreByAdmin(userId))) {
+      throw new ConflictException('The 30 days are over: this account is being deleted and cannot be restored.');
+    }
+    await this.prisma.auditLog.create({
+      data: {
+        adminUserId: adminId,
+        action: 'OWNER_DELETION_CANCELLED',
+        entityType: 'User',
+        entityId: userId,
+        oldValue: { status: owner.status, deletionScheduledFor: owner.deletionScheduledFor?.toISOString() ?? null },
+        newValue: { status: UserStatus.ACTIVE },
+        ipAddress,
+      },
+    });
+    return { id: userId, status: UserStatus.ACTIVE };
+  }
+
+  // "Sign out of all devices" on the user's page: every session ends now and
+  // the device list shows them signed out.
+  async signOutEverywhere(userId: string, adminId: string, ipAddress?: string) {
+    await this.requireOwner(userId);
+    const signedIn = await this.prisma.authSession.count({ where: { userId, impersonatedBy: null, expiresAt: { gt: new Date() } } });
+    await this.signOutDevices(userId);
+    await this.prisma.auditLog.create({
+      data: { adminUserId: adminId, action: 'OWNER_SIGNED_OUT_EVERYWHERE', entityType: 'User', entityId: userId, newValue: { sessions: signedIn }, ipAddress },
+    });
+    return { signedOut: signedIn };
+  }
+
+  // "Download a copy" before a reset: the same zip the customer's own
+  // Download my data makes (the vault left out). Audited.
+  async exportOwnerData(userId: string, adminId: string, ipAddress?: string) {
+    const owner = await this.requireOwner(userId);
+    if (owner.status === UserStatus.DELETED) throw new ConflictException('This account was deleted; there is no data left to download.');
+    const file = await this.accountExport!.export(userId);
+    await this.prisma.auditLog.create({
+      data: { adminUserId: adminId, action: 'OWNER_DATA_EXPORTED', entityType: 'User', entityId: userId, newValue: { fileName: file.fileName }, ipAddress },
+    });
+    return file;
+  }
+
+  // Better-auth sessions end, and the device rows are marked signed out
+  // (revokeAllForUser leaves UserSession alone).
+  private async signOutDevices(userId: string) {
+    await this.sessions.revokeAllForUser(userId);
+    await this.prisma.userSession.updateMany({ where: { userId, revokedAt: null }, data: { revokedAt: new Date() } });
   }
 
   private async requireOwner(userId: string) {

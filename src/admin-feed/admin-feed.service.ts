@@ -107,7 +107,13 @@ export class AdminFeedService {
       where: { status: { in: [TicketStatus.OPEN, TicketStatus.IN_PROGRESS] } },
       orderBy: { updatedAt: 'desc' },
       take: 50,
-      select: { id: true, subject: true, category: true, messages: { orderBy: { createdAt: 'desc' }, take: 1, select: { senderType: true, createdAt: true } } },
+      select: {
+        id: true,
+        subject: true,
+        category: true,
+        // A note for admins is not an answer: the customer still waits.
+        messages: { where: { isInternal: false }, orderBy: { createdAt: 'desc' }, take: 1, select: { senderType: true, createdAt: true } },
+      },
     });
     return tickets
       .filter((ticket) => ticket.messages[0]?.senderType === 'USER' && ticket.messages[0].createdAt.getTime() <= now - WAITING_AFTER_MS)

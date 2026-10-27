@@ -68,6 +68,19 @@ const renamedPersonal = [
   workspace('ws-own', 'আমার হিসাব', { type: 'PERSONAL', isDefault: true, planId: 'plan-free', plan: { name: 'Free' } }),
 ];
 
+const emptyExtras = () => ({
+  account: { groupBy: vi.fn().mockResolvedValue([]) },
+  transaction: { count: vi.fn().mockResolvedValue(0), groupBy: vi.fn().mockResolvedValue([]) },
+  referral: { findMany: vi.fn().mockResolvedValue([]) },
+  payoutRequest: { findMany: vi.fn().mockResolvedValue([]) },
+  payment: { aggregate: vi.fn().mockResolvedValue({ _sum: { amount: null }, _count: 0 }), findFirst: vi.fn().mockResolvedValue(null) },
+  supportTicket: { findMany: vi.fn().mockResolvedValue([]), groupBy: vi.fn().mockResolvedValue([]) },
+  userSession: { findMany: vi.fn().mockResolvedValue([]) },
+  authSession: { findMany: vi.fn().mockResolvedValue([]) },
+  adminNote: { count: vi.fn().mockResolvedValue(0) },
+  coupon: { findUnique: vi.fn().mockResolvedValue(null) },
+});
+
 const reads = (ownedBusinesses: Workspace[]) => {
   const row = owner(ownedBusinesses);
   const prisma = {
@@ -78,6 +91,8 @@ const reads = (ownedBusinesses: Workspace[]) => {
       groupBy: vi.fn().mockResolvedValue([{ status: 'ACTIVE', _count: 1 }]),
     },
     auditLog: { findMany: vi.fn().mockResolvedValue([]) },
+    // The detail page's extra cards (owner-detail.ts): nothing yet.
+    ...emptyExtras(),
   };
   return { service: new AdminOwnersService(prisma as never, {} as never, {} as never, {} as never), prisma };
 };
