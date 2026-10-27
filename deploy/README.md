@@ -139,7 +139,10 @@ scheduler (every minute) and housekeeping (every five minutes: customer
 checkouts left unpaid past their time, plans whose paid period or free trial
 ran out, "your plan ends in 3 days" notices, referral commissions leaving
 their refund window, and hourly, used-up one-time codes, old two-step sign-in
-challenges, expired trusted computers and expired admin invites' two-step keys). Both are on by default;
+challenges, expired trusted computers and expired admin invites' two-step keys;
+every fifteen minutes it purges customer accounts deleted more than 30 days
+ago -- workspaces and personal data go, the User row is anonymised so
+payments, invoices and referrals keep their references). Both are on by default;
 `REMINDERS_DISABLED=1` / `HOUSEKEEPING_DISABLED=1` (set with `set-env.sh`) turn
 one off. Housekeeping takes a Postgres advisory lock per tick, so a second API
 container never doubles it, and a customer's own billing or referral page

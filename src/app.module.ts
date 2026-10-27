@@ -1,7 +1,8 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { APP_FILTER, APP_GUARD } from '@nestjs/core';
-import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
+import { ThrottlerModule } from '@nestjs/throttler';
+import { AccountDeletionModule } from './account-deletion/account-deletion.module.js';
 import { AccountExportModule } from './account-export/account-export.module.js';
 import { AccountTemplatesModule } from './account-templates/account-templates.module.js';
 import { AccountsModule } from './accounts/accounts.module.js';
@@ -54,6 +55,7 @@ import { SettingsModule } from './settings/settings.module.js';
 import { SignInModule } from './sign-in/sign-in.module.js';
 import { SubscriptionPlansModule } from './subscription-plans/subscription-plans.module.js';
 import { GlobalExceptionFilter } from './system/filters/global-exception.filter.js';
+import { LoggingThrottlerGuard } from './system/logging-throttler.guard.js';
 import { SupportModule } from './support/support.module.js';
 import { SupportAccessModule } from './support-access/support-access.module.js';
 import { SystemModule } from './system/system.module.js';
@@ -64,6 +66,8 @@ import { TranslationsModule } from './translations/translations.module.js';
 import { TwoStepModule } from './two-step/two-step.module.js';
 import { UserAuthModule } from './user-auth/user-auth.module.js';
 import { UserNotificationsModule } from './user-notifications/user-notifications.module.js';
+import { EmailVerificationModule } from './email-verification/email-verification.module.js';
+import { MonthlySummaryModule } from './monthly-summary/monthly-summary.module.js';
 
 @Module({
   imports: [
@@ -135,16 +139,20 @@ import { UserNotificationsModule } from './user-notifications/user-notifications
     SkillsModule,
     TodosModule,
     UserNotificationsModule,
+    EmailVerificationModule,
+    MonthlySummaryModule,
     // Web push, and the Habit Tracker reminders that use it (the one timer).
     PushModule,
     RemindersModule,
     SupportModule,
     AccountExportModule,
+    // Delete my account, with a 30-day grace and the purge after it.
+    AccountDeletionModule,
     AdminFeedModule,
     // Customer plans, the in-app checkout and plan expiry (api/billing).
     BillingModule,
   ],
   controllers: [AppController],
-  providers: [AppService, { provide: APP_GUARD, useClass: ThrottlerGuard }, { provide: APP_FILTER, useClass: GlobalExceptionFilter }],
+  providers: [AppService, { provide: APP_GUARD, useClass: LoggingThrottlerGuard }, { provide: APP_FILTER, useClass: GlobalExceptionFilter }],
 })
 export class AppModule {}
