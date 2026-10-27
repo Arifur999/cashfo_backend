@@ -1,5 +1,6 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { PaymentStatus, Prisma, UserStatus } from '@prisma/client';
+import { payerIdOf } from '../admin-feed/requester-names.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { CreatePlanDto } from './dto/create-plan.dto.js';
 import { monthEnds, paidPeopleAtMonthEnds } from './plan-history.js';
@@ -159,12 +160,13 @@ export class SubscriptionPlansService {
     // Every reference, not just default workspaces: extra workspaces carry
     // the owner's plan too (deleting would silently clear it), and payments
     // and coupon redemptions block the delete at the database.
-    const [workspaces, payments, redemptions] = await Promise.all([
+    const [workspaces, payments, redemptions, subscriptions] = await Promise.all([
       this.prisma.business.count({ where: { planId: id } }),
       this.prisma.payment.count({ where: { planId: id } }),
       this.prisma.couponRedemption.count({ where: { planId: id } }),
+      this.prisma.userSubscription.count({ where: { planId: id } }),
     ]);
-    if (workspaces + payments + redemptions > 0) {
+    if (workspaces + payments + redemptions + subscriptions > 0) {
       throw new BadRequestException(
         `Cannot delete this plan -- ${workspaces} workspace(s), ${payments} payment(s) and ${redemptions} coupon redemption(s) refer to it. Archive it instead.`,
       );
@@ -204,8 +206,8 @@ export class SubscriptionPlansService {
           this.prisma.business.count({
             where: { planId: plan.id, isDefault: true, deletedAt: null, owner: { status: UserStatus.ACTIVE } },
           }),
-          // Workspaces on the plan whose trial is still running.
-          this.prisma.business.count({ where: { planId: plan.id, deletedAt: null, trialEndsAt: { gt: now } } }),
+          // Customers on a free trial of the plan right now.
+          this.prisma.userSubscription.count({ where: { planId: plan.id, status: 'TRIALING', trialEndsAt: { gt: now } } }),
         ]);
         const revenueEstimate = Number(plan.price) * activeUsers;
         return {
@@ -226,10 +228,13 @@ export class SubscriptionPlansService {
     const ends = monthEnds(now, HISTORY_MONTHS);
     const payments = await this.prisma.payment.findMany({
       where: { status: PaymentStatus.SUCCESS, createdAt: { gte: new Date(Date.UTC(ends[0].at.getUTCFullYear() - 1, ends[0].at.getUTCMonth(), 1)) } },
-      select: { platformUserId: true, planId: true, paidAt: true, createdAt: true },
+      select: { userId: true, platformUserId: true, planId: true, paidAt: true, createdAt: true },
     });
     const history = paidPeopleAtMonthEnds(
-      payments.map((payment) => ({ platformUserId: payment.platformUserId, planId: payment.planId, paidAt: payment.paidAt ?? payment.createdAt })),
+      payments.flatMap((payment) => {
+        const personId = payerIdOf(payment);
+        return personId ? [{ personId, planId: payment.planId, paidAt: payment.paidAt ?? payment.createdAt }] : [];
+      }),
       plans,
       ends,
     );

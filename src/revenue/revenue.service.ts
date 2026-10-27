@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { BillingCycle, PaymentStatus } from '@prisma/client';
 import { dhakaDateKey, dhakaMonthStart, dhakaToday } from '../common/dhaka.js';
+import { payerIdOf } from '../admin-feed/requester-names.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { monthEnds, paidPeopleAt } from '../subscription-plans/plan-history.js';
 import { computeMrr, PAYING_WORKSPACE_WHERE } from './mrr.js';
@@ -80,11 +81,12 @@ export class RevenueService {
     };
   }
 
-  // Churn from the workspaces themselves: today's paying workspaces, and
-  // those an admin moved from a paid plan to the free one this (Dhaka)
-  // month -- AdminOwnersService.changePlan() writes BUSINESS_PLAN_CHANGED
-  // with the old and new plan ids. The legacy PlanChangeLog/PlatformUser
-  // tables this used to read are written by nothing.
+  // Churn by customer: today's paying customers, and those who went from a
+  // paid plan to the free one this (Dhaka) month -- an admin's Change plan,
+  // a plan that expired or a full refund. PlanChangeLog has every change
+  // since customer plans became UserSubscription; the BUSINESS_PLAN_CHANGED
+  // audit rows (old and new plan ids, on the default workspace) cover the
+  // admin changes from before that.
   async churn() {
     const { year, month } = dhakaToday();
     const thisMonthStart = dhakaMonthStart(year, month);
@@ -94,19 +96,27 @@ export class RevenueService {
 
     let churnedThisMonth = 0;
     if (freePlan) {
-      const downgrades = await this.prisma.auditLog.findMany({
-        where: { action: 'BUSINESS_PLAN_CHANGED', createdAt: { gte: thisMonthStart }, newValue: { path: ['planId'], equals: freePlan.id } },
-        select: { entityId: true, oldValue: true },
-      });
-      const churned = new Set(
-        downgrades.filter((log) => (log.oldValue as { planId?: string | null } | null)?.planId !== freePlan.id).map((log) => log.entityId),
-      );
+      const [downgrades, changes] = await Promise.all([
+        this.prisma.auditLog.findMany({
+          where: { action: 'BUSINESS_PLAN_CHANGED', createdAt: { gte: thisMonthStart }, newValue: { path: ['planId'], equals: freePlan.id } },
+          select: { entityId: true, oldValue: true },
+        }),
+        this.prisma.planChangeLog.findMany({
+          where: { userId: { not: null }, toPlanId: freePlan.id, fromPlanId: { not: freePlan.id }, createdAt: { gte: thisMonthStart } },
+          select: { userId: true, fromPlanId: true },
+        }),
+      ]);
+      const workspaceIds = downgrades
+        .filter((log) => (log.oldValue as { planId?: string | null } | null)?.planId !== freePlan.id)
+        .flatMap((log) => (log.entityId ? [log.entityId] : []));
+      const owners = workspaceIds.length ? await this.prisma.business.findMany({ where: { id: { in: workspaceIds } }, select: { ownerId: true } }) : [];
+      const churned = new Set([...owners.map((b) => b.ownerId), ...changes.flatMap((c) => (c.userId && c.fromPlanId ? [c.userId] : []))]);
       churnedThisMonth = churned.size;
     }
 
-    // Approximation: there is no historical snapshot, so "paid workspaces at
-    // the start of the month" is today's paid count plus every workspace
-    // that churned away from a paid plan this month.
+    // Approximation: there is no historical snapshot, so "paid customers at
+    // the start of the month" is today's paid count plus every customer
+    // who churned away from a paid plan this month.
     const startOfMonthPaidCount = currentPaidCount + churnedThisMonth;
     const churnRate = startOfMonthPaidCount > 0 ? churnedThisMonth / startOfMonthPaidCount : 0;
 
@@ -135,6 +145,7 @@ export class RevenueService {
       this.prisma.payment.findMany({
         where: { status: { in: REVENUE_STATUSES }, createdAt: { gte: lookBack } },
         select: {
+          userId: true,
           platformUserId: true,
           planId: true,
           amount: true,
@@ -150,7 +161,10 @@ export class RevenueService {
     ]);
 
     const monthlyPrice = new Map(plans.map((plan) => [plan.id, plan.billingCycle === BillingCycle.YEARLY ? Number(plan.price) / 12 : Number(plan.price)]));
-    const paid = payments.map((payment) => ({ platformUserId: payment.platformUserId, planId: payment.planId, paidAt: payment.paidAt ?? payment.createdAt }));
+    const paid = payments.flatMap((payment) => {
+      const personId = payerIdOf(payment);
+      return personId ? [{ personId, planId: payment.planId, paidAt: payment.paidAt ?? payment.createdAt }] : [];
+    });
     const peopleAt = (at: Date) => paidPeopleAt(paid, plans, at);
     const everyone = (sets: Map<string, Set<string>>) => new Set([...sets.values()].flatMap((people) => [...people]));
 

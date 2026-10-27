@@ -1,10 +1,14 @@
 import { BillingCycle, Prisma, PrismaClient } from '@prisma/client';
 
-// Workspaces that pay: on a paid plan, not deleted, owner not suspended or
-// banned. The old PlatformUser table this used to read is a sandbox nothing
-// writes to any more -- real plans live on Business.
+// Customers who pay, one row each: their default workspace on a paid plan,
+// not deleted, owner not suspended or banned. Only the default one: a
+// paying customer's extra workspaces carry the same plan (the mirror
+// SubscriptionsService.applyPlan() keeps), and counting them too charged
+// the plan price again for each. The old PlatformUser table this used to
+// read is a sandbox nothing writes to any more.
 export const PAYING_WORKSPACE_WHERE = {
   deletedAt: null,
+  isDefault: true,
   owner: { status: 'ACTIVE' },
   plan: { billingCycle: { not: BillingCycle.FREE } },
 } satisfies Prisma.BusinessWhereInput;

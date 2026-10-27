@@ -29,8 +29,8 @@ describe('paidPeopleAtMonthEnds', () => {
 
   it('keeps a monthly payer for one month and a yearly payer for twelve', () => {
     const payments = [
-      { platformUserId: 'a', planId: 'monthly', paidAt: new Date('2026-08-10T10:00:00.000Z') },
-      { platformUserId: 'b', planId: 'yearly', paidAt: new Date('2026-01-05T10:00:00.000Z') },
+      { personId: 'a', planId: 'monthly', paidAt: new Date('2026-08-10T10:00:00.000Z') },
+      { personId: 'b', planId: 'yearly', paidAt: new Date('2026-01-05T10:00:00.000Z') },
     ];
 
     expect(paidPeopleAtMonthEnds(payments, PLANS, ends)).toEqual([
@@ -42,9 +42,9 @@ describe('paidPeopleAtMonthEnds', () => {
 
   it('counts a person once however many times they paid, and ignores unknown plans', () => {
     const payments = [
-      { platformUserId: 'a', planId: 'monthly', paidAt: new Date('2026-09-01T10:00:00.000Z') },
-      { platformUserId: 'a', planId: 'monthly', paidAt: new Date('2026-09-20T10:00:00.000Z') },
-      { platformUserId: 'c', planId: 'gone', paidAt: new Date('2026-09-20T10:00:00.000Z') },
+      { personId: 'a', planId: 'monthly', paidAt: new Date('2026-09-01T10:00:00.000Z') },
+      { personId: 'a', planId: 'monthly', paidAt: new Date('2026-09-20T10:00:00.000Z') },
+      { personId: 'c', planId: 'gone', paidAt: new Date('2026-09-20T10:00:00.000Z') },
     ];
 
     expect(paidPeopleAtMonthEnds(payments, PLANS, ends)[1]).toEqual({ month: '2026-09', perPlan: { monthly: 1, yearly: 0 } });

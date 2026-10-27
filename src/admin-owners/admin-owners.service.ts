@@ -1,8 +1,9 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
-import { Prisma, UserStatus } from '@prisma/client';
+import { BillingCycle, Prisma, UserStatus } from '@prisma/client';
 import { AccountsService } from '../accounts/accounts.service.js';
 import { AuthSessionsService } from '../auth/auth-sessions.service.js';
 import { CredentialsService } from '../auth/credentials.service.js';
+import { SubscriptionsService } from '../billing/subscriptions.service.js';
 import { END_USER_WHERE } from '../common/roles.js';
 import { generateTempPassword } from '../common/temp-password.js';
 import { PrismaService } from '../prisma/prisma.service.js';
@@ -24,6 +25,7 @@ export class AdminOwnersService {
     private readonly accountsService: AccountsService,
     private readonly sessions: AuthSessionsService,
     private readonly credentials: CredentialsService,
+    private readonly subscriptions?: SubscriptionsService,
   ) {}
 
   // A temporary password for a customer who can't get in, shown to the
@@ -150,11 +152,15 @@ export class AdminOwnersService {
   async getById(userId: string) {
     const owner = await this.prisma.user.findUnique({
       where: { id: userId, ...END_USER_WHERE },
-      include: { ownedBusinesses: { where: { deletedAt: null }, include: { plan: true } } },
+      include: {
+        ownedBusinesses: { where: { deletedAt: null }, include: { plan: true } },
+        subscription: { include: { plan: { select: { id: true, name: true, billingCycle: true, price: true } } } },
+      },
     });
     if (!owner) throw new NotFoundException('Owner not found');
 
     const business = owner.ownedBusinesses.find((b) => b.isDefault) ?? owner.ownedBusinesses[0] ?? null;
+    const subscription = owner.subscription ?? null;
 
     const activityLog = await this.prisma.auditLog.findMany({
       where: { entityId: { in: [userId, business?.id].filter((id): id is string => Boolean(id)) } },
@@ -180,6 +186,20 @@ export class AdminOwnersService {
       planId: business?.planId ?? null,
       planName: business?.plan?.name ?? null,
       workspaceCount: owner.ownedBusinesses.length,
+      // The customer's plan as billing sees it (UserSubscription); null
+      // only for an account that has never been used.
+      subscription: subscription && {
+        planId: subscription.planId,
+        planName: subscription.plan.name,
+        billingCycle: subscription.plan.billingCycle,
+        price: subscription.plan.price,
+        status: subscription.status,
+        trialEndsAt: subscription.trialEndsAt,
+        currentPeriodStart: subscription.currentPeriodStart,
+        currentPeriodEnd: subscription.currentPeriodEnd,
+        cancelAtPeriodEnd: subscription.cancelAtPeriodEnd,
+        lockedPrice: subscription.lockedPrice,
+      },
       suspendedReason:
         owner.status === UserStatus.SUSPENDED && lastSuspension ? ((lastSuspension.newValue as { reason?: string } | null)?.reason ?? null) : null,
       suspendedAt: owner.status === UserStatus.SUSPENDED ? (lastSuspension?.createdAt ?? null) : null,
@@ -252,13 +272,38 @@ export class AdminOwnersService {
 
     const newPlan = await this.prisma.subscriptionPlan.findUnique({ where: { id: dto.newPlanId } });
     if (!newPlan) throw new BadRequestException('Target plan does not exist');
+    const isFree = newPlan.billingCycle === BillingCycle.FREE;
+    if (isFree && dto.currentPeriodEnd) throw new BadRequestException('The free plan has no end date');
+    const subscriptions = this.subscriptions;
+    if (!subscriptions) throw new Error('SubscriptionsService is not available');
 
     return this.prisma.$transaction(async (tx) => {
+      // The customer's subscription is the plan; applyPlan() mirrors it onto
+      // their workspaces and logs it in PlanChangeLog. A paid plan set here
+      // ends on the date given, or keeps a running period's end; with
+      // neither it never expires until an admin sets an end.
+      const current = await subscriptions.ensure(userId, tx);
+      const now = new Date();
+      const samePlan = current.planId === newPlan.id;
+      const runningEnd =
+        current.plan.billingCycle !== BillingCycle.FREE && current.currentPeriodEnd && current.currentPeriodEnd > now ? current.currentPeriodEnd : null;
+      const periodEnd = isFree ? null : dto.currentPeriodEnd !== undefined ? (dto.currentPeriodEnd ? new Date(dto.currentPeriodEnd) : null) : runningEnd;
+      await subscriptions.applyPlan(tx, userId, newPlan.id, {
+        changedBy: adminId,
+        reason: dto.reason,
+        fields: {
+          status: 'ACTIVE',
+          currentPeriodStart: isFree ? null : samePlan ? (current.currentPeriodStart ?? now) : now,
+          currentPeriodEnd: periodEnd,
+          cancelAtPeriodEnd: false,
+          trialEndsAt: null,
+          lockedPrice: isFree ? null : samePlan ? current.lockedPrice : null,
+        },
+      });
       // Selected, not the whole row: the Business carries the owner's
       // workspace PIN hash, and this answer travels on to the browser.
-      const updated = await tx.business.update({
+      const updated = await tx.business.findUniqueOrThrow({
         where: { id: business.id },
-        data: { planId: dto.newPlanId },
         select: { id: true, planId: true, plan: { select: { id: true, name: true, slug: true, billingCycle: true, price: true } } },
       });
       await tx.auditLog.create({
@@ -267,12 +312,12 @@ export class AdminOwnersService {
           action: 'BUSINESS_PLAN_CHANGED',
           entityType: 'Business',
           entityId: business.id,
-          oldValue: { planId: business.planId },
-          newValue: { planId: dto.newPlanId, planName: newPlan.name, reason: dto.reason },
+          oldValue: { planId: business.planId, currentPeriodEnd: current.currentPeriodEnd?.toISOString() ?? null },
+          newValue: { planId: dto.newPlanId, planName: newPlan.name, reason: dto.reason, currentPeriodEnd: periodEnd?.toISOString() ?? null },
           ipAddress,
         },
       });
-      return updated;
+      return { ...updated, currentPeriodEnd: periodEnd };
     });
   }
 

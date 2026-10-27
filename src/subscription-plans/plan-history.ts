@@ -4,7 +4,8 @@ import { BillingCycle } from '@prisma/client';
 const DHAKA_OFFSET_MS = 6 * 60 * 60 * 1000;
 
 export interface PaidPayment {
-  platformUserId: string;
+  // Who paid: a customer's User id, or a legacy PlatformUser id.
+  personId: string;
   planId: string;
   paidAt: Date;
 }
@@ -50,7 +51,7 @@ export function paidPeopleAt(payments: PaidPayment[], plans: PlanCycle[], at: Da
   for (const payment of payments) {
     const cycle = cycleByPlan.get(payment.planId);
     if (!cycle || payment.paidAt > at || addMonths(payment.paidAt, monthsCovered(cycle)) <= at) continue;
-    peopleByPlan.get(payment.planId)?.add(payment.platformUserId);
+    peopleByPlan.get(payment.planId)?.add(payment.personId);
   }
   return peopleByPlan;
 }
