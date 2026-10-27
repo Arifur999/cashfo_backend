@@ -236,6 +236,8 @@ model Payment {
   createdAt          DateTime         @default(now())
   invoice            Invoice?
   refund             Refund?
+  // The referral this payment earned a commission for (the friend's first).
+  referral           Referral?
 
   @@index([platformUserId, createdAt])
   @@index([userId, createdAt])
@@ -811,6 +813,9 @@ model User {
   reminders           Reminder[]
   subscription        UserSubscription?
   payments            Payment[]
+  payoutMethods       PayoutMethod[]
+  payoutRequests      PayoutRequest[]
+  oneTimeCodes        OneTimeCode[]
 
   // No separate @@index([email]) -- @unique above already creates a unique
   // index covering lookups by email (same reasoning as PlatformUser).
@@ -1951,36 +1956,216 @@ enum AssetStatus {
 // else's code in RegisterDto creates one Referral row here linking the two.
 // =====================================================================
 
-// Tracks one referral relationship: referrer invited referredUser, who
-// registered using referrer's referralCode. rewardAmount is a SNAPSHOT of
-// the admin-configured reward at the moment this referral was created
-// (SettingsService's referralRewardAmount) -- a later admin change to the
-// reward amount never retroactively changes an already-created Referral's
-// own amount, same "snapshot at creation time" reasoning as
-// AssetsService.purchase() storing purchasePrice rather than a live lookup.
-// PENDING -> CONFIRMED once referredUser has been registered 30+ days
-// (self-healing on every read, same pattern as
-// SavingsGoalsService.maybeMarkCompleted()) -> WITHDRAWN once the user
-// cashes out their available balance (see ReferralsService.withdraw()).
+// One referral relationship: referrer invited referredUser, who signed up
+// with the referrer's referralCode.
+//
+// A COMMISSION row (every sign-up since the commission rules): JOINED at
+// sign-up -> PENDING when the friend's first payment is confirmed (the
+// referrer earns commissionRate % of what the friend paid, held for the
+// refund window until availableAt) -> AVAILABLE -> PAID_OUT once payout
+// requests have covered it (paidOutAmount, FIFO by availableAt). CANCELLED
+// when the friend is refunded inside the window, the referrer wasn't on a
+// paid plan when the friend paid, the sign-up looked like self-referral,
+// or an admin cancelled it (cancelReason).
+//
+// A SIGNUP_BONUS row is the old rule (a flat rewardAmount 30 days after the
+// friend signed up): commissionAmount = rewardAmount, PENDING until
+// availableAt, then withdrawable like a commission. CONFIRMED / WITHDRAWN
+// are the old rule's statuses, kept only so a rollback can still read the
+// table; nothing writes them (the migration moved them to AVAILABLE /
+// PAID_OUT).
 model Referral {
-  id             String         @id @default(uuid())
-  referrerId     String
-  referrer       User           @relation("Referrer", fields: [referrerId], references: [id])
-  referredUserId String         @unique
-  referredUser   User           @relation("Referred", fields: [referredUserId], references: [id])
-  rewardAmount   Decimal        @db.Decimal(14, 2)
-  status         ReferralStatus @default(PENDING)
-  confirmedAt    DateTime?
-  withdrawnAt    DateTime?
-  createdAt      DateTime       @default(now())
+  id               String             @id @default(uuid())
+  referrerId       String
+  referrer         User               @relation("Referrer", fields: [referrerId], references: [id])
+  referredUserId   String             @unique
+  referredUser     User               @relation("Referred", fields: [referredUserId], references: [id])
+  // The old rule's flat reward (a snapshot of referral_reward_amount); 0
+  // for a commission row.
+  rewardAmount     Decimal            @db.Decimal(14, 2)
+  status           ReferralStatus     @default(JOINED)
+  kind             ReferralKind       @default(COMMISSION)
+  // The friend's first confirmed payment, and what they paid for it.
+  paymentId        String?            @unique
+  payment          Payment?           @relation(fields: [paymentId], references: [id], onDelete: SetNull)
+  paidAmount       Decimal?           @db.Decimal(14, 2)
+  // Snapshots at the friend's payment: the rate (20.00 = 20 %) and the
+  // commission, rounded down to whole taka.
+  commissionRate   Decimal?           @db.Decimal(5, 2)
+  commissionAmount Decimal?           @db.Decimal(14, 2)
+  // When the commission leaves the refund window (paidAt + hold days).
+  availableAt      DateTime?
+  // How much of commissionAmount paid payout requests have covered.
+  paidOutAmount    Decimal            @default(0) @db.Decimal(14, 2)
+  paidOutAt        DateTime?
+  cancelledAt      DateTime?
+  // FRIEND_REFUNDED | REFERRER_NOT_ON_PAID_PLAN | PROGRAM_OFF |
+  // SELF_REFERRAL | MONTHLY_LIMIT | ADMIN
+  cancelReason     String?
+  confirmedAt      DateTime?
+  withdrawnAt      DateTime?
+  createdAt        DateTime           @default(now())
+  allocations      PayoutAllocation[]
 
   @@index([referrerId])
+  @@index([referrerId, status])
+  @@index([status, availableAt])
 }
 
 enum ReferralStatus {
+  JOINED
   PENDING
+  AVAILABLE
+  PAID_OUT
+  CANCELLED
+  // The old rule's statuses; nothing writes them any more.
   CONFIRMED
   WITHDRAWN
+}
+
+enum ReferralKind {
+  SIGNUP_BONUS
+  COMMISSION
+}
+
+enum PayoutMethodType {
+  BKASH
+  NAGAD
+  ROCKET
+  BANK
+}
+
+enum BankAccountType {
+  SAVINGS
+  CURRENT
+}
+
+// Where a member wants their referral money sent: a bKash, Nagad or Rocket
+// number (a personal account), or a bank account. Deleting one only hides
+// it (deletedAt): a payout request keeps its own snapshot anyway.
+model PayoutMethod {
+  id              String           @id @default(uuid())
+  userId          String
+  user            User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type            PayoutMethodType
+  // The name on the account; it must match the member's own name (checked
+  // softly, shown to the admin).
+  accountName     String
+  // BKASH / NAGAD / ROCKET: 01XXXXXXXXX (Rocket may add a twelfth digit).
+  walletNumber    String?
+  bankName        String?
+  branch          String?
+  bankAccountType BankAccountType?
+  accountNumber   String?
+  // Nine digits.
+  routingNumber   String?
+  isDefault       Boolean          @default(false)
+  deletedAt       DateTime?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  payoutRequests  PayoutRequest[]
+
+  @@index([userId])
+}
+
+enum PayoutStatus {
+  REQUESTED
+  APPROVED
+  PAID
+  REJECTED
+  CANCELLED
+}
+
+// A member's withdrawal of referral money. REQUESTED (the money is set
+// aside: the balance counts it as taken; the member may cancel) ->
+// APPROVED (an admin checked it) -> PAID (the admin sent it and recorded
+// the transaction id). REQUESTED or APPROVED -> REJECTED gives the money
+// back to the balance, as does the member's CANCELLED.
+model PayoutRequest {
+  id                  String             @id @default(uuid())
+  // Shown as WD-1048.
+  number              Int                @unique @default(autoincrement())
+  userId              String
+  user                User               @relation(fields: [userId], references: [id])
+  // Taken from the balance; the member receives amount - fee.
+  amount              Decimal            @db.Decimal(14, 2)
+  fee                 Decimal            @default(0) @db.Decimal(14, 2)
+  methodId            String?
+  method              PayoutMethod?      @relation(fields: [methodId], references: [id], onDelete: SetNull)
+  // The method as it was when requested: type, names and numbers.
+  methodSnapshot      Json
+  status              PayoutStatus       @default(REQUESTED)
+  // "Add it as income when it's paid": the member's workspace and wallet,
+  // and the posting made at Mark paid.
+  incomeBusinessId    String?
+  incomeAccountId     String?
+  incomeTransactionId String?
+  codeConfirmedAt     DateTime
+  approvedAt          DateTime?
+  approvedBy          String?
+  paidAt              DateTime?
+  // What the admin actually sent.
+  paidAmount          Decimal?           @db.Decimal(14, 2)
+  trxId               String?
+  rejectedAt          DateTime?
+  rejectReason        String?
+  cancelledAt         DateTime?
+  // The admin who paid or rejected it.
+  processedBy         String?
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+  allocations         PayoutAllocation[]
+
+  @@index([status, createdAt])
+  @@index([userId, createdAt])
+}
+
+// Which commissions a paid payout covered, and how much of each (FIFO by
+// availableAt): "why this member was owed this".
+model PayoutAllocation {
+  id         String        @id @default(uuid())
+  payoutId   String
+  payout     PayoutRequest @relation(fields: [payoutId], references: [id], onDelete: Cascade)
+  referralId String
+  referral   Referral      @relation(fields: [referralId], references: [id], onDelete: Cascade)
+  amount     Decimal       @db.Decimal(14, 2)
+  createdAt  DateTime      @default(now())
+
+  @@index([payoutId])
+  @@index([referralId])
+}
+
+enum OneTimeCodePurpose {
+  PAYOUT_REQUEST
+}
+
+enum OneTimeCodeChannel {
+  EMAIL
+  SMS
+}
+
+// A six-digit code sent to the member to confirm something (a payout
+// request). Only its hash is kept (sha256 of code + id); `payload` is what
+// the code confirms, re-checked when it is used. At most five wrong tries
+// and five sends; it lapses after ten minutes and works once.
+model OneTimeCode {
+  id          String             @id @default(uuid())
+  userId      String
+  user        User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  purpose     OneTimeCodePurpose
+  channel     OneTimeCodeChannel
+  destination String
+  codeHash    String
+  payload     Json
+  attempts    Int                @default(0)
+  sends       Int                @default(1)
+  expiresAt   DateTime
+  consumedAt  DateTime?
+  lastSentAt  DateTime           @default(now())
+  createdAt   DateTime           @default(now())
+
+  @@index([userId, purpose])
+  @@index([expiresAt])
 }
 
 // =====================================================================
@@ -2272,6 +2457,11 @@ enum UserNotificationType {
   REMINDER
   // A payment was confirmed, failed or refunded, or the plan is ending.
   BILLING
+  // A friend bought a plan, or a commission became withdrawable or was
+  // cancelled (Referral Program).
+  REFERRAL
+  // A referral withdrawal was approved, paid or rejected.
+  PAYOUT
 }
 
 // A browser or phone that gets web push notifications for one customer
