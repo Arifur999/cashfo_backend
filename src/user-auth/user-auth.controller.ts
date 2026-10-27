@@ -170,6 +170,13 @@ export class UserAuthController {
     return this.userProfileService.updateAvatar(user.id, avatarUrl);
   }
 
+  // "Remove photo": back to the initials.
+  @UseGuards(UserAuthGuard)
+  @Delete('avatar')
+  removeAvatar(@CurrentUser() user: RequestUser) {
+    return this.userProfileService.updateAvatar(user.id, null);
+  }
+
   // Checks the current password, so it gets the login's brute-force budget
   // rather than the global 100 a minute.
   @Throttle({ default: { limit: 5, ttl: 15 * 60 * 1000 } })

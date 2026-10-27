@@ -123,7 +123,7 @@ export class UserProfileService {
     return { id: user.id, name: user.name, email: user.email, phone: user.phone, avatarUrl: user.avatarUrl };
   }
 
-  async updateAvatar(userId: string, avatarUrl: string) {
+  async updateAvatar(userId: string, avatarUrl: string | null) {
     const user = await this.prisma.user.update({ where: { id: userId }, data: { avatarUrl } });
     return { id: user.id, avatarUrl: user.avatarUrl };
   }
