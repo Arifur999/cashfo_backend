@@ -140,7 +140,8 @@ export class AdminAuthService {
 
   // An admin's own password change. Until now only a super admin could set
   // one (and saw it), so an admin could never rotate a password that had
-  // been shared or leaked. Every other session of the account is signed out.
+  // been shared or leaked. Every other session of the account is signed out,
+  // whatever signOutOthers says (only the customer app may keep them).
   async changePassword(adminId: string, sessionId: string, dto: ChangePasswordDto, ipAddress?: string) {
     const admin = await this.prisma.user.findUnique({ where: { id: adminId } });
     if (!admin || !isAdminRole(admin.role)) {
