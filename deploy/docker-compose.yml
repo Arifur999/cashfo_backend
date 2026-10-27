@@ -67,6 +67,8 @@ x-api-env: &api-env
   VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
   VAPID_SUBJECT: ${VAPID_SUBJECT:-}
   REMINDERS_DISABLED: ${REMINDERS_DISABLED:-}
+  # The five-minute housekeeping timer (lapsed checkouts, plan expiry).
+  HOUSEKEEPING_DISABLED: ${HOUSEKEEPING_DISABLED:-}
 
 services:
   smartly-db:
