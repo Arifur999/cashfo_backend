@@ -816,6 +816,15 @@ model User {
   payoutMethods       PayoutMethod[]
   payoutRequests      PayoutRequest[]
   oneTimeCodes        OneTimeCode[]
+  // Two-step sign-in (src/two-step): the authenticator app, its backup
+  // codes, the computers that skip the code for 30 days, and open
+  // second-step challenges.
+  twoFactor            TwoFactor?
+  twoFactorBackupCodes TwoFactorBackupCode[]
+  trustedDevices       TrustedDevice[]
+  twoStepChallenges    TwoStepChallenge[]
+  // Admins only: the invites this admin sent (src/admin-invites).
+  adminInvitesSent     AdminInvite[]         @relation("AdminInvitesSent")
 
   // No separate @@index([email]) -- @unique above already creates a unique
   // index covering lookups by email (same reasoning as PlatformUser).
@@ -935,6 +944,100 @@ model PasswordResetToken {
   createdAt DateTime  @default(now())
 
   @@index([userId])
+}
+
+// --- Two-step sign-in (src/two-step), for customers and admins alike. ---
+
+// An account's authenticator app (TOTP, RFC 6238: SHA-1, 6 digits, 30 s).
+// The secret is sealed with AES-256-GCM (common/secret-box.ts, keyed by
+// TWO_FACTOR_ENCRYPTION_KEY, falling back to VAULT_ENCRYPTION_KEY).
+// enabledAt null = set-up started but not confirmed with a code yet.
+model TwoFactor {
+  userId           String    @id
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  secretCiphertext String
+  enabledAt        DateTime?
+  // The newest 30-second step a code was accepted for: a code works once.
+  lastUsedStep     BigInt?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+}
+
+// Ten single-use codes for a lost phone, shown once. Stored as an HMAC,
+// never in the clear; usedAt set on use.
+model TwoFactorBackupCode {
+  id        String    @id @default(uuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  codeHash  String
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+}
+
+// "Don't ask again on this computer for 30 days". The browser keeps the raw
+// token in an httpOnly cookie; only its SHA-256 is stored. Changing or
+// resetting the password removes them all.
+model TrustedDevice {
+  id         String   @id @default(uuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash  String   @unique
+  userAgent  String?
+  ipAddress  String?
+  expiresAt  DateTime
+  lastUsedAt DateTime @default(now())
+  createdAt  DateTime @default(now())
+
+  @@index([userId])
+}
+
+enum TwoStepPurpose {
+  // The password (or Google) checked out; the code is still to come.
+  SIGN_IN
+  // An admin who must turn two-step on before getting in.
+  SETUP
+}
+
+// One pending second step: the challenge token (a JWT) names this row by
+// its id (jti). Single use, five minutes (fifteen for SETUP), five tries.
+model TwoStepChallenge {
+  id         String         @id @default(uuid())
+  userId     String
+  user       User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  purpose    TwoStepPurpose
+  attempts   Int            @default(0)
+  expiresAt  DateTime
+  consumedAt DateTime?
+  createdAt  DateTime       @default(now())
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+// An admin invite (Security > Admin team > Invite an admin): a one-time
+// link, mailed, that works for 7 days. Only the link token's SHA-256 is
+// kept. The person picks their name and password and turns on two-step
+// while accepting; the TOTP secret shown on that page waits here, sealed.
+model AdminInvite {
+  id                      String    @id @default(uuid())
+  email                   String
+  name                    String?
+  // An admin role only (never USER).
+  role                    Role
+  tokenHash               String    @unique
+  invitedById             String
+  invitedBy               User      @relation("AdminInvitesSent", fields: [invitedById], references: [id])
+  expiresAt               DateTime
+  pendingSecretCiphertext String?
+  acceptedAt              DateTime?
+  acceptedUserId          String?
+  revokedAt               DateTime?
+  lastSentAt              DateTime  @default(now())
+  createdAt               DateTime  @default(now())
+
+  @@index([email])
 }
 
 // A personal credential vault -- "Password Manager" menu (client's own
@@ -2462,6 +2565,9 @@ enum UserNotificationType {
   REFERRAL
   // A referral withdrawal was approved, paid or rejected.
   PAYOUT
+  // Two-step sign-in was turned on or off (by the customer or the support
+  // team).
+  SECURITY
 }
 
 // A browser or phone that gets web push notifications for one customer
