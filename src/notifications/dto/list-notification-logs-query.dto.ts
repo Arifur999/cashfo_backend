@@ -3,9 +3,15 @@ import { IsEnum, IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
 import { NotificationChannel, NotificationLogStatus } from '@prisma/client';
 
 export class ListNotificationLogsQueryDto {
+  // The customer's User id (the column keeps its legacy name).
   @IsOptional()
   @IsString()
   platformUserId?: string;
+
+  // What one campaign sent: Campaigns > a campaign's send history.
+  @IsOptional()
+  @IsString()
+  campaignId?: string;
 
   @IsOptional()
   @IsEnum(NotificationChannel)
