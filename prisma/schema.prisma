@@ -793,6 +793,10 @@ model User {
   name                    String
   email                   String                   @unique
   phone                   String?
+  // When the owner proved the phone is theirs with an SMS code. Cleared
+  // when the number changes; codes go by SMS only to a verified phone, and
+  // a verified phone can reset the password.
+  phoneVerifiedAt         DateTime?
   // Uploaded via POST /api/auth/avatar (same local-disk multer pattern as
   // Contact.photoUrl -- see contact-photo-upload.ts's comment), served back
   // statically from /uploads/avatars. Null shows the initials-circle
@@ -1092,13 +1096,16 @@ model UserSession {
 // set (without resetting the password) on every older unused token for that
 // user the moment a newer one is requested, so only the latest link ever works.
 model PasswordResetToken {
-  id        String    @id @default(uuid())
-  userId    String
-  user      User      @relation(fields: [userId], references: [id])
-  tokenHash String    @unique
-  expiresAt DateTime
-  usedAt    DateTime?
-  createdAt DateTime  @default(now())
+  id         String    @id @default(uuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id])
+  tokenHash  String    @unique
+  expiresAt  DateTime
+  usedAt     DateTime?
+  // Made after an SMS code to a verified phone proved the reset, so the
+  // page asks for no second code ("Ask for a code before a password reset").
+  codeProven Boolean   @default(false)
+  createdAt  DateTime  @default(now())
 
   @@index([userId])
 }
@@ -2405,6 +2412,10 @@ enum OneTimeCodePurpose {
   // A password reset link, for an account with "Ask for a code before a
   // password reset" on.
   PASSWORD_RESET
+  // Proving a phone number with a code sent to it.
+  PHONE_VERIFY
+  // "Forgot password" by a verified phone: the code is the proof.
+  PHONE_PASSWORD_RESET
 }
 
 enum OneTimeCodeChannel {

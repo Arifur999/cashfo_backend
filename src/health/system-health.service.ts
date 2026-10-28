@@ -6,6 +6,7 @@ import { ConfigService } from '@nestjs/config';
 import { PaymentGateways } from '../billing/gateways/payment-gateways.js';
 import { MailService } from '../mail/mail.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { SmsService } from '../sms/sms.service.js';
 
 export interface SystemHealth {
   // This answer came from a running server.
@@ -15,6 +16,9 @@ export interface SystemHealth {
   // configured: RESEND_API_KEY is set. lastSendAt/lastSendOk: this server's
   // most recent send (null before the first, or after a restart).
   email: { configured: boolean; lastSendAt: Date | null; lastSendOk: boolean | null };
+  // configured: SMS_API_KEY and SMS_SENDER_ID are set (MRAM). balance: the
+  // credit left in taka, asked at most every ten minutes (null when unknown).
+  sms: { configured: boolean; lastSendAt: Date | null; lastSendOk: boolean | null; balance: number | null };
   // A real gateway (bKash, Nagad, SSLCommerz) is set up; without one,
   // payments are confirmed by hand (Mark paid).
   paymentGateway: { configured: boolean };
@@ -70,6 +74,7 @@ export class SystemHealthService {
     private readonly mail: MailService,
     private readonly gateways: PaymentGateways,
     private readonly config: ConfigService,
+    private readonly sms: SmsService,
   ) {}
 
   async status(): Promise<SystemHealth> {
@@ -84,6 +89,7 @@ export class SystemHealthService {
       database ??= { ok: false, latencyMs: null, sizeBytes: null };
     }
     const last = this.mail.lastSend;
+    const lastSms = this.sms.lastSend;
     const uploads = join(process.cwd(), UPLOADS_DIR);
     const writable = await isWritable(uploads);
     if (!this.storageSize || Date.now() - this.storageSize.at > SIZE_EVERY_MS) {
@@ -93,6 +99,7 @@ export class SystemHealthService {
       api: 'up',
       database,
       email: { configured: this.mail.configured, lastSendAt: last?.at ?? null, lastSendOk: last?.ok ?? null },
+      sms: { configured: this.sms.configured, lastSendAt: lastSms?.at ?? null, lastSendOk: lastSms?.ok ?? null, balance: await this.sms.balance() },
       paymentGateway: { configured: this.gateways.anyConfigured() },
       storage: { writable, path: UPLOADS_DIR, imageHostConfigured: Boolean(this.config.get<string>('IMGBB_API_KEY')), sizeBytes: this.storageSize.bytes },
     };

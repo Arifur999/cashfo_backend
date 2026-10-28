@@ -166,12 +166,12 @@ export class PasswordVaultService {
   private async resetRecipient(userId: string): Promise<CodeRecipient> {
     const user = await this.prisma.user.findUniqueOrThrow({
       where: { id: userId },
-      select: { id: true, name: true, email: true, phone: true, preferredLanguage: true, vaultPasswordHash: true },
+      select: { id: true, name: true, email: true, phone: true, phoneVerifiedAt: true, preferredLanguage: true, vaultPasswordHash: true },
     });
     if (!user.vaultPasswordHash) {
       throw new BadRequestException({ statusCode: 400, error: 'Bad Request', message: 'Set up a vault password first', reason: 'VAULT_NOT_SET_UP' });
     }
-    return { id: user.id, name: user.name, email: user.email, phone: user.phone, preferredLanguage: user.preferredLanguage };
+    return { id: user.id, name: user.name, email: user.email, phone: user.phone, phoneVerifiedAt: user.phoneVerifiedAt, preferredLanguage: user.preferredLanguage };
   }
 
   // The account password; a Google-only account has none, so a sign-in in

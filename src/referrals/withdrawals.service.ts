@@ -159,7 +159,7 @@ export class WithdrawalsService {
   }
 
   private async recipient(userId: string): Promise<CodeRecipient> {
-    return this.prisma.user.findUniqueOrThrow({ where: { id: userId }, select: { id: true, name: true, email: true, phone: true, preferredLanguage: true } });
+    return this.prisma.user.findUniqueOrThrow({ where: { id: userId }, select: { id: true, name: true, email: true, phone: true, phoneVerifiedAt: true, preferredLanguage: true } });
   }
 
   private actionText(amountPaisa: number, method: MethodSnapshot) {

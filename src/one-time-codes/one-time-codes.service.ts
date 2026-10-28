@@ -25,6 +25,8 @@ export interface CodeRecipient {
   name: string;
   email: string;
   phone: string | null;
+  // Set once the phone was proved theirs; only then do codes go by SMS.
+  phoneVerifiedAt?: Date | null;
   preferredLanguage: string;
 }
 
@@ -75,16 +77,24 @@ export class OneTimeCodesService {
     private readonly senders: OtpSenders,
   ) {}
 
-  // A fresh code for `purpose`, replacing any unused one. 503
-  // EMAIL_NOT_CONFIGURED when no channel can send it.
-  async issue(person: CodeRecipient, purpose: OneTimeCodePurpose, payload: Prisma.InputJsonObject, action: OtpMessage['action']): Promise<Challenge> {
-    const route = this.senders.pick(person);
+  // A fresh code for `purpose`, replacing any unused one. smsTo sends it to
+  // that phone by SMS (proving the number); otherwise it goes the way pick()
+  // chooses. 503 EMAIL_NOT_CONFIGURED / SMS_NOT_CONFIGURED when nothing can
+  // send it.
+  async issue(
+    person: CodeRecipient,
+    purpose: OneTimeCodePurpose,
+    payload: Prisma.InputJsonObject,
+    action: OtpMessage['action'],
+    options: { smsTo?: string } = {},
+  ): Promise<Challenge> {
+    const route = options.smsTo ? this.senders.smsTo(options.smsTo) : this.senders.pick(person);
     if (!route) {
       throw new ServiceUnavailableException({
         statusCode: 503,
         error: 'Service Unavailable',
-        message: 'Codes cannot be sent right now because email is not set up. Please contact support.',
-        reason: 'EMAIL_NOT_CONFIGURED',
+        message: options.smsTo ? 'Text messages cannot be sent right now. Please try again later.' : 'Codes cannot be sent right now. Please contact support.',
+        reason: options.smsTo ? 'SMS_NOT_CONFIGURED' : 'EMAIL_NOT_CONFIGURED',
       });
     }
     const now = new Date();
@@ -178,7 +188,8 @@ export class OneTimeCodesService {
     return { name: person.name, action, locale: person.preferredLanguage === 'BN' ? 'bn' : 'en', minutes: CODE_TTL_MS / 60_000 };
   }
 
-  private challengeOf(row: OneTimeCode, now: Date): Challenge {
+  // What the "enter the code" dialog shows for this row.
+  challengeOf(row: OneTimeCode, now = new Date()): Challenge {
     return {
       challengeId: row.id,
       channel: row.channel,

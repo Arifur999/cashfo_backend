@@ -13,6 +13,9 @@ import { accountsByPlan, type DashboardPeriod, lastFullMonths, perDhakaDay, peri
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const HIGH: Severity[] = [Severity.HIGH, Severity.CRITICAL];
+
+// A channel that is set up and whose last send (if any) went through.
+const canSend = (channel: { configured: boolean; lastSendOk: boolean | null }) => channel.configured && channel.lastSendOk !== false;
 // Raised and not yet closed: what the Security page counts as needing a look.
 const NEEDS_A_LOOK: FlagStatus[] = [FlagStatus.OPEN, FlagStatus.REVIEWING];
 const UNSOLVED = { status: { notIn: ['RESOLVED', 'CLOSED'] } } satisfies Prisma.SupportTicketWhereInput;
@@ -206,8 +209,9 @@ export class DashboardService {
         ...health,
         lastBackup: backup,
         errors24h,
-        // Everything answers and is set up, and nothing high broke today.
-        allWorking: health.database.ok && health.email.configured && health.email.lastSendOk !== false && errorsHigh === 0,
+        // Everything answers, messages can go out (email or SMS), and
+        // nothing high broke today.
+        allWorking: health.database.ok && (canSend(health.email) || canSend(health.sms)) && errorsHigh === 0,
       },
     };
   }

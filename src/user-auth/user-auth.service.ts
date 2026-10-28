@@ -57,7 +57,7 @@ export class UserAuthService {
 
   // An account that may still sign in: active, or waiting out the 30 days
   // after "Delete my account" (signing in restores it).
-  private canSignIn(user: Pick<User, 'status' | 'deletionScheduledFor'>, now = new Date()): boolean {
+  canSignIn(user: Pick<User, 'status' | 'deletionScheduledFor'>, now = new Date()): boolean {
     return user.status === 'ACTIVE' || isRestorable(user, now);
   }
 
@@ -257,21 +257,7 @@ export class UserAuthService {
     // An account waiting to be deleted may reset too: a forgotten password
     // must not cost the owner their account. The reset restores it.
     if (user && this.canSignIn(user) && user.role === Role.USER) {
-      const rawToken = randomBytes(32).toString('hex');
-      // sha256, not bcrypt -- the token already carries 256 bits of its own
-      // entropy (unlike a human password), so a deterministic hash is fine
-      // and lets resetPassword() below look it up with a plain unique query
-      // instead of bcrypt.compare-ing against every unexpired row.
-      const tokenHash = createHash('sha256').update(rawToken).digest('hex');
-      const expiresAt = new Date(Date.now() + 30 * 60 * 1000);
-
-      await this.prisma.$transaction([
-        // Only the newest link should ever work -- supersede anything still
-        // outstanding for this user rather than leaving multiple valid ones.
-        this.prisma.passwordResetToken.updateMany({ where: { userId: user.id, usedAt: null }, data: { usedAt: new Date() } }),
-        this.prisma.passwordResetToken.create({ data: { userId: user.id, tokenHash, expiresAt } }),
-      ]);
-
+      const rawToken = await this.createResetToken(user.id);
       const frontendUrl = this.configService.get<string>('USER_FRONTEND_URL') ?? 'http://localhost:3001';
       const resetUrl = `${frontendUrl}/reset-password?token=${rawToken}`;
       try {
@@ -287,6 +273,26 @@ export class UserAuthService {
     return { success: true };
   }
 
+  // A fresh 30-minute reset token for this account, superseding any still
+  // outstanding; the raw token goes in the link. codeProven: an SMS code to
+  // the verified phone already proved it (PhoneService), so no second code.
+  async createResetToken(userId: string, { codeProven = false } = {}): Promise<string> {
+    const rawToken = randomBytes(32).toString('hex');
+    // sha256, not bcrypt -- the token already carries 256 bits of its own
+    // entropy (unlike a human password), so a deterministic hash is fine
+    // and lets resetPassword() below look it up with a plain unique query
+    // instead of bcrypt.compare-ing against every unexpired row.
+    const tokenHash = createHash('sha256').update(rawToken).digest('hex');
+    const expiresAt = new Date(Date.now() + 30 * 60 * 1000);
+    await this.prisma.$transaction([
+      // Only the newest link should ever work -- supersede anything still
+      // outstanding for this user rather than leaving multiple valid ones.
+      this.prisma.passwordResetToken.updateMany({ where: { userId, usedAt: null }, data: { usedAt: new Date() } }),
+      this.prisma.passwordResetToken.create({ data: { userId, tokenHash, expiresAt, codeProven } }),
+    ]);
+    return rawToken;
+  }
+
   // The link from forgotPassword()'s email. Consuming it signs the account
   // out on every device -- changing your password signs you out everywhere
   // else -- then signs the caller in fresh, same response shape as
@@ -298,14 +304,14 @@ export class UserAuthService {
   // code too (codeRequired).
   async checkResetToken(rawToken: string): Promise<{ valid: boolean; codeRequired: boolean }> {
     const tokenHash = createHash('sha256').update(rawToken).digest('hex');
-    const resetToken = await this.prisma.passwordResetToken.findUnique({ where: { tokenHash }, select: { usedAt: true, expiresAt: true, userId: true } });
+    const resetToken = await this.prisma.passwordResetToken.findUnique({ where: { tokenHash }, select: { usedAt: true, expiresAt: true, userId: true, codeProven: true } });
     if (!resetToken || resetToken.usedAt || resetToken.expiresAt < new Date()) return { valid: false, codeRequired: false };
     const owner = await this.prisma.user.findUnique({
       where: { id: resetToken.userId },
       select: { status: true, role: true, deletionScheduledFor: true, askCodeBeforeReset: true },
     });
     const valid = !!owner && this.canSignIn(owner) && owner.role === Role.USER;
-    return { valid, codeRequired: valid && owner.askCodeBeforeReset };
+    return { valid, codeRequired: valid && owner.askCodeBeforeReset && !resetToken.codeProven };
   }
 
   // "Ask for a code before a password reset" is on: the link alone isn't
@@ -313,7 +319,7 @@ export class UserAuthService {
   // bound to this link (payload.resetTokenId).
   async sendResetCode(rawToken: string): Promise<Challenge> {
     const { resetToken, owner } = await this.openResetLink(rawToken);
-    if (!owner.askCodeBeforeReset) throw resetRefusal('CODE_NOT_REQUIRED', 'This reset link does not need a code.');
+    if (!owner.askCodeBeforeReset || resetToken.codeProven) throw resetRefusal('CODE_NOT_REQUIRED', 'This reset link does not need a code.');
     return this.codes.issue(owner, 'PASSWORD_RESET', { resetTokenId: resetToken.id }, RESET_CODE_ACTION);
   }
 
@@ -338,7 +344,8 @@ export class UserAuthService {
   // When the owner asks for a code before a reset: checks the typed one
   // (the try counts) and that it was sent for this very link. Returns the
   // code's id, to use up with the link, or null when no code is needed.
-  private async checkResetCode(resetToken: { id: string; userId: string }, proof: ResetCodeProof): Promise<string | null> {
+  private async checkResetCode(resetToken: { id: string; userId: string; codeProven: boolean }, proof: ResetCodeProof): Promise<string | null> {
+    if (resetToken.codeProven) return null;
     const owner = await this.prisma.user.findUnique({ where: { id: resetToken.userId }, select: { askCodeBeforeReset: true } });
     if (!owner?.askCodeBeforeReset) return null;
     if (!proof.challengeId || !proof.code) throw resetRefusal('CODE_REQUIRED', 'Enter the code we emailed you to reset your password.');

@@ -52,6 +52,7 @@ const setup = () => {
       api: 'up',
       database: { ok: true, latencyMs: 3 },
       email: { configured: true, lastSendAt: null, lastSendOk: null },
+      sms: { configured: false, lastSendAt: null, lastSendOk: null, balance: null },
       paymentGateway: { configured: false },
     }),
   };
