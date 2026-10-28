@@ -55,6 +55,9 @@ export class AdminSearchService {
 
     const paymentWhere: Prisma.PaymentWhereInput[] = [{ gatewayReferenceId: contains }, { userId: { in: personIds } }, { platformUserId: { in: personIds } }];
     const ticketWhere: Prisma.SupportTicketWhereInput[] = [{ subject: contains }, { platformUserId: { in: personIds } }];
+    // "#482" or "482": a ticket by its number.
+    const ticketNumber = /^#?(\d{1,9})$/.exec(term)?.[1];
+    if (ticketNumber) ticketWhere.push({ number: Number(ticketNumber) });
     if (idPrefix) {
       paymentWhere.push({ id: { startsWith: idPrefix } });
       ticketWhere.push({ id: { startsWith: idPrefix } });
@@ -73,7 +76,7 @@ export class AdminSearchService {
             where: { OR: ticketWhere },
             orderBy: { updatedAt: 'desc' },
             take: PER_KIND,
-            select: { id: true, subject: true, category: true, status: true, platformUserId: true },
+            select: { id: true, number: true, subject: true, category: true, status: true, platformUserId: true },
           })
         : [],
     ]);

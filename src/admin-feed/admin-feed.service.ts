@@ -109,6 +109,7 @@ export class AdminFeedService {
       take: 50,
       select: {
         id: true,
+        number: true,
         subject: true,
         category: true,
         // A note for admins is not an answer: the customer still waits.
@@ -122,7 +123,7 @@ export class AdminFeedService {
         id: `ticket:${ticket.id}`,
         group: 'SUPPORT',
         kind: 'TICKET_WAITING',
-        data: { ticketId: ticket.id, subject: ticket.subject, category: ticket.category, since: ticket.messages[0].createdAt.toISOString() },
+        data: { ticketId: ticket.id, number: ticket.number, subject: ticket.subject, category: ticket.category, since: ticket.messages[0].createdAt.toISOString() },
         at: ticket.messages[0].createdAt,
         href: `/admin/support/${ticket.id}`,
       }));

@@ -229,7 +229,7 @@ export class DashboardService {
       this.prisma.supportTicket.groupBy({ by: ['status'], _count: true }),
       this.prisma.supportTicket.findMany({
         where: UNSOLVED,
-        select: { id: true, subject: true, status: true, priority: true, createdAt: true, assignedToAdminId: true, platformUserId: true, messages: NEWEST_MESSAGE },
+        select: { id: true, number: true, subject: true, status: true, priority: true, createdAt: true, assignedToAdminId: true, platformUserId: true, messages: NEWEST_MESSAGE },
       }),
       this.prisma.supportTicket.count({ where: { resolvedAt: { gte: weekAgo } } }),
       this.prisma.supportTicket.findMany({
@@ -274,6 +274,7 @@ export class DashboardService {
       avgFirstReplyMinutes,
       queue: queue.map((ticket) => ({
         id: ticket.id,
+        number: ticket.number,
         subject: ticket.subject,
         status: ticket.status,
         priority: ticket.priority,

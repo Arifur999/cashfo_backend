@@ -425,6 +425,8 @@ enum LegalDocVersionStatus {
 
 model SupportTicket {
   id                String          @id @default(uuid())
+  // Its short number for people ("ticket #482"), counted up from 1.
+  number            Int             @unique @default(autoincrement())
   platformUserId    String
   subject           String
   category          TicketCategory
