@@ -21,6 +21,7 @@ const person = (id: string, name: string, preferredLanguage: 'EN' | 'BN') => ({
   id,
   name,
   email: `${id}@example.com`,
+  phone: `+88017000000${id.slice(1)}`,
   preferredLanguage,
   subscription: { plan: { name: 'Free' } },
   ownedBusinesses: [],
@@ -43,7 +44,7 @@ const campaignRow = (over: Row = {}) => ({
   ...over,
 });
 
-const setup = (over: Row = {}, { logged = [] as string[], mailConfigured = true, template = TEMPLATE as Row } = {}) => {
+const setup = (over: Row = {}, { logged = [] as string[], mailConfigured = true, smsConfigured = false, template = TEMPLATE as Row } = {}) => {
   const campaign = campaignRow(over);
   const logs: Row[] = logged.map((platformUserId) => ({ platformUserId, campaignId: 'c1', status: 'SENT' }));
   const bells: Row[] = [];
@@ -99,8 +100,9 @@ const setup = (over: Row = {}, { logged = [] as string[], mailConfigured = true,
   };
   const push = { send: vi.fn(async () => 0) };
   const config = { get: vi.fn(() => 'https://app.example') };
-  const service = new NotificationCampaignsService(prisma as never, mail as never, push as never, config as never);
-  return { service, prisma, mail, push, campaign, logs, bells };
+  const sms = { configured: smsConfigured, send: vi.fn(async (): Promise<void> => undefined) };
+  const service = new NotificationCampaignsService(prisma as never, mail as never, push as never, config as never, sms as never);
+  return { service, prisma, mail, push, sms, campaign, logs, bells };
 };
 
 describe('NotificationCampaignsService.send, in-app', () => {
@@ -176,6 +178,26 @@ describe('NotificationCampaignsService.send, email and SMS', () => {
     const sms = setup({ channel: 'SMS' });
     const smsError = await sms.service.send('c1', 'admin-nadia').catch((e: unknown) => e);
     expect((smsError as ServiceUnavailableException).getResponse()).toMatchObject({ reason: 'SMS_NOT_CONFIGURED' });
+  });
+
+  it('texts each verified phone the template in their language, as promotional, and fails only the number MRAM refused', async () => {
+    const { service, prisma, sms, logs } = setup({ channel: 'SMS' }, { smsConfigured: true });
+    sms.send.mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error('MRAM refused the SMS: 1012 Invalid number'));
+    const result = await service.send('c1', 'admin-nadia');
+
+    expect(sms.send.mock.calls).toEqual([
+      ['+880170000001', 'Your Free gets 15% off', 'promotional'],
+      ['+880170000002', 'আপনার Free এ ১৫% ছাড়', 'promotional'],
+      ['+880170000003', 'Your Free gets 15% off', 'promotional'],
+    ]);
+    const { where } = prisma.user.findMany.mock.calls[0][0] as unknown as { where: { AND: Row[] } };
+    expect(where.AND[1]).toEqual({ phone: { not: null }, phoneVerifiedAt: { not: null } });
+    expect(logs.map((log) => [log.platformUserId, log.status, log.errorMessage])).toEqual([
+      ['u1', 'SENT', null],
+      ['u2', 'FAILED', 'MRAM refused the SMS: 1012 Invalid number'],
+      ['u3', 'SENT', null],
+    ]);
+    expect(result).toMatchObject({ status: 'SENT', sentCount: 2, failedCount: 1 });
   });
 
   it('logs an address Resend refused as FAILED and the rest as SENT; a failed request fails its round', async () => {

@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 import { MailService } from '../mail/mail.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { PushService } from '../push/push.service.js';
+import { SmsService } from '../sms/sms.service.js';
 import { audienceWhere, campaignFilterOf, recipientVariables, renderTemplate, STALE_SEND_MS, type CampaignFilter } from './campaign-content.js';
 import { CreateCampaignDto } from './dto/create-campaign.dto.js';
 
@@ -13,6 +14,8 @@ const SENDABLE_STATUSES: CampaignStatus[] = ['DRAFT', 'SCHEDULED'];
 // Resend batch request (it takes up to 100).
 const IN_APP_ROUND = 500;
 const EMAIL_ROUND = 50;
+// SMS go one by one (each is personalised), so a round is small.
+const SMS_ROUND = 50;
 // Between email rounds, to stay under Resend's default 2 requests a second.
 const EMAIL_PAUSE_MS = 600;
 // "Send now" answers once the send is done, or after this long with the
@@ -29,12 +32,17 @@ const RECIPIENT_SELECT = {
   id: true,
   name: true,
   email: true,
+  phone: true,
   preferredLanguage: true,
   subscription: { select: { plan: { select: { name: true } } } },
   ownedBusinesses: { where: { isDefault: true, deletedAt: null }, take: 1, select: { plan: { select: { name: true } } } },
 } satisfies Prisma.UserSelect;
 
 type Person = Prisma.UserGetPayload<{ select: typeof RECIPIENT_SELECT }>;
+
+// An SMS campaign reaches only phones their owners proved (Settings >
+// Profile): never a number someone typed for another person.
+const SMS_REACHABLE = { phone: { not: null }, phoneVerifiedAt: { not: null } } satisfies Prisma.UserWhereInput;
 type Outcome = { userId: string; status: NotificationLogStatus; errorMessage: string | null };
 
 const sleep = (ms: number) =>
@@ -53,7 +61,7 @@ const notConfigured = (reason: 'EMAIL_NOT_CONFIGURED' | 'SMS_NOT_CONFIGURED') =>
     message:
       reason === 'EMAIL_NOT_CONFIGURED'
         ? 'Email is not set up for the platform yet (RESEND_API_KEY), so this campaign cannot be sent.'
-        : 'No SMS provider is set up yet, so SMS campaigns cannot be sent. Use email or in-app instead.',
+        : 'SMS is not set up for the platform yet (SMS_API_KEY, SMS_SENDER_ID), so this campaign cannot be sent.',
     reason,
   });
 
@@ -83,6 +91,7 @@ export class NotificationCampaignsService {
     private readonly mail: MailService,
     private readonly push: PushService,
     private readonly config: ConfigService,
+    private readonly sms: SmsService,
   ) {}
 
   // Each campaign with how many people its filter reaches right now:
@@ -220,7 +229,10 @@ export class NotificationCampaignsService {
 
   private async withAudience(campaign: BulkNotificationCampaign) {
     const filter = campaignFilterOf(campaign.targetFilter);
-    const [audienceCount, reachableCount] = await Promise.all([this.audienceCount(filter), this.audienceCount(filter, true)]);
+    const [audienceCount, reachableCount] = await Promise.all([
+      this.audienceCount(filter),
+      campaign.channel === 'SMS' ? this.prisma.user.count({ where: { AND: [audienceWhere(filter, new Date(), true), SMS_REACHABLE] } }) : this.audienceCount(filter, true),
+    ]);
     return { ...campaign, audienceCount, reachableCount };
   }
 
@@ -234,9 +246,7 @@ export class NotificationCampaignsService {
     if (!template) throw new NotFoundException('Notification template not found');
     if (!template.isActive) throw new BadRequestException('This template is switched off. Turn it on before sending.');
     if (campaign.channel === 'EMAIL' && !this.mail.configured) throw notConfigured('EMAIL_NOT_CONFIGURED');
-    // There is no SMS provider; the one-time codes' SMS seam
-    // (SmsOtpSender) is off too and only sends codes.
-    if (campaign.channel === 'SMS') throw notConfigured('SMS_NOT_CONFIGURED');
+    if (campaign.channel === 'SMS' && !this.sms.configured) throw notConfigured('SMS_NOT_CONFIGURED');
     return template;
   }
 
@@ -265,11 +275,12 @@ export class NotificationCampaignsService {
     this.running.add(campaign.id);
     try {
       const startedAt = new Date();
-      const where = audienceWhere(campaignFilterOf(campaign.targetFilter), startedAt, true);
+      const audience = audienceWhere(campaignFilterOf(campaign.targetFilter), startedAt, true);
+      const where = campaign.channel === 'SMS' ? { AND: [audience, SMS_REACHABLE] } : audience;
       const appName = await this.mail.platformName();
       const logged = await this.prisma.notificationLog.findMany({ where: { campaignId: campaign.id }, select: { platformUserId: true } });
       const done = new Set(logged.map((row) => row.platformUserId));
-      const round = campaign.channel === 'EMAIL' ? EMAIL_ROUND : IN_APP_ROUND;
+      const round = campaign.channel === 'EMAIL' ? EMAIL_ROUND : campaign.channel === 'SMS' ? SMS_ROUND : IN_APP_ROUND;
 
       let cursor: string | undefined;
       for (;;) {
@@ -286,7 +297,11 @@ export class NotificationCampaignsService {
         const todo = people.filter((person) => !done.has(person.id));
         if (todo.length > 0) {
           const outcomes =
-            campaign.channel === 'EMAIL' ? await this.sendEmails(campaign, template, todo, appName) : await this.sendInApp(campaign, template, todo, appName);
+            campaign.channel === 'EMAIL'
+              ? await this.sendEmails(campaign, template, todo, appName)
+              : campaign.channel === 'SMS'
+                ? await this.sendSms(template, todo, appName)
+                : await this.sendInApp(campaign, template, todo, appName);
           await this.record(campaign, outcomes);
           if (campaign.channel === 'EMAIL') await sleep(EMAIL_PAUSE_MS);
         }
@@ -359,6 +374,24 @@ export class NotificationCampaignsService {
       })),
     );
     return people.map((person) => ({ userId: person.id, status: 'SENT', errorMessage: null }));
+  }
+
+  // SMS: one promotional message each, the template's text in the person's
+  // language (no subject), to the phone they verified. A number MRAM refuses
+  // fails alone.
+  private async sendSms(template: NotificationTemplate, people: Person[], appName: string): Promise<Outcome[]> {
+    const outcomes: Outcome[] = [];
+    for (const person of people) {
+      const { body } = renderTemplate(template, person.preferredLanguage, recipientVariables({ ...person, planName: planNameOf(person) }, appName));
+      try {
+        if (!person.phone) throw new Error('No verified phone');
+        await this.sms.send(person.phone, body, 'promotional');
+        outcomes.push({ userId: person.id, status: 'SENT', errorMessage: null });
+      } catch (error) {
+        outcomes.push({ userId: person.id, status: 'FAILED', errorMessage: errorText(error) });
+      }
+    }
+    return outcomes;
   }
 
   // Email: one Resend batch for the round; an address Resend refuses fails
