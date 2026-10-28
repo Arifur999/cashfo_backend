@@ -2604,17 +2604,20 @@ model GroupExpense {
 // Other) are seeded once per business the first time its category list is
 // ever requested, editable/deletable after that like any other row.
 model GroupExpenseCategoryOption {
-  id           String     @id @default(uuid())
-  businessId   String
-  business     Business   @relation(fields: [businessId], references: [id])
-  name         String
-  icon         String?
-  color        String
-  displayOrder Int        @default(0)
+  id               String     @id @default(uuid())
+  businessId       String
+  business         Business   @relation(fields: [businessId], references: [id])
+  name             String
+  icon             String?
+  color            String
+  displayOrder     Int        @default(0)
   // How a new expense in this category is shared, to start with.
-  defaultSplit GroupSplit @default(EQUAL)
-  createdAt    DateTime   @default(now())
-  updatedAt    DateTime   @updatedAt
+  defaultSplit     GroupSplit @default(EQUAL)
+  // "Only selected": the members a new expense in it is shared by, equally
+  // (defaultSplit EQUAL). Empty = everyone in the group that day.
+  defaultMemberIds String[]   @default([])
+  createdAt        DateTime   @default(now())
+  updatedAt        DateTime   @updatedAt
 
   @@unique([businessId, name])
 }
