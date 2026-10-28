@@ -12,7 +12,7 @@ describe('deleting a notification template', () => {
       bulkNotificationCampaign: { count: vi.fn().mockResolvedValue(waiting) },
       auditLog: audit(),
     };
-    return { service: new NotificationTemplatesService(prisma as never), prisma };
+    return { service: new NotificationTemplatesService(prisma as never, {} as never, {} as never), prisma };
   };
 
   it('deletes one made in the panel and logs it', async () => {
@@ -65,5 +65,30 @@ describe('deleting an announcement', () => {
     const service = new AnnouncementsService(prisma as never);
     await expect(service.remove('a1', 'admin-1', '1.2.3.4')).resolves.toEqual({ id: 'a1' });
     expect(prisma.auditLog.create.mock.calls[0][0].data).toMatchObject({ action: 'ANNOUNCEMENT_DELETED', oldValue: { title: 'Eid offer' }, ipAddress: '1.2.3.4' });
+  });
+});
+
+describe('sending a template test', () => {
+  const template = { id: 't1', key: 'eid_offer', channel: 'IN_APP_PUSH', subjectEn: null, subjectBn: null, bodyEn: 'Hi {{firstName}}, try {{planName}}', bodyBn: 'হ্যালো {{firstName}}' };
+  const setup = (configured = true) => {
+    const prisma = {
+      notificationTemplate: { findUnique: vi.fn().mockResolvedValue(template) },
+      user: { findUnique: vi.fn().mockResolvedValue({ name: 'Nadia Rahman', email: 'nadia@example.com' }) },
+    };
+    const mail = { configured, platformName: vi.fn().mockResolvedValue('Smartly'), sendCampaignBatch: vi.fn().mockResolvedValue(new Map()) };
+    const config = { get: vi.fn(() => 'https://app.example.com') };
+    return { service: new NotificationTemplatesService(prisma as never, mail as never, config as never), mail };
+  };
+
+  it('emails the asking admin the template filled in for them, in the language picked', async () => {
+    const { service, mail } = setup();
+    await expect(service.sendTest('t1', 'admin-1', 'BN')).resolves.toEqual({ sentTo: 'nadia@example.com' });
+    expect(mail.sendCampaignBatch).toHaveBeenCalledWith([
+      { to: 'nadia@example.com', locale: 'bn', email: { subject: '[Test] eid_offer', body: 'হ্যালো Nadia', link: 'https://app.example.com' } },
+    ]);
+  });
+
+  it("says so when email isn't set up", async () => {
+    await expect(setup(false).service.sendTest('t1', 'admin-1')).rejects.toThrow('Email sending is not set up');
   });
 });
