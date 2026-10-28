@@ -108,6 +108,7 @@ read -rp "Super admin email: " E && bash bootstrap.sh "$E"
 bash set-env.sh GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET         # Google sign-in; can wait
 bash set-env.sh RESEND_API_KEY IMGBB_API_KEY BETTER_AUTH_API_KEY   # email, avatars, dashboard; can wait
 bash set-env.sh VAPID_PUBLIC_KEY VAPID_PRIVATE_KEY VAPID_SUBJECT  # reminder push; can wait (see below)
+bash set-env.sh SMS_API_KEY SMS_SENDER_ID    # SMS codes via MRAM; allow the VPS IP in the MRAM panel first
 bash install.sh                        # start the stack, create the super admin, install the timers
 bash attach-site.sh                    # certificate + vhost, checks the neighbours
 ```
