@@ -1,7 +1,7 @@
-import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { isMoney } from '../../common/dto.js';
-import { toClientError } from './global-exception.filter.js';
+import { isSetupGap, toClientError } from './global-exception.filter.js';
 
 const known = (code: string) => new Prisma.PrismaClientKnownRequestError('boom', { code, clientVersion: 'test' });
 
@@ -28,6 +28,21 @@ describe('toClientError', () => {
   it('leaves real server errors alone', () => {
     expect(toClientError(known('P1001'))).toBeUndefined();
     expect(toClientError(new Error('db down'))).toBeUndefined();
+  });
+});
+
+describe('isSetupGap', () => {
+  const unavailable = (reason?: string) => new ServiceUnavailableException({ statusCode: 503, error: 'Service Unavailable', message: 'x', ...(reason && { reason }) });
+
+  it('knows a channel that is not set up yet, so it is not logged as an incident', () => {
+    expect(isSetupGap(unavailable('EMAIL_NOT_CONFIGURED'))).toBe(true);
+    expect(isSetupGap(unavailable('SMS_NOT_CONFIGURED'))).toBe(true);
+  });
+
+  it('still counts a failed send and any other server error', () => {
+    expect(isSetupGap(unavailable('EMAIL_NOT_SENT'))).toBe(false);
+    expect(isSetupGap(unavailable())).toBe(false);
+    expect(isSetupGap(new Error('boom'))).toBe(false);
   });
 });
 

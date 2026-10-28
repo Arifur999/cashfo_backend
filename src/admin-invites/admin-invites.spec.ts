@@ -172,13 +172,13 @@ describe('AdminInvitesService', () => {
     await expect(reasonOf(notStarted.service.accept(acceptDto(), client))).resolves.toMatchObject({ reason: 'TWO_STEP_NOT_STARTED' });
   });
 
-  it('answers 503 EMAIL_NOT_CONFIGURED when invites cannot be emailed, and 409 for a taken email', async () => {
-    await expect(
-      reasonOf(invitesSetup(null, { canDeliver: false }).service.create({ email: 'x@example.com', role: 'SUPPORT_ADMIN' }, 'super-1')),
-    ).resolves.toMatchObject({
-      status: 503,
-      reason: 'EMAIL_NOT_CONFIGURED',
-    });
+  it('hands the link to the super admin when email is off, sending nothing, and answers 409 for a taken email', async () => {
+    const noEmail = invitesSetup(null, { canDeliver: false });
+    noEmail.tx.adminInvite.create.mockImplementation(async ({ data }: { data: Record<string, unknown> }) => ({ id: 'inv-9', ...data }));
+    const made = await noEmail.service.create({ email: 'x@example.com', role: 'SUPPORT_ADMIN' }, 'super-1');
+    expect(made.link).toMatch(/^https:\/\/smartly\.example\/admin\/invite\?token=[A-Za-z0-9_%-]+$/);
+    expect(noEmail.mail.sendAdminInviteEmail).not.toHaveBeenCalled();
+    expect(noEmail.tx.auditLog.create.mock.calls[0][0].data.newValue).toMatchObject({ email: 'x@example.com', delivery: 'LINK' });
     await expect(
       reasonOf(invitesSetup(null, { emailTaken: true }).service.create({ email: 'x@example.com', role: 'SUPPORT_ADMIN' }, 'super-1')),
     ).resolves.toMatchObject({

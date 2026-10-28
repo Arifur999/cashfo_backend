@@ -26,13 +26,15 @@ import { INVITE_TTL_MS, inviteState, resendWaitSec, ROLE_LABELS, type InviteStat
 
 const INVALID_INVITE = 'This invite link is not valid any more. Ask a super admin to send a new one.';
 
-const emailNotConfigured = () =>
-  new ServiceUnavailableException({
-    statusCode: 503,
-    error: 'Service Unavailable',
-    message: 'Email is not set up for the platform yet, so invites cannot be sent. Set a first password instead.',
-    reason: 'EMAIL_NOT_CONFIGURED',
-  });
+// What creating or resending an invite answers; link only while email is off.
+export interface InviteAnswer {
+  id: string;
+  email: string;
+  name: string | null;
+  role: AdminInvite['role'];
+  expiresAt: Date;
+  link?: string;
+}
 
 const emailNotSent = () =>
   new ServiceUnavailableException({
@@ -46,7 +48,9 @@ const invalidInvite = (reason: Exclude<InviteState, 'PENDING'> | 'NOT_FOUND') =>
   new BadRequestException({ statusCode: 400, error: 'Bad Request', message: INVALID_INVITE, reason: `INVITE_${reason}` });
 
 // Security > Admin team > Invite an admin: a one-time link by email that
-// works for seven days. Whoever opens it picks their name and password and
+// works for seven days. While the platform can't send email, the link goes
+// back to the super admin who made it (`link`, shown once), to pass on
+// themselves -- the audit log says so. Whoever opens it picks their name and password and
 // turns on two-step sign-in, then lands in the admin panel signed in.
 @Injectable()
 export class AdminInvitesService {
@@ -64,9 +68,9 @@ export class AdminInvitesService {
 
   // ---- Super admin ----
 
-  async create(dto: CreateAdminInviteDto, inviterId: string, ipAddress?: string) {
-    if (!this.mail.canDeliver) throw emailNotConfigured();
+  async create(dto: CreateAdminInviteDto, inviterId: string, ipAddress?: string): Promise<InviteAnswer> {
     await this.assertEmailFree(dto.email);
+    const byEmail = this.mail.canDeliver;
 
     const token = newInviteToken();
     const now = new Date();
@@ -90,13 +94,15 @@ export class AdminInvitesService {
           action: 'ADMIN_INVITED',
           entityType: 'AdminInvite',
           entityId: created.id,
-          newValue: { email: created.email, name: created.name, role: created.role, expiresAt: created.expiresAt.toISOString() },
+          newValue: { email: created.email, name: created.name, role: created.role, expiresAt: created.expiresAt.toISOString(), delivery: byEmail ? 'EMAIL' : 'LINK' },
           ipAddress,
         },
       });
       return created;
     });
 
+    const answer = { id: invite.id, email: invite.email, name: invite.name, role: invite.role, expiresAt: invite.expiresAt };
+    if (!byEmail) return { ...answer, link: this.inviteLink(token) };
     try {
       await this.sendInvite(invite, token);
     } catch (error) {
@@ -104,7 +110,7 @@ export class AdminInvitesService {
       await this.prisma.adminInvite.update({ where: { id: invite.id }, data: { revokedAt: new Date() } });
       throw emailNotSent();
     }
-    return { id: invite.id, email: invite.email, name: invite.name, role: invite.role, expiresAt: invite.expiresAt };
+    return answer;
   }
 
   // Invites not yet accepted or revoked, newest first; an expired one stays
@@ -130,10 +136,10 @@ export class AdminInvitesService {
   }
 
   // A new link and seven new days; the old link stops working.
-  async resend(id: string, adminId: string, ipAddress?: string) {
+  async resend(id: string, adminId: string, ipAddress?: string): Promise<InviteAnswer> {
     const invite = await this.requireOpen(id);
-    if (!this.mail.canDeliver) throw emailNotConfigured();
     await this.assertEmailFree(invite.email);
+    const byEmail = this.mail.canDeliver;
     const now = new Date();
     const wait = resendWaitSec(invite.lastSentAt, now);
     if (wait > 0) {
@@ -154,12 +160,14 @@ export class AdminInvitesService {
       // The accept page shows a new two-step key for the new link.
       data: { tokenHash: hashToken(token), expiresAt: new Date(now.getTime() + INVITE_TTL_MS), lastSentAt: now, pendingSecretCiphertext: null },
     });
-    try {
-      await this.sendInvite(updated, token);
-    } catch (error) {
-      this.logger.error(`Admin invite email to ${updated.email} failed: ${error instanceof Error ? error.message : String(error)}`);
-      await this.prisma.adminInvite.update({ where: { id }, data: { lastSentAt: invite.lastSentAt } });
-      throw emailNotSent();
+    if (byEmail) {
+      try {
+        await this.sendInvite(updated, token);
+      } catch (error) {
+        this.logger.error(`Admin invite email to ${updated.email} failed: ${error instanceof Error ? error.message : String(error)}`);
+        await this.prisma.adminInvite.update({ where: { id }, data: { lastSentAt: invite.lastSentAt } });
+        throw emailNotSent();
+      }
     }
     await this.prisma.auditLog.create({
       data: {
@@ -167,11 +175,12 @@ export class AdminInvitesService {
         action: 'ADMIN_INVITE_RESENT',
         entityType: 'AdminInvite',
         entityId: id,
-        newValue: { email: updated.email, expiresAt: updated.expiresAt.toISOString() },
+        newValue: { email: updated.email, expiresAt: updated.expiresAt.toISOString(), delivery: byEmail ? 'EMAIL' : 'LINK' },
         ipAddress,
       },
     });
-    return { id: updated.id, email: updated.email, name: updated.name, role: updated.role, expiresAt: updated.expiresAt };
+    const answer = { id: updated.id, email: updated.email, name: updated.name, role: updated.role, expiresAt: updated.expiresAt };
+    return byEmail ? answer : { ...answer, link: this.inviteLink(token) };
   }
 
   async revoke(id: string, adminId: string, ipAddress?: string) {
@@ -314,9 +323,13 @@ export class AdminInvitesService {
       name: invite.name,
       inviterName: inviter?.name ?? 'A super admin',
       role,
-      link: `${this.adminFrontendUrl()}/admin/invite?token=${encodeURIComponent(token)}`,
+      link: this.inviteLink(token),
       expires: { en: dateLabel(invite.expiresAt, 'en'), bn: dateLabel(invite.expiresAt, 'bn') },
     });
+  }
+
+  private inviteLink(token: string) {
+    return `${this.adminFrontendUrl()}/admin/invite?token=${encodeURIComponent(token)}`;
   }
 
   private async assertEmailFree(email: string) {
