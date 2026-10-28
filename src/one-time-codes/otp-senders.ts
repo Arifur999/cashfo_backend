@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { OneTimeCodeChannel } from '@prisma/client';
 import { MailService } from '../mail/mail.service.js';
+import { SmsService } from '../sms/sms.service.js';
 
 export interface OtpMessage {
   name: string;
@@ -11,8 +12,7 @@ export interface OtpMessage {
   minutes: number;
 }
 
-// Where one-time codes go. Email (Resend) works today; SMS is a seam that
-// stays off until a provider is wired in.
+// Where one-time codes go: SMS (MRAM) to a verified phone, or email (Resend).
 export interface OtpSender {
   channel: OneTimeCodeChannel;
   isConfigured(): boolean;
@@ -39,18 +39,32 @@ export class EmailOtpSender implements OtpSender {
   }
 }
 
-// No SMS provider yet: never configured, so codes go by email. A provider
-// (SSL Wireless, Twilio, ...) plugs in here.
+// The code's text message: short enough for one SMS part in either
+// language (the app's dialog already says what the code confirms).
+export const otpSmsText = (platform: string, code: string, message: Pick<OtpMessage, 'locale' | 'minutes'>) =>
+  message.locale === 'bn'
+    ? `${platform} কোড ${code}। ${toBanglaDigits(message.minutes)} মিনিট কাজ করবে। কাউকে বলবেন না।`
+    : `Your ${platform} code is ${code}. It works for ${message.minutes} minutes. Don't share it with anyone.`;
+
+const toBanglaDigits = (value: number) => String(value).replace(/\d/g, (digit) => '০১২৩৪৫৬৭৮৯'[Number(digit)]);
+
+// Text messages through MRAM (SmsService), once SMS_API_KEY and
+// SMS_SENDER_ID are set.
 @Injectable()
 export class SmsOtpSender implements OtpSender {
   readonly channel = 'SMS' as const;
 
+  constructor(
+    private readonly sms: SmsService,
+    private readonly mail: MailService,
+  ) {}
+
   isConfigured() {
-    return false;
+    return this.sms.configured;
   }
 
-  send(): Promise<void> {
-    return Promise.reject(new Error('No SMS provider is configured'));
+  async send(destination: string, code: string, message: OtpMessage) {
+    await this.sms.send(destination, otpSmsText(await this.mail.platformName(), code, message));
   }
 }
 
@@ -74,7 +88,15 @@ export class DevLogOtpSender implements OtpSender {
   }
 }
 
-// SMS when a provider is set up and the person has a phone; otherwise
+// The person a code goes to. Only a phone they proved is theirs
+// (phoneVerifiedAt) gets codes by SMS: anyone signed in can type a number.
+export interface OtpPerson {
+  email: string;
+  phone: string | null;
+  phoneVerifiedAt?: Date | null;
+}
+
+// SMS when it is set up and the person has a verified phone; otherwise
 // email; otherwise (development) the log. Null: nothing can send a code.
 @Injectable()
 export class OtpSenders {
@@ -84,11 +106,17 @@ export class OtpSenders {
     private readonly devLog: DevLogOtpSender,
   ) {}
 
-  pick(person: { email: string; phone: string | null }): { sender: OtpSender; destination: string } | null {
-    if (person.phone && this.sms.isConfigured()) return { sender: this.sms, destination: person.phone };
+  pick(person: OtpPerson): { sender: OtpSender; destination: string } | null {
+    if (person.phone && person.phoneVerifiedAt && this.sms.isConfigured()) return { sender: this.sms, destination: person.phone };
     if (this.email.isConfigured()) return { sender: this.email, destination: person.email };
     if (this.devLog.isConfigured()) return { sender: this.devLog, destination: person.email };
     return null;
+  }
+
+  // A code that must go to this phone by SMS (proving the number is
+  // theirs); null when SMS isn't set up.
+  smsTo(phone: string): { sender: OtpSender; destination: string } | null {
+    return this.sms.isConfigured() ? { sender: this.sms, destination: phone } : null;
   }
 
   // The sender for a code already sent on `channel` (a resend goes the same way).

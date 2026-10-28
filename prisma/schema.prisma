@@ -793,6 +793,10 @@ model User {
   name                    String
   email                   String                   @unique
   phone                   String?
+  // When the owner proved the phone is theirs with an SMS code. Cleared
+  // when the number changes; codes go by SMS only to a verified phone, and
+  // a verified phone can reset the password.
+  phoneVerifiedAt         DateTime?
   // Uploaded via POST /api/auth/avatar (same local-disk multer pattern as
   // Contact.photoUrl -- see contact-photo-upload.ts's comment), served back
   // statically from /uploads/avatars. Null shows the initials-circle
@@ -2405,6 +2409,10 @@ enum OneTimeCodePurpose {
   // A password reset link, for an account with "Ask for a code before a
   // password reset" on.
   PASSWORD_RESET
+  // Proving a phone number with a code sent to it.
+  PHONE_VERIFY
+  // "Forgot password" by a verified phone: the code is the proof.
+  PHONE_PASSWORD_RESET
 }
 
 enum OneTimeCodeChannel {
