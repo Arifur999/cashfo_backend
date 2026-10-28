@@ -1911,6 +1911,10 @@ model Transaction {
   // which was voided 'Corrected' in the same request. Plain field, like
   // reversalOfId; at most one correction per original.
   correctedFromId        String?            @unique
+  // Set on a charge (a bank or service fee) posted with a loan entry: the
+  // entry it was paid with. Plain field, like reversalOfId; voiding or
+  // correcting the entry voids its charge too.
+  chargeForId            String?
   // Prompt 9: when set on a SALE/PURCHASE, the date it's due -- drives
   // aging/overdue. When set on a PAYMENT, which specific outstanding
   // SALE/PURCHASE this payment targets -- a payment with this left unset
@@ -1926,6 +1930,7 @@ model Transaction {
   @@index([businessId, transactionDate])
   @@index([businessId, status])
   @@index([contactId])
+  @@index([chargeForId])
 }
 
 enum TransactionType {

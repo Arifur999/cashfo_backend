@@ -17,12 +17,20 @@ const original = {
   ],
 };
 
-const setup = ({ transaction = original as typeof original | null, savingsEntry = null as object | null, asset = null as object | null, referralAccounts = 0, claimed = 1 } = {}) => {
+const setup = ({
+  transaction = original as typeof original | null,
+  savingsEntry = null as object | null,
+  asset = null as object | null,
+  referralAccounts = 0,
+  claimed = 1,
+} = {}) => {
   const tx = {
     transaction: {
       findUnique: vi.fn().mockResolvedValue(transaction),
       updateMany: vi.fn().mockResolvedValue({ count: claimed }),
       create: vi.fn().mockResolvedValue({ id: 'reversal-1', entries: [] }),
+      // The charges paid with it (none unless a test says so).
+      findMany: vi.fn().mockResolvedValue([]),
     },
     savingsGoalEntry: { findFirst: vi.fn().mockResolvedValue(savingsEntry) },
     asset: { findFirst: vi.fn().mockResolvedValue(asset) },
