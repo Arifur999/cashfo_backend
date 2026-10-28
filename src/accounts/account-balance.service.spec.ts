@@ -380,7 +380,7 @@ describe('AccountBalanceService.getLedger particulars', () => {
           ],
         },
       },
-    ]);
+    ] as never);
     const result = await service.getLedger('biz-1', 'acc');
     expect(result.entries[0]).toMatchObject({ counterAccounts: ['Mutual trust bank'], category: null });
     expect(result).toMatchObject({ accountName: 'Cash' });
@@ -408,7 +408,7 @@ describe('AccountBalanceService.getLedger particulars', () => {
           ],
         },
       },
-    ]);
+    ] as never);
     const result = await service.getLedger('biz-1', 'acc');
     expect(result.entries[0]).toMatchObject({ counterAccounts: ['Salary Income'], category: 'Salary', description: 'October salary' });
   });
