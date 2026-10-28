@@ -15,6 +15,9 @@ const STANDING_TRANSACTION = { status: 'POSTED', reversalOfId: null } satisfies 
 // nameBn is the account's Bangla name, null where it has none.
 const ENTRY_ACCOUNT_SELECT = { id: true, name: true, nameBn: true, accountType: true, accountSubtype: true } satisfies Prisma.AccountSelect;
 
+// The category a loan entry's charge is filed under (categories are names).
+export const CHARGE_CATEGORY = 'Bank charge';
+
 @Injectable()
 export class TransactionsService {
   constructor(
@@ -214,7 +217,52 @@ export class TransactionsService {
       await this.accountBalanceService.recalculateBalance(accountId, tx);
     }
 
+    // A charge paid with this entry goes with it.
+    const charges = await tx.transaction.findMany({ where: { businessId, chargeForId: original.id, ...STANDING_TRANSACTION }, select: { id: true } });
+    for (const charge of charges) {
+      await this.voidIn(tx, businessId, charge.id, reason, userId);
+    }
+
     return { original: { id: original.id, status: 'VOIDED' as const }, reversal };
+  }
+
+  // A charge (a bank or service fee) paid with a loan entry, out of the
+  // wallet the entry used: an expense of its own in the workspace's first
+  // expense account, filed under CHARGE_CATEGORY and tied to the entry, so
+  // voiding or correcting the entry takes it too. Posted inside the entry's
+  // own database transaction.
+  async postCharge(
+    tx: Prisma.TransactionClient,
+    businessId: string,
+    entryId: string,
+    charge: { amount: number; moneyAccountId: string; date: string; contactId?: string | null },
+    userId: string,
+  ) {
+    const expenseAccount = await tx.account.findFirst({
+      where: { businessId, accountType: 'EXPENSE', status: 'ACTIVE' },
+      orderBy: [{ displayOrder: 'asc' }, { createdAt: 'asc' }],
+      select: { id: true },
+    });
+    if (!expenseAccount) {
+      throw new BadRequestException('No expense account exists in this workspace to file the charge under');
+    }
+    const posted = await this.createTransaction(
+      businessId,
+      {
+        transactionType: 'EXPENSE',
+        transactionDate: charge.date,
+        description: 'Charge',
+        contactId: charge.contactId ?? undefined,
+        entries: [
+          { accountId: expenseAccount.id, entryType: 'DEBIT', amount: charge.amount, categoryId: CHARGE_CATEGORY },
+          { accountId: charge.moneyAccountId, entryType: 'CREDIT', amount: charge.amount },
+        ],
+      },
+      userId,
+      tx,
+    );
+    await tx.transaction.update({ where: { id: posted.id }, data: { chargeForId: entryId } });
+    return posted;
   }
 
   // Locks the accounts' rows (in id order, so two postings over the same
@@ -281,7 +329,8 @@ export class TransactionsService {
       where: { businessId, OR: [{ correctedFromId: transaction.id }, ...(transaction.correctedFromId ? [{ id: transaction.correctedFromId }] : [])] },
       select: { id: true, correctedFromId: true, entries: { where: { entryType: EntryType.DEBIT }, select: { amount: true } } },
     });
-    const summary = (row: (typeof linked)[number] | undefined) => (row ? { id: row.id, amount: row.entries.reduce((sum, entry) => sum.plus(entry.amount), new Prisma.Decimal(0)).toFixed(2) } : null);
+    const summary = (row: (typeof linked)[number] | undefined) =>
+      row ? { id: row.id, amount: row.entries.reduce((sum, entry) => sum.plus(entry.amount), new Prisma.Decimal(0)).toFixed(2) } : null;
     return {
       ...withFlag,
       correctedFrom: summary(linked.find((row) => row.id === transaction.correctedFromId)),
@@ -343,7 +392,82 @@ export class TransactionsService {
       this.prisma.transaction.count({ where }),
     ]);
 
-    return { data: await this.withVoidable(data), meta: { page, limit, total, totalPages: Math.ceil(total / limit) } };
+    const ids = data.map((transaction) => transaction.id);
+    const [rows, charges, loanBalances] = await Promise.all([
+      this.withVoidable(data),
+      this.chargesFor(ids),
+      filters.withLoanBalance ? this.loanBalancesAfter(businessId, data) : Promise.resolve(new Map<string, string>()),
+    ]);
+    const withExtras = rows.map((row) => ({
+      ...row,
+      // The charge paid with this entry, if any (voided with it).
+      charge: charges.get(row.id) ?? null,
+      ...(filters.withLoanBalance && { loanBalanceAfter: loanBalances.get(row.id) ?? null }),
+    }));
+    return { data: withExtras, meta: { page, limit, total, totalPages: Math.ceil(total / limit) } };
+  }
+
+  // Each entry's charge: what the expenses tied to it add up to.
+  private async chargesFor(ids: string[]): Promise<Map<string, string>> {
+    if (ids.length === 0) return new Map();
+    const charges = await this.prisma.transaction.findMany({
+      where: { chargeForId: { in: ids }, reversalOfId: null },
+      select: { chargeForId: true, entries: { where: { entryType: EntryType.DEBIT }, select: { amount: true } } },
+    });
+    const sums = new Map<string, Prisma.Decimal>();
+    for (const charge of charges) {
+      if (!charge.chargeForId) continue;
+      const amount = charge.entries.reduce((sum, entry) => sum.plus(entry.amount), new Prisma.Decimal(0));
+      sums.set(charge.chargeForId, (sums.get(charge.chargeForId) ?? new Prisma.Decimal(0)).plus(amount));
+    }
+    return new Map([...sums].map(([id, sum]) => [id, sum.toFixed(2)]));
+  }
+
+  // A loan contact's balance just after each row: the opening balance plus
+  // every principal posting (on Accounts Receivable or Payable) that still
+  // stands, up to and including the row, by date and then by when it was
+  // made. Every DEBIT adds and every CREDIT subtracts, the rule of the loan
+  // statement (ReceivablesPayablesService.getLoanStatement): positive is
+  // Pawna (they owe you), negative Dena. A profit row, voided entry or
+  // reversal moves nothing, so it reads the balance as it stood.
+  private async loanBalancesAfter(
+    businessId: string,
+    rows: { id: string; contactId: string | null; transactionDate: Date; createdAt: Date }[],
+  ): Promise<Map<string, string>> {
+    const contactIds = [...new Set(rows.map((row) => row.contactId).filter((id): id is string => !!id))];
+    if (contactIds.length === 0) return new Map();
+    const [contacts, entries] = await Promise.all([
+      this.prisma.contact.findMany({ where: { businessId, id: { in: contactIds } }, select: { id: true, openingBalance: true } }),
+      this.prisma.transactionEntry.findMany({
+        where: {
+          account: {
+            businessId,
+            OR: [
+              { accountSubtype: 'receivable', accountType: 'ASSET' },
+              { accountSubtype: 'payable', accountType: 'LIABILITY' },
+            ],
+          },
+          transaction: { businessId, contactId: { in: contactIds }, ...STANDING_TRANSACTION },
+        },
+        select: { entryType: true, amount: true, transaction: { select: { contactId: true, transactionDate: true, createdAt: true } } },
+      }),
+    ]);
+    const opening = new Map(contacts.map((contact) => [contact.id, new Prisma.Decimal(contact.openingBalance)]));
+    const atOrBefore = (a: { transactionDate: Date; createdAt: Date }, b: { transactionDate: Date; createdAt: Date }) =>
+      a.transactionDate.getTime() < b.transactionDate.getTime() ||
+      (a.transactionDate.getTime() === b.transactionDate.getTime() && a.createdAt.getTime() <= b.createdAt.getTime());
+
+    const balances = new Map<string, string>();
+    for (const row of rows) {
+      if (!row.contactId || !opening.has(row.contactId)) continue;
+      let balance = opening.get(row.contactId) as Prisma.Decimal;
+      for (const entry of entries) {
+        if (entry.transaction.contactId !== row.contactId || !atOrBefore(entry.transaction, row)) continue;
+        balance = entry.entryType === 'DEBIT' ? balance.plus(entry.amount) : balance.minus(entry.amount);
+      }
+      balances.set(row.id, balance.toFixed(2));
+    }
+    return balances;
   }
 
   // The figures above the Transactions list, over every page the list's
@@ -395,6 +519,8 @@ export class TransactionsService {
     if (filters.contactId) where.contactId = filters.contactId;
     if (filters.contactCategory) where.contact = { category: filters.contactCategory };
     if (filters.excludeSavings) where.NOT = { entries: { some: { account: { accountSubtype: 'savings' } } } };
+    // A loan entry's charge shows on the entry's row, not as a row of its own.
+    if (filters.excludeCharges) where.chargeForId = null;
     if (filters.search) {
       // Quick entries keep what the customer typed on the entry (its note
       // and category), not on the transaction's description.

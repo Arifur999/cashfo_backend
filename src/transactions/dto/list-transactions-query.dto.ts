@@ -66,6 +66,19 @@ export class ListTransactionsQueryDto {
   @IsBoolean()
   excludeSavings?: boolean;
 
+  // Leaves out the charges posted with loan entries: Loans › Transactions
+  // shows each one in its entry's Charge column instead.
+  @IsOptional()
+  @Transform(({ value }) => (value === 'true' || value === '1' ? true : value === 'false' || value === '0' ? false : value))
+  @IsBoolean()
+  excludeCharges?: boolean;
+
+  // Adds each row's loanBalanceAfter: the contact's balance just after it.
+  @IsOptional()
+  @Transform(({ value }) => (value === 'true' || value === '1' ? true : value === 'false' || value === '0' ? false : value))
+  @IsBoolean()
+  withLoanBalance?: boolean;
+
   @IsOptional()
   @IsString()
   search?: string;

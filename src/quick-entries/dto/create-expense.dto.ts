@@ -14,6 +14,13 @@ export class CreateExpenseDto {
   @IsMoney()
   amount: number;
 
+  // A bank or service charge paid with this entry, out of the same wallet.
+  // Posted as an expense of its own, tied to this entry (chargeForId): it
+  // is voided and corrected with it.
+  @IsOptional()
+  @IsMoney()
+  charge?: number;
+
   @IsDateString()
   date: string;
 

@@ -24,8 +24,22 @@ type Posting = {
 };
 
 const day = (value: string) => new Date(`${value}T00:00:00.000Z`);
-const contact = (id: string, name: string, type: string, category: Category, openingBalance = '0', businessId = 'biz-1'): Contact => ({ id, businessId, name, type, category, openingBalance: new Prisma.Decimal(openingBalance) });
-const posting = (id: string, contactId: string, transactionType: Posting['transactionType'], date: string, entries: Entry[], over: Partial<Posting> = {}): Posting => ({
+const contact = (id: string, name: string, type: string, category: Category, openingBalance = '0', businessId = 'biz-1'): Contact => ({
+  id,
+  businessId,
+  name,
+  type,
+  category,
+  openingBalance: new Prisma.Decimal(openingBalance),
+});
+const posting = (
+  id: string,
+  contactId: string,
+  transactionType: Posting['transactionType'],
+  date: string,
+  entries: Entry[],
+  over: Partial<Posting> = {},
+): Posting => ({
   id,
   businessId: 'biz-1',
   contactId,
@@ -45,9 +59,11 @@ const line = (accountId: string, entryType: Entry['entryType'], amount: string):
 const sale = (id: string, contactId: string, date: string, amount: string, due: string, over: Partial<Posting> = {}) =>
   posting(id, contactId, 'SALE', date, [line('ar', 'DEBIT', amount), line('sales', 'CREDIT', amount)], { dueDate: day(due), ...over });
 // A general payment from them: Dr Cash / Cr Receivable.
-const received = (id: string, contactId: string, date: string, amount: string) => posting(id, contactId, 'PAYMENT', date, [line('cash', 'DEBIT', amount), line('ar', 'CREDIT', amount)]);
+const received = (id: string, contactId: string, date: string, amount: string) =>
+  posting(id, contactId, 'PAYMENT', date, [line('cash', 'DEBIT', amount), line('ar', 'CREDIT', amount)]);
 // A general payment to them: Dr Payable / Cr Cash.
-const paid = (id: string, contactId: string, date: string, amount: string) => posting(id, contactId, 'PAYMENT', date, [line('ap', 'DEBIT', amount), line('cash', 'CREDIT', amount)]);
+const paid = (id: string, contactId: string, date: string, amount: string) =>
+  posting(id, contactId, 'PAYMENT', date, [line('ap', 'DEBIT', amount), line('cash', 'CREDIT', amount)]);
 
 // Today is 21 October 2026 in Dhaka.
 const TODAY = '2026-10-21';
@@ -99,7 +115,9 @@ const postingMatches = (row: Posting, where: Record<string, unknown>) =>
 const setup = () => {
   const prisma = {
     contact: {
-      findMany: vi.fn(({ where }: { where: Record<string, unknown> }) => Promise.resolve(contacts.filter((row) => contactMatches(row, where)).sort((a, b) => a.name.localeCompare(b.name)))),
+      findMany: vi.fn(({ where }: { where: Record<string, unknown> }) =>
+        Promise.resolve(contacts.filter((row) => contactMatches(row, where)).sort((a, b) => a.name.localeCompare(b.name))),
+      ),
     },
     account: {
       findFirst: vi.fn(({ where }: { where: { businessId: string; accountSubtype: string } }) =>
@@ -134,10 +152,43 @@ describe('ReceivablesPayablesService.getAging', () => {
     expect(contactWhere(prisma)).toEqual({ businessId: 'biz-1', type: { in: ['CUSTOMER', 'BOTH'] } });
     expect(report.buckets).toEqual({ current: '5400.00', days1to30: '0.00', days31to60: '800.00', over60: '0.00' });
     expect(report.contacts).toEqual([
-      { contactId: 'lender', contactName: 'Lender', current: '5000.00', days1to30: '0.00', days31to60: '0.00', over60: '0.00', total: '5000.00', totalInvoiced: '5000.00', totalPaid: '0.00', openingRemaining: '0.00' },
+      {
+        contactId: 'lender',
+        contactName: 'Lender',
+        current: '5000.00',
+        days1to30: '0.00',
+        days31to60: '0.00',
+        over60: '0.00',
+        total: '5000.00',
+        totalInvoiced: '5000.00',
+        totalPaid: '0.00',
+        openingRemaining: '0.00',
+      },
       // The 500 paid settled the 300 from before first.
-      { contactId: 'shop', contactName: 'Shop', current: '0.00', days1to30: '0.00', days31to60: '800.00', over60: '0.00', total: '800.00', totalInvoiced: '1000.00', totalPaid: '500.00', openingRemaining: '0.00' },
-      { contactId: 'trader', contactName: 'Trader', current: '400.00', days1to30: '0.00', days31to60: '0.00', over60: '0.00', total: '400.00', totalInvoiced: '400.00', totalPaid: '0.00', openingRemaining: '250.00' },
+      {
+        contactId: 'shop',
+        contactName: 'Shop',
+        current: '0.00',
+        days1to30: '0.00',
+        days31to60: '800.00',
+        over60: '0.00',
+        total: '800.00',
+        totalInvoiced: '1000.00',
+        totalPaid: '500.00',
+        openingRemaining: '0.00',
+      },
+      {
+        contactId: 'trader',
+        contactName: 'Trader',
+        current: '400.00',
+        days1to30: '0.00',
+        days31to60: '0.00',
+        over60: '0.00',
+        total: '400.00',
+        totalInvoiced: '400.00',
+        totalPaid: '0.00',
+        openingRemaining: '250.00',
+      },
     ]);
     // Friend owes only from before, so has no row, but the 1500 still counts.
     expect(report.openingRemaining).toBe('1750.00');
@@ -197,7 +248,9 @@ describe('ReceivablesPayablesService.getAging', () => {
 describe('ReceivablesPayablesService.getOverdue', () => {
   it('lists every late invoice without a category, and only the named kind with one', async () => {
     const all = setup();
-    expect((await all.service.getOverdue('biz-1', 'RECEIVABLE')).map((row) => [row.transactionId, row.remainingAmount, row.daysOverdue])).toEqual([['shop-sale', '800.00', 50]]);
+    expect((await all.service.getOverdue('biz-1', 'RECEIVABLE')).map((row) => [row.transactionId, row.remainingAmount, row.daysOverdue])).toEqual([
+      ['shop-sale', '800.00', 50],
+    ]);
     expect(contactWhere(all.prisma)).toEqual({ businessId: 'biz-1', type: { in: ['CUSTOMER', 'BOTH'] } });
 
     const business = setup();
@@ -259,7 +312,8 @@ describe('ReceivablesPayablesController category', () => {
 describe('ContactCategoryQueryDto and DueSoonQueryDto', () => {
   // The global pipe, as main.ts sets it up.
   const pipe = new ValidationPipe({ whitelist: true, transform: true, forbidNonWhitelisted: true });
-  const parse = (metatype: typeof ContactCategoryQueryDto | typeof DueSoonQueryDto, query: Record<string, unknown>) => pipe.transform(query, { type: 'query', metatype });
+  const parse = (metatype: typeof ContactCategoryQueryDto | typeof DueSoonQueryDto, query: Record<string, unknown>) =>
+    pipe.transform(query, { type: 'query', metatype });
   // The pipe's messages for a refused query.
   const refusal = async (metatype: typeof ContactCategoryQueryDto | typeof DueSoonQueryDto, query: Record<string, unknown>) => {
     const error = await parse(metatype, query).then(
@@ -294,6 +348,7 @@ describe('ReceivablesPayablesService loans with any kind of loan contact', () =>
   const recording = () => {
     const createTransaction = vi.fn((_businessId: string, dto: unknown) => Promise.resolve(dto));
     const prisma = {
+      $transaction: vi.fn((work: (client: unknown) => unknown) => work(prisma)),
       contact: {
         findUnique: vi.fn(({ where }: { where: { id: string } }) => Promise.resolve(contacts.find((row) => row.id === where.id) ?? null)),
       },
