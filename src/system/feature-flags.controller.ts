@@ -36,8 +36,8 @@ export class FeatureFlagsController {
   @UseGuards(AdminAuthGuard, RolesGuard)
   @Roles(AdminRole.SUPER_ADMIN)
   @Post()
-  create(@Body() dto: CreateFeatureFlagDto, @CurrentAdmin() admin: RequestAdminUser) {
-    return this.featureFlagsService.create(dto, admin.id);
+  create(@Body() dto: CreateFeatureFlagDto, @CurrentAdmin() admin: RequestAdminUser, @Req() req: Request) {
+    return this.featureFlagsService.create(dto, admin.id, req.ip);
   }
 
   @UseGuards(AdminAuthGuard, RolesGuard)
