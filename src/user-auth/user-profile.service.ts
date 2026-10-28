@@ -1,6 +1,7 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common';
 import type { User } from '@prisma/client';
 import { CredentialsService } from '../auth/credentials.service.js';
+import { MailService } from '../mail/mail.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { UpdateLanguageDto } from './dto/update-language.dto.js';
 import { UpdatePreferencesDto } from './dto/update-preferences.dto.js';
@@ -21,6 +22,7 @@ export class UserProfileService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly credentials: CredentialsService,
+    private readonly mail: MailService,
   ) {}
 
   // impersonatedBy: the admin behind a read-only "View as customer"
@@ -64,6 +66,9 @@ export class UserProfileService {
       // (Settings > App > Reminders). Sent once email is set up.
       alerts: { alertNewDevice: user.alertNewDevice, alertFailedTries: user.alertFailedTries, askCodeBeforeReset: user.askCodeBeforeReset },
       monthlySummaryEmail: user.monthlySummaryEmail,
+      // Whether the platform can send email at all: without it the app hides
+      // what only an email can do ("Send a verification email").
+      emailReady: this.mail.configured,
       // False for a Google-only account: Settings offers to set a password
       // instead of changing one.
       hasPassword: await this.credentials.has(user.id),

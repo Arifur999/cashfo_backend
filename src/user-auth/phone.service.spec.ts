@@ -146,7 +146,7 @@ describe('UserProfileService.updateProfile and the verified phone', () => {
         update: vi.fn().mockResolvedValue({ id: 'user-1', ...current }),
       },
     };
-    return { service: new UserProfileService(prisma as never, {} as never), prisma };
+    return { service: new UserProfileService(prisma as never, {} as never, {} as never), prisma };
   };
 
   it('drops the verification when the number changes', async () => {
