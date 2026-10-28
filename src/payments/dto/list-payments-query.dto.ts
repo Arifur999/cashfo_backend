@@ -15,6 +15,11 @@ export class ListPaymentsQueryDto {
   @IsString()
   planId?: string;
 
+  // One customer's payments (the owner page's billing card).
+  @IsOptional()
+  @IsString()
+  userId?: string;
+
   @IsOptional()
   @IsISO8601()
   dateFrom?: string;

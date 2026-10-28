@@ -2,9 +2,14 @@ import { PaymentStatus } from '@prisma/client';
 import { countByStatus, duplicateOf, paymentIdPrefix } from './payment-extras.js';
 
 const at = (minutes: number) => new Date(Date.UTC(2026, 9, 1, 4, minutes));
-const paid = (id: string, minutes: number, overrides: Partial<{ platformUserId: string; planId: string; status: PaymentStatus }> = {}) => ({
+const paid = (
+  id: string,
+  minutes: number,
+  overrides: Partial<{ userId: string | null; platformUserId: string | null; planId: string; status: PaymentStatus }> = {},
+) => ({
   id,
-  platformUserId: 'mahbub',
+  userId: null as string | null,
+  platformUserId: 'mahbub' as string | null,
   planId: 'monthly',
   status: PaymentStatus.SUCCESS,
   createdAt: at(minutes),
@@ -26,6 +31,13 @@ describe('duplicateOf', () => {
     expect(duplicateOf(second, [paid('x', 12, { status: PaymentStatus.FAILED })])).toBeNull();
     expect(duplicateOf(second, [paid('x', 3)])).toBeNull();
     expect(duplicateOf(paid('f', 14, { status: PaymentStatus.FAILED }), [first])).toBeNull();
+  });
+
+  it("keys a customer's payments on their User id, never mixing them with a sandbox id", () => {
+    const customer = (id: string, minutes: number) => paid(id, minutes, { userId: 'u-nadia', platformUserId: null });
+    expect(duplicateOf(customer('b', 14), [customer('a', 12)])).toBe('a');
+    expect(duplicateOf(customer('b', 14), [paid('x', 12, { platformUserId: 'u-other' })])).toBeNull();
+    expect(duplicateOf(paid('lone', 14, { platformUserId: null }), [paid('none', 12, { platformUserId: null })])).toBeNull();
   });
 
   it('names the earliest when several came in a row', () => {

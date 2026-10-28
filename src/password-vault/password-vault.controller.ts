@@ -1,13 +1,14 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, HttpCode, Param, Patch, Post, UseGuards } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import { CurrentUser } from '../user-auth/decorators/current-user.decorator.js';
 import { UserAuthGuard } from '../user-auth/guards/user-auth.guard.js';
 import type { RequestUser } from '../user-auth/interfaces/request-user.interface.js';
 import { CreateVaultEntryDto } from './dto/create-vault-entry.dto.js';
-import { ResetVaultDto } from './dto/reset-vault.dto.js';
+import { ResetVaultDto, StartVaultResetDto } from './dto/reset-vault.dto.js';
 import { SetVaultPasswordDto } from './dto/set-vault-password.dto.js';
 import { UnlockVaultDto } from './dto/unlock-vault.dto.js';
 import { UpdateVaultEntryDto } from './dto/update-vault-entry.dto.js';
+import { UpdateVaultSettingsDto } from './dto/vault-settings.dto.js';
 import { VaultAccessGuard } from './guards/vault-access.guard.js';
 import { PasswordVaultService } from './password-vault.service.js';
 
@@ -16,6 +17,9 @@ import { PasswordVaultService } from './password-vault.service.js';
 // UserAuthGuard (real login); the entries routes additionally require
 // VaultAccessGuard (a short-lived token from POST unlock) -- see that
 // guard's comment for why the two are separate.
+// A code costs an email: a few starts and resends per quarter hour.
+const CODE_THROTTLE = { default: { limit: 10, ttl: 15 * 60 * 1000 } };
+
 @UseGuards(UserAuthGuard)
 @Controller('api/vault')
 export class PasswordVaultController {
@@ -26,6 +30,13 @@ export class PasswordVaultController {
     return this.passwordVaultService.getStatus(user.id);
   }
 
+  // How long an unlock lasts (1-30 minutes, or null for the server's).
+  // Needs only the login: a longer lock time opens nothing by itself.
+  @Patch('settings')
+  updateSettings(@CurrentUser() user: RequestUser, @Body() dto: UpdateVaultSettingsDto) {
+    return this.passwordVaultService.updateSettings(user.id, dto);
+  }
+
   // Both check the account password, so they share the login route's
   // brute-force budget rather than the global 100/min.
   @Throttle({ default: { limit: 5, ttl: 15 * 60 * 1000 } })
@@ -34,18 +45,34 @@ export class PasswordVaultController {
     return this.passwordVaultService.setVaultPassword(user.id, dto);
   }
 
+  // "Forgot vault password?": the account password, then a code by email
+  // (the same budget as a withdrawal's codes), then the reset itself.
+  @Throttle(CODE_THROTTLE)
+  @Post('reset/start')
+  @HttpCode(200)
+  startReset(@CurrentUser() user: RequestUser, @Body() dto: StartVaultResetDto) {
+    return this.passwordVaultService.startReset(user, dto);
+  }
+
+  @Throttle(CODE_THROTTLE)
+  @Post('reset/start/:challengeId/resend')
+  @HttpCode(200)
+  resendResetCode(@CurrentUser() user: RequestUser, @Param('challengeId') challengeId: string) {
+    return this.passwordVaultService.resendResetCode(user, challengeId);
+  }
+
   @Throttle({ default: { limit: 5, ttl: 15 * 60 * 1000 } })
   @Post('reset')
   resetVault(@CurrentUser() user: RequestUser, @Body() dto: ResetVaultDto) {
-    return this.passwordVaultService.resetVault(user.id, dto);
+    return this.passwordVaultService.resetVault(user, dto);
   }
 
-  // Looser than the main login route's 5/15min -- login happens once a
-  // session, but unlocking the vault is a normal, repeated action throughout
-  // a single working session (open the page, step away, come back...), so
-  // login's policy blocked honest re-unlocks in practice. Still a real
-  // brute-force deterrent against a bcrypt-hashed password.
-  @Throttle({ default: { limit: 10, ttl: 10 * 60 * 1000 } })
+  // The real limit is counted per person in the service (ten wrong tries in
+  // ten minutes, with the tries left in each 401). This is only a backstop
+  // per caller, set above it so an honest person sees the service's
+  // message, not a bare 429 -- unlocking is a normal, repeated action
+  // through a working session (open the page, step away, come back...).
+  @Throttle({ default: { limit: 20, ttl: 10 * 60 * 1000 } })
   @Post('unlock')
   unlock(@CurrentUser() user: RequestUser, @Body() dto: UnlockVaultDto) {
     return this.passwordVaultService.unlock(user.id, dto);

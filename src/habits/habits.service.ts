@@ -1,10 +1,11 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
-import { Habit } from '@prisma/client';
+import { Habit, type WeekStart } from '@prisma/client';
 import { dhakaDateKey } from '../common/dhaka.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { CheckInHabitDto } from './dto/check-in-habit.dto.js';
 import { CreateHabitDto } from './dto/create-habit.dto.js';
 import { UpdateHabitDto } from './dto/update-habit.dto.js';
+import { completionRate } from './habit-rate.js';
 import { bestStreak, currentStreak } from './streak.js';
 
 function toDateKey(date: Date): string {
@@ -112,7 +113,7 @@ export class HabitsService {
     const logByHabit = new Map(logs.map((l) => [l.habitId, l]));
     const todayDow = today.getUTCDay();
     const scheduledToday = habits.filter((h) => h.frequencyType !== 'WEEKLY_DAYS' || h.weeklyDays.includes(todayDow));
-    const streaks = await this.computeStreaks(habits);
+    const streaks = await this.computeStreaks(habits, await this.weekStartOf(userId));
 
     return scheduledToday.map((h) => ({
       ...h,
@@ -125,10 +126,17 @@ export class HabitsService {
   // certain-days habit, skipping the days it isn't planned, and weeks for an
   // N-times-a-week one. Today only counts once done, so an unbroken streak
   // doesn't look reset before the day is over.
-  private async computeStreaks(habits: Habit[]): Promise<Map<string, number>> {
+  private async computeStreaks(habits: Habit[], weekStart: WeekStart): Promise<Map<string, number>> {
     const doneByHabit = await this.doneDays(habits);
     const today = dhakaDateKey(new Date());
-    return new Map(habits.map((h) => [h.id, currentStreak(h, doneByHabit.get(h.id) ?? new Set(), today)]));
+    return new Map(habits.map((h) => [h.id, currentStreak(h, doneByHabit.get(h.id) ?? new Set(), today, weekStart)]));
+  }
+
+  // The customer's "Week starts on" (Settings > App), for the weeks of an
+  // N-times-a-week habit.
+  private async weekStartOf(userId: string): Promise<WeekStart> {
+    const user = await this.prisma.user.findUnique({ where: { id: userId }, select: { weekStart: true } });
+    return user?.weekStart ?? 'SATURDAY';
   }
 
   // Every day each habit was done, as 'YYYY-MM-DD' keys, read in ONE query
@@ -173,10 +181,18 @@ export class HabitsService {
   // habits, and both streaks and the 30-day count come from that read.
   // bestStreak is in currentStreak's unit (weeks for an N-times-a-week habit,
   // days otherwise), over the habit's whole history up to today.
+  // completionRate is the share of the planned days in the last 30 that were
+  // done (habit-rate.ts), from the day the habit started; null while none
+  // was planned yet.
   async getStats(userId: string) {
     const habits = await this.listHabits(userId, false);
     const doneByHabit = await this.doneDays(habits);
     const today = dhakaDateKey(new Date());
+    const weekStart = await this.weekStartOf(userId);
+    const firstLogs = habits.length
+      ? await this.prisma.habitLog.groupBy({ by: ['habitId'], where: { habitId: { in: habits.map((h) => h.id) } }, _min: { date: true } })
+      : [];
+    const firstLogOf = new Map(firstLogs.map((row) => [row.habitId, row._min.date ? toDateKey(row._min.date) : null]));
 
     // The 30 Dhaka days ending today. No upper bound, as before: a day
     // logged ahead of today still counts here.
@@ -189,15 +205,18 @@ export class HabitsService {
       // One log per habit per day (@@unique), so counting days counts logs.
       let last30DaysCompleted = 0;
       for (const day of done) if (day >= last30FromKey) last30DaysCompleted++;
+      const rate = completionRate(h, done, today, firstLogOf.get(h.id) ?? null, weekStart);
       return {
         habitId: h.id,
         name: h.name,
         icon: h.icon,
         color: h.color,
-        currentStreak: currentStreak(h, done, today),
-        bestStreak: bestStreak(h, done, today),
+        currentStreak: currentStreak(h, done, today, weekStart),
+        bestStreak: bestStreak(h, done, today, weekStart),
         last30DaysCompleted,
-        completionRate: Math.round((last30DaysCompleted / 30) * 100),
+        // The planned days in the window the rate is out of.
+        last30DaysPlanned: rate.planned,
+        completionRate: rate.rate,
       };
     });
   }

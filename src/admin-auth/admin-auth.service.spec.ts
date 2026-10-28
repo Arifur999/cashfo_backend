@@ -16,7 +16,7 @@ const build = (overrides: Record<string, unknown> = {}) => {
     ...overrides,
   };
   const sessions = { revokeOthersForUser: vi.fn().mockResolvedValue(undefined) };
-  const service = new AdminAuthService(prisma as never, sessions as never, {} as never, {} as never);
+  const service = new AdminAuthService(prisma as never, sessions as never, {} as never, {} as never, {} as never);
   return { prisma, sessions, service };
 };
 

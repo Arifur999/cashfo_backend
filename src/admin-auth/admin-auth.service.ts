@@ -6,6 +6,7 @@ import { SessionTokensService } from '../auth/session-tokens.service.js';
 import { placeOfIp } from '../common/ip-country.js';
 import { isAdminRole } from '../common/roles.js';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { TwoStepService } from '../two-step/two-step.service.js';
 import type { ChangePasswordDto } from '../user-auth/dto/change-password.dto.js';
 import { parseDeviceLabel } from '../user-auth/device-label.js';
 import { LoginDto } from './dto/login.dto.js';
@@ -21,9 +22,12 @@ export class AdminAuthService {
     private readonly sessions: AuthSessionsService,
     private readonly tokens: SessionTokensService,
     private readonly credentials: CredentialsService,
+    private readonly twoStep: TwoStepService,
   ) {}
 
-  async login(dto: LoginDto, client: ClientInfo) {
+  // trustedDevices: the x-trusted-device header the frontend forwards from
+  // its cookies, which lets a computer trusted for 30 days skip the code.
+  async login(dto: LoginDto, client: ClientInfo, trustedDevices?: string | string[]) {
     const admin = await this.prisma.user.findUnique({ where: { email: dto.email } });
 
     // An end-user account is "no such admin" here -- same generic answer, so
@@ -45,14 +49,17 @@ export class AdminAuthService {
       throw new UnauthorizedException('Invalid email or password');
     }
 
-    return this.completeSignIn(admin, signedIn.sessionId, client);
+    // Two-step sign-in: the code (or setting it up) comes before any token.
+    const pending = await this.twoStep.gate(admin, signedIn.sessionId, 'admin', trustedDevices);
+    if (pending) return pending;
+    return this.finishSignIn(admin, signedIn.sessionId, client);
   }
 
   // Google sign-in ends on better-auth's callback, which leaves a session
   // cookie in the browser. The frontend forwards that cookie here and gets
   // the usual token pair, bound to that same session. An end user's session
   // is refused, not ended, so the frontend can exchange it on the user side.
-  async exchangeSession(cookieHeader: string | undefined, client: ClientInfo) {
+  async exchangeSession(cookieHeader: string | undefined, client: ClientInfo, trustedDevices?: string | string[]) {
     const signedIn = await this.sessions.fromCookie(cookieHeader);
     if (!signedIn) {
       throw new UnauthorizedException('No signed-in session to exchange');
@@ -64,12 +71,15 @@ export class AdminAuthService {
     if (admin.status !== 'ACTIVE') {
       throw new UnauthorizedException('This account has been suspended');
     }
-    return this.completeSignIn(admin, signedIn.sessionId, client);
+    const pending = await this.twoStep.gate(admin, signedIn.sessionId, 'admin', trustedDevices);
+    if (pending) return pending;
+    return this.finishSignIn(admin, signedIn.sessionId, client);
   }
 
-  // Shared by both ways in: stamps the login, audits it and issues the
-  // token pair bound to the session.
-  private async completeSignIn(admin: User, sessionId: string, client: ClientInfo) {
+  // Shared by every way in (password, Google, the second step, an accepted
+  // invite): stamps the login, audits it and issues the token pair bound to
+  // the session.
+  async finishSignIn(admin: User, sessionId: string, client: ClientInfo) {
     await this.prisma.$transaction([
       this.prisma.user.update({ where: { id: admin.id }, data: { lastLoginAt: new Date() } }),
       this.prisma.auditLog.create({
@@ -130,7 +140,8 @@ export class AdminAuthService {
 
   // An admin's own password change. Until now only a super admin could set
   // one (and saw it), so an admin could never rotate a password that had
-  // been shared or leaked. Every other session of the account is signed out.
+  // been shared or leaked. Every other session of the account is signed out,
+  // whatever signOutOthers says (only the customer app may keep them).
   async changePassword(adminId: string, sessionId: string, dto: ChangePasswordDto, ipAddress?: string) {
     const admin = await this.prisma.user.findUnique({ where: { id: adminId } });
     if (!admin || !isAdminRole(admin.role)) {
@@ -150,7 +161,14 @@ export class AdminAuthService {
   async me(adminId: string) {
     const admin = await this.requireAdmin(adminId);
     const credential = await this.prisma.authAccount.findFirst({ where: { userId: adminId, providerId: 'credential' }, select: { updatedAt: true } });
-    return { id: admin.id, name: admin.name, email: admin.email, role: admin.role, passwordChangedAt: credential?.updatedAt ?? null };
+    return {
+      id: admin.id,
+      name: admin.name,
+      email: admin.email,
+      role: admin.role,
+      passwordChangedAt: credential?.updatedAt ?? null,
+      twoFactorEnabled: await this.twoStep.isEnabled(adminId),
+    };
   }
 
   // My account: an admin renames themselves. Written to the audit log.

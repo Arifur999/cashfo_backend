@@ -61,3 +61,34 @@ export function signedInAfter(failed: { email: string; createdAt: Date }, succes
   );
   return match?.createdAt ?? null;
 }
+
+export interface PlacedSignIn {
+  // ISO country code and name (common/ip-country.ts ipCountry).
+  code: string;
+  name: string;
+  ipAddress: string;
+  createdAt: Date;
+}
+
+// The sign-ins (oldest first) that came from a country the account had
+// never signed in from before. `earlier` holds the countries (code -> name)
+// of the account's earlier sign-ins that could be placed. With none, there
+// is nothing to compare against: the first placed sign-in only becomes the
+// baseline. A new country is reported once, then counts as known.
+export function signInsFromNewCountries(earlier: Map<string, string>, signIns: PlacedSignIn[]): Array<{ signIn: PlacedSignIn; earlierCountries: string[] }> {
+  const known = new Map(earlier);
+  const found: Array<{ signIn: PlacedSignIn; earlierCountries: string[] }> = [];
+  for (const signIn of signIns) {
+    if (known.size > 0 && !known.has(signIn.code)) found.push({ signIn, earlierCountries: [...known.values()] });
+    known.set(signIn.code, signIn.name);
+  }
+  return found;
+}
+
+// The sentence an "unusual sign-in location" flag carries.
+export function unusualLocationDescription(name: string, email: string, country: string, earlierCountries: string[]): string {
+  return `${name} (${email}) signed in from ${country}, a country this account has never signed in from before. Earlier sign-ins: ${earlierCountries.join(', ')}.`;
+}
+
+// One flag per account and country, however often the check runs.
+export const locationDedupeKey = (userId: string, countryCode: string) => `location:${userId}:${countryCode}`;

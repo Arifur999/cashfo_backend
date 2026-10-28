@@ -19,3 +19,14 @@ export const placeOfIp = (ipAddress: string | null): string | null => {
   const country = countryOfIp(ipAddress);
   return country === 'Unknown' ? null : country;
 };
+
+// The country with its ISO code (BD, US, ...), or null when the address
+// can't be placed: for comparing places, where a name could change between
+// database releases but the code doesn't.
+export function ipCountry(ipAddress: string | null): { code: string; name: string } | null {
+  if (!ipAddress) return null;
+  const address = ipAddress.startsWith('::ffff:') ? ipAddress.slice('::ffff:'.length) : ipAddress;
+  if (!isIP(address)) return null;
+  const found = geoip.lookup(address);
+  return found?.country ? { code: found.country, name: found.name || found.country } : null;
+}

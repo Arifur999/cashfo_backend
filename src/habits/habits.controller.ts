@@ -1,4 +1,7 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
+import type { Request } from 'express';
+import { UsageEventsService } from '../analytics/usage-events.service.js';
+import { USAGE_EVENTS } from '../analytics/usage-events.js';
 import { CurrentUser } from '../user-auth/decorators/current-user.decorator.js';
 import { UserAuthGuard } from '../user-auth/guards/user-auth.guard.js';
 import type { RequestUser } from '../user-auth/interfaces/request-user.interface.js';
@@ -14,7 +17,10 @@ import { HabitsService } from './habits.service.js';
 @UseGuards(UserAuthGuard)
 @Controller('api/habits')
 export class HabitsController {
-  constructor(private readonly habitsService: HabitsService) {}
+  constructor(
+    private readonly habitsService: HabitsService,
+    private readonly usageEvents: UsageEventsService,
+  ) {}
 
   // Static segments before the dynamic :id route below, same reasoning as
   // every other controller in this codebase (Express would otherwise treat
@@ -55,8 +61,11 @@ export class HabitsController {
   }
 
   @Post(':id/check-in')
-  checkIn(@CurrentUser() user: RequestUser, @Param('id') id: string, @Body() dto: CheckInHabitDto) {
-    return this.habitsService.checkIn(user.id, id, dto);
+  async checkIn(@CurrentUser() user: RequestUser, @Param('id') id: string, @Body() dto: CheckInHabitDto, @Req() req: Request) {
+    const result = await this.habitsService.checkIn(user.id, id, dto);
+    // Analytics' habit_checked_in, in the background; unticking isn't one.
+    if (dto.completed !== false) this.usageEvents.recordFor(user, req, USAGE_EVENTS.HABIT_CHECKED_IN, { kind: 'habit' });
+    return result;
   }
 
   @Delete(':id/check-in')

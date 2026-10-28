@@ -139,3 +139,20 @@ describe('bestStreak', () => {
     }
   });
 });
+
+describe("the customer's week start", () => {
+  // Twice a week. 2 Oct 2026 is a Friday.
+  const habit: StreakHabit = { frequencyType: 'WEEKLY_COUNT', weeklyDays: [], weeklyCount: 2 };
+  // Sunday 27 Sep and Monday 28 Sep, then Wednesday 30 Sep.
+  const done = new Set(['2026-09-27', '2026-09-28', '2026-09-30']);
+
+  it('groups the days by the week the customer chose', () => {
+    // Saturday weeks: 26 Sep - 2 Oct holds all three.
+    expect(currentStreak(habit, done, '2026-10-02')).toBe(1);
+    // Monday weeks: 28 Sep - 4 Oct has two (met); 21 - 27 Sep has one.
+    expect(currentStreak(habit, done, '2026-10-02', 'MONDAY')).toBe(1);
+    expect(bestStreak(habit, new Set(['2026-09-26', '2026-09-27', '2026-10-03', '2026-10-04']), '2026-10-04', 'SUNDAY')).toBe(1);
+    // With Saturday weeks those four days are two met weeks in a row.
+    expect(bestStreak(habit, new Set(['2026-09-26', '2026-09-27', '2026-10-03', '2026-10-04']), '2026-10-04')).toBe(2);
+  });
+});

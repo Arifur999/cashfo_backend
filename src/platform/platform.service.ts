@@ -28,13 +28,15 @@ export class PlatformService {
   }
 
   // For pages anyone can open (sign-in, sign-up): no flags or
-  // announcements, which depend on who is asking.
+  // announcements, which depend on who is asking. signupsOpen lets the
+  // sign-up page say sign-ups are closed before anyone fills the form in.
   async publicInfo() {
     const settings = await this.settingsService.getCached();
     return {
       platformName: settings.platformName,
       supportEmail: settings.supportEmail,
-      maintenance: { enabled: settings.maintenanceMode, message: settings.maintenanceMessage },
+      signupsOpen: settings.signupsOpen,
+      maintenance: { enabled: settings.maintenanceMode, message: settings.maintenanceMessage, messageBn: settings.maintenanceMessageBn },
     };
   }
 

@@ -6,17 +6,7 @@ import { END_USER_WHERE } from '../common/roles.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { DateRangeQueryDto } from './dto/date-range-query.dto.js';
 import { TrackEventDto } from './dto/track-event.dto.js';
-
-// Best-effort MOBILE/DESKTOP/TABLET classifier for the Device Breakdown
-// chart -- reuses the same real UserSession.userAgent signal already parsed
-// (in more detail) by user-auth/device-label.ts for Settings > Security's
-// own Device Management list, rather than a separate fake DeviceType column.
-function classifyDeviceType(userAgent: string | null): 'MOBILE' | 'DESKTOP' | 'TABLET' {
-  if (!userAgent) return 'DESKTOP';
-  if (/iPad|Tablet/i.test(userAgent)) return 'TABLET';
-  if (/Mobile|Android|iPhone/i.test(userAgent)) return 'MOBILE';
-  return 'DESKTOP';
-}
+import { classifyDeviceType, USAGE_EVENTS } from './usage-events.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const DHAKA_OFFSET_MS = 6 * 60 * 60 * 1000;
@@ -60,21 +50,28 @@ export class AnalyticsService {
   // onto a real table that a genuine end-user action already creates rows
   // in, with no new instrumentation needed. account_created excludes
   // isSystemAccount rows (the auto-seeded chart of accounts) so this counts
-  // only accounts a real user manually added. "report_viewed" has no
-  // persisted equivalent anywhere (viewing a report writes nothing) and is
-  // intentionally omitted rather than shown as a permanent fake zero.
+  // only accounts a real user manually added. Viewing a report writes
+  // nothing of its own, so report_viewed (and habit_checked_in) come from
+  // the UsageEvent rows the server writes for them (UsageEventsService);
+  // they start at zero from the release that began writing them.
   async featureUsage(query: DateRangeQueryDto) {
     const { from, toExclusive } = this.resolveRange(query);
     const createdAt = { gte: from, lt: toExclusive };
 
-    const [incomeAdded, expenseAdded, workspaceCreated, accountCreated, budgetCreated, login] = await Promise.all([
+    const [incomeAdded, expenseAdded, workspaceCreated, accountCreated, budgetCreated, login, events] = await Promise.all([
       this.prisma.transaction.count({ where: { transactionType: 'INCOME', createdAt } }),
       this.prisma.transaction.count({ where: { transactionType: 'EXPENSE', createdAt } }),
       this.prisma.business.count({ where: { createdAt } }),
       this.prisma.account.count({ where: { createdAt, isSystemAccount: false } }),
       this.prisma.budgetCategory.count({ where: { createdAt } }),
       this.prisma.userSession.count({ where: { createdAt } }),
+      this.prisma.usageEvent.groupBy({
+        by: ['eventType'],
+        where: { eventType: { in: Object.values(USAGE_EVENTS) }, createdAt },
+        _count: { _all: true },
+      }),
     ]);
+    const eventCount = (eventType: string) => events.find((row) => row.eventType === eventType)?._count._all ?? 0;
 
     return [
       { eventType: 'income_added', count: incomeAdded },
@@ -83,6 +80,8 @@ export class AnalyticsService {
       { eventType: 'account_created', count: accountCreated },
       { eventType: 'budget_created', count: budgetCreated },
       { eventType: 'login', count: login },
+      { eventType: USAGE_EVENTS.REPORT_VIEWED, count: eventCount(USAGE_EVENTS.REPORT_VIEWED) },
+      { eventType: USAGE_EVENTS.HABIT_CHECKED_IN, count: eventCount(USAGE_EVENTS.HABIT_CHECKED_IN) },
     ].sort((a, b) => b.count - a.count);
   }
 

@@ -1,3 +1,5 @@
+import { payerIdOf, requesterNames } from '../admin-feed/requester-names.js';
+import type { Prisma } from '@prisma/client';
 import type { PrismaService } from '../prisma/prisma.service.js';
 
 type Labeler = (prisma: PrismaService, ids: string[]) => Promise<Array<{ id: string; label: string }>>;
@@ -13,6 +15,9 @@ const where = (ids: string[]) => ({ id: { in: ids } });
 const LABELERS: Record<string, Labeler> = {
   AdminUser: async (prisma, ids) => named(await prisma.user.findMany({ where: where(ids), select: { id: true, name: true } })),
   User: async (prisma, ids) => named(await prisma.user.findMany({ where: where(ids), select: { id: true, name: true } })),
+  // An admin invite answers with the address it went to.
+  AdminInvite: async (prisma, ids) =>
+    (await prisma.adminInvite.findMany({ where: where(ids), select: { id: true, email: true } })).map((row) => ({ id: row.id, label: row.email })),
   PlatformUser: async (prisma, ids) => named(await prisma.platformUser.findMany({ where: where(ids), select: { id: true, name: true } })),
   Business: async (prisma, ids) => named(await prisma.business.findMany({ where: where(ids), select: { id: true, name: true } })),
   SubscriptionPlan: async (prisma, ids) => named(await prisma.subscriptionPlan.findMany({ where: where(ids), select: { id: true, name: true } })),
@@ -35,18 +40,37 @@ const LABELERS: Record<string, Labeler> = {
       id: row.id,
       label: row.description,
     })),
-  // Payment.platformUserId is a loose reference, so the payer is a second read.
+  // A referral withdrawal answers with its number and member; a referral
+  // with "referrer → friend".
+  PayoutRequest: async (prisma, ids) =>
+    (await prisma.payoutRequest.findMany({ where: where(ids), select: { id: true, number: true, user: { select: { name: true } } } })).map((row) => ({
+      id: row.id,
+      label: `WD-${row.number} ${row.user.name}`,
+    })),
+  Referral: async (prisma, ids) =>
+    (await prisma.referral.findMany({ where: where(ids), select: { id: true, referrer: { select: { name: true } }, referredUser: { select: { name: true } } } })).map(
+      (row) => ({ id: row.id, label: `${row.referrer.name} → ${row.referredUser.name}` }),
+    ),
+  // A payment answers with its payer: the customer (userId), or for an old
+  // sandbox payment its PlatformUser -- both loose, so a second read.
   Payment: async (prisma, ids) => {
-    const payments = await prisma.payment.findMany({ where: where(ids), select: { id: true, platformUserId: true } });
-    const payerIds = [...new Set(payments.map((payment) => payment.platformUserId))];
-    const payers = await prisma.platformUser.findMany({ where: where(payerIds), select: { id: true, name: true } });
-    const nameById = new Map(payers.map((payer) => [payer.id, payer.name]));
+    const payments = await prisma.payment.findMany({ where: where(ids), select: { id: true, userId: true, platformUserId: true } });
+    const nameById = await requesterNames(prisma, payments.map(payerIdOf));
     return payments.flatMap((payment) => {
-      const name = nameById.get(payment.platformUserId);
+      const payer = payerIdOf(payment);
+      const name = payer ? nameById.get(payer) : undefined;
       return name ? [{ id: payment.id, label: name }] : [];
     });
   },
 };
+
+// The reason an admin typed (suspend, plan change, refund), from the audit
+// row's newValue: enough for a one-line history without the whole row.
+export function auditReason(newValue: Prisma.JsonValue | null | undefined): string | null {
+  if (!newValue || typeof newValue !== 'object' || Array.isArray(newValue)) return null;
+  const reason = newValue.reason;
+  return typeof reason === 'string' && reason.trim() ? reason : null;
+}
 
 export interface AuditRecordRef {
   entityType: string;

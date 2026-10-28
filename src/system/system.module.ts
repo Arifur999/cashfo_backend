@@ -21,9 +21,10 @@ import { RateLimitsService } from './rate-limits.service.js';
 //     filters/global-exception.filter.ts) logging genuine 5xx failures,
 //     plus the admin panel's and the customer app's error screens
 //     reporting what they showed; nothing simulated here.
-//   - Rate limits: ApiRateLimitLog is currently seed-only demonstration data
-//     -- @nestjs/throttler (Prompt 1) enforces real limits in-memory but
-//     doesn't persist a log; wiring it to write rows here is future work.
+//   - Rate limits: @nestjs/throttler enforces the limits in memory, and
+//     LoggingThrottlerGuard (the app-wide guard) writes an ApiRateLimitLog
+//     row when it refuses a request (at most one per endpoint and caller a
+//     minute). Only refusals are logged, not every request.
 // Every route except feature-flags' `evaluate` and errors' `report` is
 // SUPER_ADMIN only -- see the per-controller comments for why those two
 // deviate from that default. ClientErrorsController is the one customer

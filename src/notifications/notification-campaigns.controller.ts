@@ -20,10 +20,16 @@ export class NotificationCampaignsController {
     return this.notificationCampaignsService.list();
   }
 
-  // How many people a filter would reach, for the drawer as it is filled in.
+  // How many people a filter would reach, for the drawer as it is filled in:
+  // count by the filter as written, reachable the ACTIVE ones a send reaches.
   @Get('audience')
   async audience(@Query() query: AudienceQueryDto) {
-    return { count: await this.notificationCampaignsService.audienceCount(query) };
+    const filter = { ...query };
+    const [count, reachable] = await Promise.all([
+      this.notificationCampaignsService.audienceCount(filter),
+      this.notificationCampaignsService.audienceCount(filter, true),
+    ]);
+    return { count, reachable };
   }
 
   @Post()
@@ -38,8 +44,8 @@ export class NotificationCampaignsController {
   @UseGuards(RolesGuard)
   @Roles(AdminRole.SUPER_ADMIN, AdminRole.SUPPORT_ADMIN)
   @Post(':id/send')
-  send(@Param('id') id: string) {
-    return this.notificationCampaignsService.send(id);
+  send(@Param('id') id: string, @CurrentAdmin() admin: RequestAdminUser, @Req() req: Request) {
+    return this.notificationCampaignsService.send(id, admin.id, req.ip);
   }
 
   @UseGuards(RolesGuard)

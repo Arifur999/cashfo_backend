@@ -1,4 +1,5 @@
-import type { Habit } from '@prisma/client';
+import type { Habit, WeekStart } from '@prisma/client';
+import { weekStartOf } from '../common/week-start.js';
 
 // A habit's current and best streaks, worked out from the days it was done.
 // Pure.
@@ -7,8 +8,9 @@ import type { Habit } from '@prisma/client';
 // - Certain weekdays: a day that isn't planned is skipped, not a break, so a
 //   Sunday-to-Thursday habit keeps its streak over the weekend. (A done
 //   unplanned day still counts, as the client's best streak counts it.)
-// - N times a week: the weeks in a row (Saturday to Friday) with at least N
-//   days done.
+// - N times a week: the weeks in a row with at least N days done. A week
+//   opens on the customer's chosen day (Settings > App), Saturday unless
+//   they picked Sunday or Monday.
 // Today never breaks a streak before it is over: it counts once done.
 
 export type StreakHabit = Pick<Habit, 'frequencyType' | 'weeklyDays' | 'weeklyCount'>;
@@ -22,9 +24,6 @@ const DAY_MS = 86_400_000;
 const shift = (day: string, by: number): string => new Date(Date.parse(`${day}T00:00:00.000Z`) + by * DAY_MS).toISOString().slice(0, 10);
 const weekday = (day: string): number => new Date(`${day}T00:00:00.000Z`).getUTCDay();
 
-// The Saturday that opens the week of `day`.
-const weekStart = (day: string): string => shift(day, -((weekday(day) + 1) % 7));
-
 // A daily or certain-days habit's planned days: a planned day left undone
 // breaks its streak; any other undone day is skipped.
 const planned = (habit: StreakHabit, day: string): boolean => habit.frequencyType === 'DAILY' || habit.weeklyDays.includes(weekday(day));
@@ -32,15 +31,15 @@ const planned = (habit: StreakHabit, day: string): boolean => habit.frequencyTyp
 // How many days an N-times-a-week habit needs in a week.
 const weeklyNeed = (habit: StreakHabit): number => Math.max(1, habit.weeklyCount ?? 1);
 
-export function currentStreak(habit: StreakHabit, done: ReadonlySet<string>, today: string): number {
+export function currentStreak(habit: StreakHabit, done: ReadonlySet<string>, today: string, weekStart: WeekStart = 'SATURDAY'): number {
   if (habit.frequencyType === 'WEEKLY_COUNT') {
     const need = weeklyNeed(habit);
-    const doneIn = (saturday: string) => Array.from({ length: 7 }, (_, i) => shift(saturday, i)).filter((day) => day <= today && done.has(day)).length;
-    let saturday = weekStart(today);
-    let streak = doneIn(saturday) >= need ? 1 : 0;
+    const doneIn = (opens: string) => Array.from({ length: 7 }, (_, i) => shift(opens, i)).filter((day) => day <= today && done.has(day)).length;
+    let opens = weekStartOf(today, weekStart);
+    let streak = doneIn(opens) >= need ? 1 : 0;
     for (let i = 0; i < LOOK_BACK_DAYS / 7; i++) {
-      saturday = shift(saturday, -7);
-      if (doneIn(saturday) < need) break;
+      opens = shift(opens, -7);
+      if (doneIn(opens) < need) break;
       streak++;
     }
     return streak;
@@ -75,7 +74,7 @@ function brokenBetween(habit: StreakHabit, from: string, to: string): boolean {
 //
 // Walks the done days (or met weeks) rather than the calendar, so its cost is
 // the number of logs, however far back the first one is.
-export function bestStreak(habit: StreakHabit, done: ReadonlySet<string>, today: string): number {
+export function bestStreak(habit: StreakHabit, done: ReadonlySet<string>, today: string, weekStart: WeekStart = 'SATURDAY'): number {
   const days = [...done].filter((day) => day <= today).sort();
 
   if (habit.frequencyType === 'WEEKLY_COUNT') {
@@ -83,18 +82,18 @@ export function bestStreak(habit: StreakHabit, done: ReadonlySet<string>, today:
     // Oldest week first: the days are sorted, so the Map's order is the weeks'.
     const perWeek = new Map<string, number>();
     for (const day of days) {
-      const saturday = weekStart(day);
-      perWeek.set(saturday, (perWeek.get(saturday) ?? 0) + 1);
+      const opens = weekStartOf(day, weekStart);
+      perWeek.set(opens, (perWeek.get(opens) ?? 0) + 1);
     }
     let best = 0;
     let run = 0;
     let previous: string | undefined;
-    for (const [saturday, count] of perWeek) {
+    for (const [opens, count] of perWeek) {
       if (count < need) continue;
       // A week short of its count, or with nothing done, sits between two
       // met weeks that are then more than a week apart.
-      run = previous !== undefined && shift(previous, 7) === saturday ? run + 1 : 1;
-      previous = saturday;
+      run = previous !== undefined && shift(previous, 7) === opens ? run + 1 : 1;
+      previous = opens;
       best = Math.max(best, run);
     }
     return best;

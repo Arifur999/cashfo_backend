@@ -24,3 +24,12 @@ describe('readingSummary', () => {
     expect(readingSummary([], '2026-10-03').week[0].date).toBe('2026-10-03');
   });
 });
+
+describe('readingSummary week start', () => {
+  it("opens this week on the customer's chosen day", () => {
+    // Friday 2 Oct 2026.
+    expect(readingSummary([], '2026-10-02', 'SUNDAY').week[0].date).toBe('2026-09-27');
+    expect(readingSummary([], '2026-10-02', 'MONDAY').week[0].date).toBe('2026-09-28');
+    expect(readingSummary([], '2026-10-02').week[0].date).toBe('2026-09-26');
+  });
+});

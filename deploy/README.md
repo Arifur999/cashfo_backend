@@ -134,6 +134,31 @@ every reminder.
 docker exec smartly-api node_modules/.bin/web-push generate-vapid-keys
 ```
 
+The API runs two timers of its own, inside the container: the reminder
+scheduler (every minute) and housekeeping (every five minutes: customer
+checkouts left unpaid past their time, plans whose paid period or free trial
+ran out, "your plan ends in 3 days" notices, referral commissions leaving
+their refund window, and hourly, used-up one-time codes, old two-step sign-in
+challenges, expired trusted computers and expired admin invites' two-step keys;
+every fifteen minutes it purges customer accounts deleted more than 30 days
+ago -- workspaces and personal data go, the User row is anonymised so
+payments, invoices and referrals keep their references). Both are on by default;
+`REMINDERS_DISABLED=1` / `HOUSEKEEPING_DISABLED=1` (set with `set-env.sh`) turn
+one off. Housekeeping takes a Postgres advisory lock per tick, so a second API
+container never doubles it, and a customer's own billing or referral page
+does the same work for them when it opens.
+
+Referral withdrawals are confirmed with a six-digit code sent by email, so
+they need `RESEND_API_KEY`; without it, starting a withdrawal answers 503
+`EMAIL_NOT_CONFIGURED`. There is no SMS provider yet (the code goes by email).
+
+Admin invites (Security > Admin team) and the admin "Forgot password?" also go
+by email: without `RESEND_API_KEY` an invite answers 503 `EMAIL_NOT_CONFIGURED`
+(the panel then offers "Set a first password" instead) and a reset link is not
+sent. Two-step sign-in needs no email; its authenticator secrets are sealed
+with `TWO_FACTOR_ENCRYPTION_KEY`, or `VAULT_ENCRYPTION_KEY` when that is unset.
+Keep whichever key is used: changing it makes everyone set two-step up again.
+
 **5. Sign in** at `https://smartly.softech.agency/login` with
 `SUPER_ADMIN_EMAIL` and its password -- or with Google, when that address is a
 Google account:

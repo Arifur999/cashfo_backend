@@ -68,6 +68,19 @@ const renamedPersonal = [
   workspace('ws-own', 'আমার হিসাব', { type: 'PERSONAL', isDefault: true, planId: 'plan-free', plan: { name: 'Free' } }),
 ];
 
+const emptyExtras = () => ({
+  account: { groupBy: vi.fn().mockResolvedValue([]) },
+  transaction: { count: vi.fn().mockResolvedValue(0), groupBy: vi.fn().mockResolvedValue([]) },
+  referral: { findMany: vi.fn().mockResolvedValue([]) },
+  payoutRequest: { findMany: vi.fn().mockResolvedValue([]) },
+  payment: { aggregate: vi.fn().mockResolvedValue({ _sum: { amount: null }, _count: 0 }), findFirst: vi.fn().mockResolvedValue(null) },
+  supportTicket: { findMany: vi.fn().mockResolvedValue([]), groupBy: vi.fn().mockResolvedValue([]) },
+  userSession: { findMany: vi.fn().mockResolvedValue([]) },
+  authSession: { findMany: vi.fn().mockResolvedValue([]) },
+  adminNote: { count: vi.fn().mockResolvedValue(0) },
+  coupon: { findUnique: vi.fn().mockResolvedValue(null) },
+});
+
 const reads = (ownedBusinesses: Workspace[]) => {
   const row = owner(ownedBusinesses);
   const prisma = {
@@ -78,6 +91,8 @@ const reads = (ownedBusinesses: Workspace[]) => {
       groupBy: vi.fn().mockResolvedValue([{ status: 'ACTIVE', _count: 1 }]),
     },
     auditLog: { findMany: vi.fn().mockResolvedValue([]) },
+    // The detail page's extra cards (owner-detail.ts): nothing yet.
+    ...emptyExtras(),
   };
   return { service: new AdminOwnersService(prisma as never, {} as never, {} as never, {} as never), prisma };
 };
@@ -101,6 +116,21 @@ describe('AdminOwnersService.list', () => {
     const { items } = await service.list({});
     expect(items[0]).toMatchObject({ businessId: 'ws-shop', businessType: 'BUSINESS', businessIsDefault: false });
   });
+
+  it('gives the end of a running trial, and nothing for one that has run out or a paid plan', async () => {
+    const future = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000);
+    const past = new Date(Date.now() - 60 * 1000);
+    const rows = [
+      { status: 'TRIALING', trialEndsAt: future },
+      { status: 'TRIALING', trialEndsAt: past },
+      { status: 'ACTIVE', trialEndsAt: future },
+      null,
+    ];
+    const { service, prisma } = reads(renamedPersonal);
+    prisma.user.findMany.mockResolvedValue(rows.map((subscription) => ({ ...owner(renamedPersonal), subscription })));
+    const { items } = await service.list({});
+    expect(items.map((item) => item.trialEndsAt)).toEqual([future, null, null, null]);
+  });
 });
 
 describe('AdminOwnersService.getById', () => {
@@ -112,5 +142,19 @@ describe('AdminOwnersService.getById', () => {
   it('has no kind for an owner with no live workspace', async () => {
     const { service } = reads([]);
     await expect(service.getById('u1')).resolves.toMatchObject({ businessId: null, businessName: null, businessType: null, businessIsDefault: null });
+  });
+
+  it("gives each history line the admin's reason and nothing else from the audit row", async () => {
+    const { service, prisma } = reads(renamedPersonal);
+    const at = new Date('2026-10-01T10:00:00.000Z');
+    const log = (id: string, action: string, newValue: unknown) => ({ id, action, entityType: 'User', newValue, createdAt: at, adminUser: { id: 'a1', name: 'Imran' } });
+    prisma.auditLog.findMany.mockResolvedValue([
+      log('l1', 'USER_SUSPENDED', { status: 'SUSPENDED', reason: 'Spam invites', signedOutEverywhere: true }),
+      log('l2', 'OWNER_DATA_EXPORTED', { fileName: 'export.zip' }),
+      log('l3', 'USER_ACTIVATED', null),
+    ]);
+    const { activityLog } = await service.getById('u1');
+    expect(activityLog.map((line) => line.reason)).toEqual(['Spam invites', null, null]);
+    expect(activityLog[0]).not.toHaveProperty('newValue');
   });
 });

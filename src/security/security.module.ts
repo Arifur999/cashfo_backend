@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { AdminAuthModule } from '../admin-auth/admin-auth.module.js';
 import { LoginMonitoringController } from './login-monitoring.controller.js';
 import { LoginMonitoringService } from './login-monitoring.service.js';
+import { SecurityHousekeeping } from './security-housekeeping.js';
 import { SuspiciousActivityController } from './suspicious-activity.controller.js';
 import { SuspiciousActivityService } from './suspicious-activity.service.js';
 
@@ -13,6 +14,6 @@ import { SuspiciousActivityService } from './suspicious-activity.service.js';
 @Module({
   imports: [AdminAuthModule],
   controllers: [LoginMonitoringController, SuspiciousActivityController],
-  providers: [LoginMonitoringService, SuspiciousActivityService],
+  providers: [LoginMonitoringService, SuspiciousActivityService, SecurityHousekeeping],
 })
 export class SecurityModule {}

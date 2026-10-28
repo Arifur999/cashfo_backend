@@ -2,9 +2,28 @@ import { Injectable, InternalServerErrorException, Logger } from '@nestjs/common
 import { ConfigService } from '@nestjs/config';
 import { Resend } from 'resend';
 import { DEFAULT_PLATFORM_NAME, SettingsService } from '../settings/settings.service.js';
+import { renderAccountDeletionEmail, type AccountDeletionEmail } from './templates/account-deletion-email.js';
+import { renderAdminInviteEmail, type AdminInviteEmail } from './templates/admin-invite-email.js';
+import { renderAdminPasswordResetEmail, type AdminPasswordResetEmail } from './templates/admin-password-reset-email.js';
+import { renderCampaignEmail, type CampaignEmail } from './templates/campaign-email.js';
+import { renderBillingReceiptEmail, type ReceiptEmail } from './templates/billing-receipt-email.js';
+import { renderInvoiceEmail, type InvoiceEmail } from './templates/invoice-email.js';
+import { renderOneTimeCodeEmail, type OneTimeCodeEmail } from './templates/one-time-code-email.js';
 import { renderPasswordResetEmail } from './templates/password-reset-email.js';
+import { renderPayoutNoticeEmail, type PayoutNotice } from './templates/payout-notice-email.js';
+import { renderPlanNoticeEmail, type PlanNotice } from './templates/plan-notice-email.js';
 import { renderSupportReplyEmail } from './templates/support-reply-email.js';
+import { renderTwoStepNoticeEmail, type TwoStepNotice } from './templates/two-step-notice-email.js';
 import { renderWelcomeEmail } from './templates/welcome-email.js';
+import { renderFailedTriesEmail, type FailedTriesEmail } from './templates/failed-tries-email.js';
+import { renderMonthlySummaryEmail, type MonthlySummaryEmail } from './templates/monthly-summary-email.js';
+import { renderNewDeviceEmail, type NewDeviceEmail } from './templates/new-device-email.js';
+import { renderVerifyEmail, type VerifyEmail } from './templates/verify-email.js';
+
+export interface EmailAttachment {
+  filename: string;
+  content: Buffer;
+}
 
 export interface SendEmailOptions {
   to: string | string[];
@@ -13,6 +32,8 @@ export interface SendEmailOptions {
   text?: string;
   // Overrides MAIL_FROM for this one send -- most callers don't need this.
   from?: string;
+  // Files sent along, such as an invoice PDF.
+  attachments?: EmailAttachment[];
 }
 
 // The product's old name. A database whose platform_name row still holds it
@@ -28,6 +49,13 @@ const LEGACY_PLATFORM_NAME = 'Money Management Tracker';
 export class MailService {
   private readonly logger = new Logger(MailService.name);
   private client: Resend | null = null;
+  // The last send this server made, for the admin's system health ("Email
+  // (Resend): Sending", "Last email 2:05 pm"). Per process, lost on restart.
+  private last: { at: Date; ok: boolean } | null = null;
+
+  get lastSend(): { at: Date; ok: boolean } | null {
+    return this.last;
+  }
 
   constructor(
     private readonly configService: ConfigService,
@@ -59,6 +87,92 @@ export class MailService {
     await this.sendEmail({ to, ...renderSupportReplyEmail(name, subject, reply, link, await this.platformName()) });
   }
 
+  async sendBillingReceiptEmail(to: string, locale: 'en' | 'bn', receipt: ReceiptEmail, attachments?: EmailAttachment[]): Promise<void> {
+    await this.sendEmail({ to, ...renderBillingReceiptEmail(locale, receipt, await this.platformName()), attachments });
+  }
+
+  async sendInvoiceEmail(to: string, locale: 'en' | 'bn', invoice: InvoiceEmail, attachments: EmailAttachment[]): Promise<void> {
+    await this.sendEmail({ to, ...renderInvoiceEmail(locale, invoice, await this.platformName()), attachments });
+  }
+
+  async sendPlanNoticeEmail(to: string, locale: 'en' | 'bn', notice: PlanNotice): Promise<void> {
+    await this.sendEmail({ to, ...renderPlanNoticeEmail(locale, notice, await this.platformName()) });
+  }
+
+  async sendOneTimeCodeEmail(to: string, locale: 'en' | 'bn', email: OneTimeCodeEmail): Promise<void> {
+    await this.sendEmail({ to, ...renderOneTimeCodeEmail(locale, email, await this.platformName()) });
+  }
+
+  async sendPayoutNoticeEmail(to: string, locale: 'en' | 'bn', notice: PayoutNotice): Promise<void> {
+    await this.sendEmail({ to, ...renderPayoutNoticeEmail(locale, notice, await this.platformName()) });
+  }
+
+  async sendTwoStepNoticeEmail(to: string, locale: 'en' | 'bn', notice: TwoStepNotice): Promise<void> {
+    await this.sendEmail({ to, ...renderTwoStepNoticeEmail(locale, notice, await this.platformName()) });
+  }
+
+  async sendAccountDeletionEmail(to: string, locale: 'en' | 'bn', email: AccountDeletionEmail): Promise<void> {
+    await this.sendEmail({ to, ...renderAccountDeletionEmail(locale, email, await this.platformName()) });
+  }
+
+  // The two admin emails that carry a link someone must open (an invite, a
+  // password reset). In development they can be logged instead (devLog).
+  async sendAdminInviteEmail(to: string, invite: AdminInviteEmail): Promise<void> {
+    await this.sendOrLog({ to, ...renderAdminInviteEmail(invite, await this.platformName()) }, `Admin invite link for ${to}: ${invite.link}`);
+  }
+
+  async sendAdminPasswordResetEmail(to: string, locale: 'en' | 'bn', email: AdminPasswordResetEmail): Promise<void> {
+    await this.sendOrLog(
+      { to, ...renderAdminPasswordResetEmail(locale, email, await this.platformName()) },
+      `Admin password reset link for ${to}: ${email.link}`,
+    );
+  }
+
+  // Settings > Profile's verification link. A link email, so in development
+  // it can be logged instead (devLog), like the admin ones above.
+  async sendVerifyEmail(to: string, locale: 'en' | 'bn', email: VerifyEmail): Promise<void> {
+    await this.sendOrLog({ to, ...renderVerifyEmail(locale, email, await this.platformName()) }, `Email verification link for ${to}: ${email.link}`);
+  }
+
+  // Settings > Security > Alerts.
+  async sendNewDeviceEmail(to: string, locale: 'en' | 'bn', email: NewDeviceEmail): Promise<void> {
+    await this.sendEmail({ to, ...renderNewDeviceEmail(locale, email, await this.platformName()) });
+  }
+
+  async sendFailedTriesEmail(to: string, locale: 'en' | 'bn', email: FailedTriesEmail): Promise<void> {
+    await this.sendEmail({ to, ...renderFailedTriesEmail(locale, email, await this.platformName()) });
+  }
+
+  // Settings > App > Reminders > Monthly summary by email.
+  async sendMonthlySummaryEmail(to: string, locale: 'en' | 'bn', email: MonthlySummaryEmail): Promise<void> {
+    await this.sendEmail({ to, ...renderMonthlySummaryEmail(locale, email, await this.platformName()) });
+  }
+
+  // Whether sendEmail() can work at all (RESEND_API_KEY is set).
+  get configured(): boolean {
+    return Boolean(this.configService.get<string>('RESEND_API_KEY'));
+  }
+
+  // Development only: with OTP_DEV_LOG=1 (never in production) and no
+  // RESEND_API_KEY, link emails are written to the server log instead, the
+  // same switch the one-time codes use, so the flows can be tried locally.
+  get devLog(): boolean {
+    return !this.configured && this.configService.get<string>('NODE_ENV') !== 'production' && this.configService.get<string>('OTP_DEV_LOG') === '1';
+  }
+
+  // Whether a link email reaches the person one way or the other.
+  get canDeliver(): boolean {
+    return this.configured || this.devLog;
+  }
+
+  private async sendOrLog(options: SendEmailOptions, devLine: string): Promise<void> {
+    if (this.devLog) {
+      this.logger.warn(`${devLine} (OTP_DEV_LOG=1, not sent)`);
+      return;
+    }
+    await this.sendEmail(options);
+  }
+
   async sendEmail(options: SendEmailOptions): Promise<void> {
     const apiKey = this.configService.get<string>('RESEND_API_KEY');
     if (!apiKey) {
@@ -73,12 +187,43 @@ export class MailService {
       subject: options.subject,
       html: options.html,
       text: options.text,
+      ...(options.attachments && options.attachments.length > 0 && { attachments: options.attachments }),
     });
 
+    this.last = { at: new Date(), ok: !error };
     if (error) {
       const recipients = Array.isArray(options.to) ? options.to.join(', ') : options.to;
       this.logger.error(`Failed to send email to ${recipients}: ${error.message}`);
       throw new InternalServerErrorException('Failed to send email');
     }
+  }
+
+  // One batch of an admin campaign (up to 100 people) in a single Resend
+  // request, so a big send stays under Resend's requests-per-second limit.
+  // Permissive: a bad address fails alone. Returns the error for each
+  // index that failed; a failed request throws, and the caller counts the
+  // whole batch as failed. The idempotency key makes a retried batch (a
+  // send resumed after a restart) a no-op at Resend for a day.
+  async sendCampaignBatch(
+    emails: { to: string; locale: 'en' | 'bn'; email: CampaignEmail }[],
+    idempotencyKey?: string,
+  ): Promise<Map<number, string>> {
+    const failed = new Map<number, string>();
+    if (emails.length === 0) return failed;
+    const apiKey = this.configService.get<string>('RESEND_API_KEY');
+    if (!apiKey) {
+      throw new InternalServerErrorException('Email sending is not configured (RESEND_API_KEY missing)');
+    }
+    this.client ??= new Resend(apiKey);
+    const from = this.configService.get<string>('MAIL_FROM') ?? 'onboarding@resend.dev';
+    const platformName = await this.platformName();
+    const payload = emails.map(({ to, locale, email }) => ({ from, to, ...renderCampaignEmail(locale, email, platformName) }));
+    const { data, error } = await this.client.batch.send(payload, { batchValidation: 'permissive', ...(idempotencyKey && { idempotencyKey }) });
+    if (error) {
+      this.logger.error(`Failed to send a campaign batch of ${emails.length}: ${error.message}`);
+      throw new InternalServerErrorException(error.message);
+    }
+    for (const row of data?.errors ?? []) failed.set(row.index, row.message);
+    return failed;
   }
 }

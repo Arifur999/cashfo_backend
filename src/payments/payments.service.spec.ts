@@ -7,7 +7,8 @@ type PageQuery = { where: Record<string, unknown>; include?: Record<string, unkn
 const at = (minutes: number) => new Date(Date.UTC(2026, 9, 1, 4, minutes));
 const row = (id: string, minutes: number, overrides: Record<string, unknown> = {}) => ({
   id,
-  platformUserId: 'mahbub',
+  userId: null as string | null,
+  platformUserId: 'mahbub' as string | null,
   planId: 'monthly',
   couponId: null,
   amount: '299.00',
@@ -27,7 +28,7 @@ const COUNTS: StatusRow[] = [
   { status: PaymentStatus.FAILED, _count: 38 },
 ];
 
-const setup = ({ rows = [] as ReturnType<typeof row>[], byStatus = COUNTS, people = [] as { id: string }[] } = {}) => {
+const setup = ({ rows = [] as ReturnType<typeof row>[], byStatus = COUNTS, people = [] as { id: string }[], customers = [] as { id: string }[] } = {}) => {
   const prisma = {
     payment: {
       // The page is asked for with include; the look for double charges
@@ -36,8 +37,10 @@ const setup = ({ rows = [] as ReturnType<typeof row>[], byStatus = COUNTS, peopl
       groupBy: vi.fn().mockResolvedValue(byStatus),
       count: vi.fn(),
     },
-    // The people a search matches, then the names on the rows.
+    // The people a search matches, then the names on the rows: legacy
+    // sandbox people and customers.
     platformUser: { findMany: vi.fn().mockResolvedValue(people) },
+    user: { findMany: vi.fn().mockResolvedValue(customers) },
     coupon: { findMany: vi.fn().mockResolvedValue([]) },
   };
   return { service: new PaymentsService(prisma as never), prisma };
@@ -93,7 +96,7 @@ describe('PaymentsService.list meta.statusCounts', () => {
   });
 
   it('counts the tabs under the search too', async () => {
-    const { service, prisma } = setup({ people: [{ id: 'u-mahbub' }] });
+    const { service, prisma } = setup({ people: [{ id: 'u-mahbub' }], customers: [{ id: 'c-nadia' }] });
 
     await service.list({ search: ' PAY-3F2A ' });
 
@@ -101,6 +104,7 @@ describe('PaymentsService.list meta.statusCounts', () => {
     expect(where).toEqual({
       OR: [
         { platformUserId: { in: ['u-mahbub'] } },
+        { userId: { in: ['c-nadia'] } },
         { invoice: { invoiceNumber: { contains: 'PAY-3F2A', mode: 'insensitive' } } },
         { gatewayReferenceId: { contains: 'PAY-3F2A', mode: 'insensitive' } },
         { id: { startsWith: '3f2a' } },

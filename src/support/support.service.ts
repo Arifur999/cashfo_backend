@@ -5,8 +5,9 @@ import { CreateIdeaDto } from './dto/create-idea.dto.js';
 import { CreateSupportMessageDto, ReplySupportMessageDto } from './dto/support-message.dto.js';
 import { subjectOf } from './subject.js';
 
-// What a customer sees of a conversation: no admin ids, and a screenshot by
-// its id only (its bytes come from attachment()).
+// What a customer sees of a conversation: no admin ids, no notes the team
+// wrote for itself (isInternal), and a screenshot by its id only (its bytes
+// come from attachment()).
 const CONVERSATION_SELECT = {
   id: true,
   subject: true,
@@ -15,6 +16,7 @@ const CONVERSATION_SELECT = {
   createdAt: true,
   updatedAt: true,
   messages: {
+    where: { isInternal: false },
     orderBy: { createdAt: 'asc' },
     select: { id: true, senderType: true, message: true, createdAt: true, attachment: { select: { id: true } } },
   },
@@ -84,7 +86,7 @@ export class SupportService {
 
   // A screenshot from one of the customer's own messages.
   async attachment(userId: string, id: string) {
-    const attachment = await this.prisma.ticketAttachment.findFirst({ where: { id, message: { ticket: { platformUserId: userId } } }, select: { mimeType: true, data: true } });
+    const attachment = await this.prisma.ticketAttachment.findFirst({ where: { id, message: { isInternal: false, ticket: { platformUserId: userId } } }, select: { mimeType: true, data: true } });
     if (!attachment) throw new NotFoundException('Screenshot not found');
     return attachment;
   }

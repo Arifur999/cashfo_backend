@@ -1,4 +1,7 @@
-import { BadRequestException, Body, Controller, Delete, Get, Param, ParseUUIDPipe, Post, Put, Query, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, Get, Param, ParseUUIDPipe, Post, Put, Query, Req, UseGuards } from '@nestjs/common';
+import type { Request } from 'express';
+import { UsageEventsService } from '../analytics/usage-events.service.js';
+import { USAGE_EVENTS } from '../analytics/usage-events.js';
 import { CurrentUser } from '../user-auth/decorators/current-user.decorator.js';
 import { UserAuthGuard } from '../user-auth/guards/user-auth.guard.js';
 import type { RequestUser } from '../user-auth/interfaces/request-user.interface.js';
@@ -17,7 +20,10 @@ import { HabitTrackersService } from './habit-trackers.service.js';
 @UseGuards(UserAuthGuard)
 @Controller('api/habit-trackers')
 export class HabitTrackersController {
-  constructor(private readonly habitTrackersService: HabitTrackersService) {}
+  constructor(
+    private readonly habitTrackersService: HabitTrackersService,
+    private readonly usageEvents: UsageEventsService,
+  ) {}
 
   @Get()
   list(@CurrentUser() user: RequestUser, @Query('category') category?: string) {
@@ -47,8 +53,12 @@ export class HabitTrackersController {
   }
 
   @Put(':id/check')
-  setCheck(@CurrentUser() user: RequestUser, @Param('id', ParseUUIDPipe) id: string, @Body() dto: SetHabitTrackerCheckDto) {
-    return this.habitTrackersService.setCheck(user.id, id, dto);
+  async setCheck(@CurrentUser() user: RequestUser, @Param('id', ParseUUIDPipe) id: string, @Body() dto: SetHabitTrackerCheckDto, @Req() req: Request) {
+    const result = await this.habitTrackersService.setCheck(user.id, id, dto);
+    // Analytics' habit_checked_in, in the background: a tick on a month
+    // sheet (Namaz, Ramadan, a challenge), not an untick or a "missed".
+    if (dto.checked && dto.status !== 'MISSED') this.usageEvents.recordFor(user, req, USAGE_EVENTS.HABIT_CHECKED_IN, { kind: 'tracker' });
+    return result;
   }
 
   @Put(':id/paras')

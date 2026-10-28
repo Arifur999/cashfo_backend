@@ -35,7 +35,14 @@ const setup = ({
     }),
   };
   const announcements = { forCustomer: vi.fn().mockResolvedValue([]) };
-  const service = new UserNotificationsService(prisma as never, budgets as never, {} as never, {} as never, announcements as never);
+  const service = new UserNotificationsService(
+    prisma as never,
+    budgets as never,
+    {} as never,
+    {} as never,
+    announcements as never,
+    { configured: false } as never,
+  );
   return { service, prisma, budgets };
 };
 

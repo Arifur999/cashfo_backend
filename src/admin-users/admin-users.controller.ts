@@ -8,6 +8,7 @@ import { RolesGuard } from '../admin-auth/guards/roles.guard.js';
 import type { RequestAdminUser } from '../admin-auth/interfaces/request-admin-user.interface.js';
 import { AdminUsersService } from './admin-users.service.js';
 import { CreateAdminDto } from './dto/create-admin.dto.js';
+import { SetAdminPasswordDto } from './dto/set-admin-password.dto.js';
 import { UpdateAdminDto } from './dto/update-admin.dto.js';
 
 @UseGuards(AdminAuthGuard, RolesGuard)
@@ -56,5 +57,20 @@ export class AdminUsersController {
   @Post(':id/reset-password')
   resetPassword(@Param('id') id: string, @CurrentAdmin() admin: RequestAdminUser, @Req() req: Request) {
     return this.adminUsersService.resetPassword(id, admin.id, req.ip);
+  }
+
+  // A password the super admin chooses, for an admin who can't use the
+  // emailed reset link (email not set up yet).
+  @Roles(AdminRole.SUPER_ADMIN)
+  @Post(':id/set-password')
+  setPassword(@Param('id') id: string, @Body() dto: SetAdminPasswordDto, @CurrentAdmin() admin: RequestAdminUser, @Req() req: Request) {
+    return this.adminUsersService.setPassword(id, dto.password, admin.id, req.ip);
+  }
+
+  // The admin team's "Turn off two-step" for someone who lost their phone.
+  @Roles(AdminRole.SUPER_ADMIN)
+  @Post(':id/two-step/disable')
+  disableTwoStep(@Param('id') id: string, @CurrentAdmin() admin: RequestAdminUser, @Req() req: Request) {
+    return this.adminUsersService.disableTwoStep(id, admin.id, req.ip);
   }
 }

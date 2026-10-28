@@ -139,6 +139,7 @@ export class BooksService {
     const todayLogs = await this.prisma.bookLog.findMany({ where: { userId, date: dhakaDateOnly(now) }, select: { bookId: true, pages: true } });
     const reading = books.filter((book) => book.status === BookStatus.READING).map((book) => book.id);
     const notes = reading.length ? await this.prisma.bookNote.findMany({ where: { bookId: { in: reading } }, orderBy: { createdAt: 'asc' } }) : [];
+    const owner = await this.prisma.user.findUnique({ where: { id: userId }, select: { weekStart: true } });
     return {
       year,
       goalTarget: goal?.target ?? null,
@@ -146,6 +147,7 @@ export class BooksService {
       reading: readingSummary(
         days.map((day) => ({ date: day.date.toISOString().slice(0, 10), pages: day._sum.pages ?? 0 })),
         dhakaDateKey(now),
+        owner?.weekStart,
       ),
       pagesToday: Object.fromEntries(todayLogs.map((log) => [log.bookId, log.pages])),
       notes: Object.fromEntries(reading.map((id) => [id, notes.filter((note) => note.bookId === id).map(toNoteView)])),

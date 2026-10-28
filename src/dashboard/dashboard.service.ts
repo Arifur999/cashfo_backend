@@ -1,55 +1,289 @@
 import { Injectable } from '@nestjs/common';
+import { FlagStatus, Prisma, Severity, UserStatus } from '@prisma/client';
+import { AnalyticsService } from '../analytics/analytics.service.js';
+import { dhakaDateKey } from '../common/dhaka.js';
 import { AdminRole, END_USER_WHERE } from '../common/roles.js';
+import { requesterNames } from '../admin-feed/requester-names.js';
+import { auditReason, withEntityLabels } from '../audit-logs/audit-entity-labels.js';
+import { SystemHealthService } from '../health/system-health.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
-import { computeMrr } from '../revenue/mrr.js';
+import { PAID_SUBSCRIPTION_WHERE } from '../revenue/mrr.js';
+import { RevenueService } from '../revenue/revenue.service.js';
+import { accountsByPlan, type DashboardPeriod, lastFullMonths, perDhakaDay, periodDays, shareOf, ticketsNoReply, waitingForReply } from './dashboard-maths.js';
 
-const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
+const HIGH: Severity[] = [Severity.HIGH, Severity.CRITICAL];
+// Raised and not yet closed: what the Security page counts as needing a look.
+const NEEDS_A_LOOK: FlagStatus[] = [FlagStatus.OPEN, FlagStatus.REVIEWING];
+const UNSOLVED = { status: { notIn: ['RESOLVED', 'CLOSED'] } } satisfies Prisma.SupportTicketWhereInput;
+// A ticket's newest message the customer saw (notes for admins left out).
+const NEWEST_MESSAGE = { where: { isInternal: false }, orderBy: { createdAt: 'desc' }, take: 1, select: { senderType: true, createdAt: true } } as const;
+// The support team's goal: an answer within a day.
+const REPLY_GOAL_MS = DAY_MS;
+const SIGN_IN_ACTIONS = ['ADMIN_LOGIN'];
+// Every customer who signed up: a live workspace, or purged (no workspaces
+// left) -- the Users list's "All" tab.
+const SIGNED_UP: Prisma.UserWhereInput = { ...END_USER_WHERE, OR: [{ ownedBusinesses: { some: { deletedAt: null } } }, { status: UserStatus.DELETED }] };
+// Customers whose account is gone or going: left out of "Accounts by plan".
+const DELETED_STATUSES: UserStatus[] = [UserStatus.DELETED, UserStatus.PENDING_DELETION];
 
+export interface DashboardAdmin {
+  id: string;
+  role: AdminRole;
+}
+
+// The admin dashboard in one call (AdminDashboard; AdminDashboardSupport for
+// a support admin). Each role gets its cut: money (MRR, revenue, paid users,
+// plans, payouts, failed payments) for super and finance admins; security,
+// errors, the system list and admin activity for super admins; tickets for
+// super and support admins, and a support admin's own queue. A part a role
+// doesn't get is null.
 @Injectable()
 export class DashboardService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly analytics: AnalyticsService,
+    private readonly revenue: RevenueService,
+    private readonly health: SystemHealthService,
+  ) {}
 
-  async summary(role: AdminRole) {
-    const thirtyDaysAgo = new Date(Date.now() - THIRTY_DAYS_MS);
-    const canSeeRevenue = role === AdminRole.SUPER_ADMIN || role === AdminRole.FINANCE_ADMIN;
-    const isSuperAdmin = role === AdminRole.SUPER_ADMIN;
+  async summary(admin: DashboardAdmin | AdminRole, period: DashboardPeriod = '30d') {
+    const { role, id: adminId } = typeof admin === 'string' ? { role: admin, id: null } : admin;
+    const now = new Date();
+    const isSuper = role === AdminRole.SUPER_ADMIN;
+    const seesMoney = isSuper || role === AdminRole.FINANCE_ADMIN;
+    const seesTickets = isSuper || role === AdminRole.SUPPORT_ADMIN;
+    const days = periodDays(period);
+    const periodStart = new Date(now.getTime() - days * DAY_MS);
+    const thirtyDaysAgo = new Date(now.getTime() - 30 * DAY_MS);
+    const weekAgo = new Date(now.getTime() - 7 * DAY_MS);
+    const dayAgo = new Date(now.getTime() - DAY_MS);
 
-    const [totalUsers, newUsersLast30d, openTickets, mrr, pendingFlags, lastBackup, recentAuditLogs] = await Promise.all([
-      // Real registered owners (User), not the old PlatformUser sandbox --
-      // "some non-deleted owned business" matches every real signup, same
-      // filter AdminOwnersService.list() uses.
-      this.prisma.user.count({ where: { ...END_USER_WHERE, ownedBusinesses: { some: { deletedAt: null } } } }),
-      this.prisma.user.count({
-        where: { ...END_USER_WHERE, ownedBusinesses: { some: { deletedAt: null } }, createdAt: { gte: thirtyDaysAgo } },
-      }),
+    const [totalUsers, newUsersLast30d, signups, active, openTickets] = await Promise.all([
+      this.prisma.user.count({ where: SIGNED_UP }),
+      this.prisma.user.count({ where: { ...SIGNED_UP, createdAt: { gte: thirtyDaysAgo } } }),
+      this.prisma.user.findMany({ where: { ...SIGNED_UP, createdAt: { gte: periodStart } }, select: { createdAt: true } }),
+      this.analytics.summary(now),
       this.prisma.supportTicket.count({ where: { status: { in: ['OPEN', 'IN_PROGRESS'] } } }),
-      canSeeRevenue ? computeMrr(this.prisma) : Promise.resolve(null),
-      isSuperAdmin ? this.prisma.suspiciousActivityFlag.count({ where: { status: 'OPEN' } }) : Promise.resolve(null),
-      isSuperAdmin ? this.prisma.backupRecord.findFirst({ where: { status: 'SUCCESS' }, orderBy: { completedAt: 'desc' } }) : Promise.resolve(null),
-      isSuperAdmin
-        ? this.prisma.auditLog.findMany({
-            take: 5,
-            orderBy: { createdAt: 'desc' },
-            include: { adminUser: { select: { name: true } } },
-          })
-        : Promise.resolve(null),
+    ]);
+    const signupsPerDay = perDhakaDay(
+      signups.map((user) => user.createdAt),
+      days,
+      now,
+    );
+
+    const [money, superParts, tickets, support] = await Promise.all([
+      seesMoney ? this.moneyParts(now, weekAgo) : null,
+      isSuper ? this.superParts(dayAgo) : null,
+      seesTickets ? this.unanswered() : null,
+      role === AdminRole.SUPPORT_ADMIN && adminId ? this.supportCut(adminId, now, weekAgo) : null,
     ]);
 
     return {
+      period,
+      // The figures as they were before the board's redesign, kept for the
+      // older admin pages.
       totalUsers,
       newUsersLast30d,
       openTickets,
-      mrr,
-      pendingFlags,
-      lastBackup: lastBackup ? { completedAt: lastBackup.completedAt, sizeMb: lastBackup.sizeMb } : null,
-      recentAuditLogs:
-        recentAuditLogs?.map((log) => ({
-          id: log.id,
-          action: log.action,
-          entityType: log.entityType,
-          adminName: log.adminUser.name,
-          createdAt: log.createdAt,
-        })) ?? null,
+      mrr: money?.mrr ?? null,
+      pendingFlags: superParts?.securityFlags.open ?? null,
+      lastBackup: superParts?.lastBackup ?? null,
+      recentAuditLogs: superParts?.recentAuditLogs ?? null,
+
+      // "Needs you now". Each card is null for a role that doesn't see it.
+      attention: {
+        payoutRequests: money?.payoutRequests ?? null,
+        ticketsNoReply: tickets,
+        failedPayments7d: money?.failedPayments7d ?? null,
+        securityFlags: superParts?.securityFlags ?? null,
+        newErrors24h: superParts?.errors24h ?? null,
+      },
+      // The KPI row.
+      users: {
+        total: totalUsers,
+        newInPeriod: signups.length,
+        newLast30d: newUsersLast30d,
+        newLast7d: signups.filter((user) => user.createdAt >= weekAgo).length,
+      },
+      activeLast30d: active.activeLast30d,
+      activePct: shareOf(active.activeLast30d, active.totalAccounts),
+      paidUsers: money?.paidUsers ?? null,
+      mrrChangePct: money?.mrrChangePct ?? null,
+      arr: money?.arr ?? null,
+      // Sign-ups per Dhaka day over the period, oldest first.
+      signupsPerDay,
+      // Money in, net of refunds, for the six whole months before this one,
+      // and this month so far.
+      revenueByMonth: money?.revenueByMonth ?? null,
+      revenueChangePct: money?.revenueChangePct ?? null,
+      revenueThisMonth: money?.revenueThisMonth ?? null,
+      accountsByPlan: money?.accountsByPlan ?? null,
+      deletedLeftOut: money?.deletedLeftOut ?? null,
+      system: superParts?.system ?? null,
+      // A support admin's own dashboard (AdminDashboardSupport).
+      support,
+    };
+  }
+
+  private async moneyParts(now: Date, weekAgo: Date) {
+    const thisMonth = dhakaDateKey(now).slice(0, 7);
+    const [overview, revenueSummary, paidRows, planRows, byPlanRows, noSubscription, deletedLeftOut, payouts, failed] = await Promise.all([
+      this.revenue.overview(),
+      this.revenue.summary(),
+      // Paid = a paid plan, active or in its grace days, on a live account
+      // (a trial is not paid): the same people MRR is counted from.
+      this.prisma.userSubscription.groupBy({ by: ['planId'], where: PAID_SUBSCRIPTION_WHERE, _count: true }),
+      this.prisma.subscriptionPlan.findMany({ orderBy: { displayOrder: 'asc' }, select: { id: true, name: true, price: true, billingCycle: true } }),
+      this.prisma.userSubscription.groupBy({ by: ['planId'], where: { user: { ...SIGNED_UP, status: { notIn: DELETED_STATUSES } } }, _count: true }),
+      this.prisma.user.count({ where: { ...SIGNED_UP, status: { notIn: DELETED_STATUSES }, subscription: null } }),
+      this.prisma.user.count({ where: { ...END_USER_WHERE, status: { in: DELETED_STATUSES } } }),
+      this.prisma.payoutRequest.aggregate({ where: { status: 'REQUESTED' }, _sum: { amount: true }, _count: { _all: true } }),
+      this.prisma.payment.count({ where: { status: 'FAILED', createdAt: { gte: weekAgo } } }),
+    ]);
+
+    const planName = new Map(planRows.map((plan) => [plan.id, plan.name]));
+    const paidByPlan = paidRows.map((row) => ({ planId: row.planId, planName: planName.get(row.planId) ?? null, count: row._count }));
+    const paidTotal = paidByPlan.reduce((sum, row) => sum + row.count, 0);
+    const counts = new Map<string | null, number>(byPlanRows.map((row) => [row.planId, row._count]));
+    counts.set(null, (counts.get(null) ?? 0) + noSubscription);
+    const plans = accountsByPlan(planRows, counts);
+    const liveAccounts = plans.reduce((sum, plan) => sum + plan.count, 0);
+    const revenue = lastFullMonths(revenueSummary.revenueTrend, thisMonth, 6);
+
+    return {
+      mrr: overview.mrr,
+      arr: overview.arr,
+      mrrChangePct: overview.mrrChangePct,
+      paidUsers: { total: paidTotal, pctOfAccounts: shareOf(paidTotal, liveAccounts), byPlan: paidByPlan },
+      revenueByMonth: revenue.months.map((row) => ({ month: row.month, amount: row.amount.toFixed(2) })),
+      revenueChangePct: revenue.changePct,
+      revenueThisMonth: (revenueSummary.revenueTrend.find((row) => row.month === thisMonth)?.amount ?? 0).toFixed(2),
+      accountsByPlan: plans,
+      deletedLeftOut,
+      payoutRequests: { count: payouts._count._all, amount: Number(payouts._sum.amount ?? 0).toFixed(2) },
+      failedPayments7d: { count: failed },
+    };
+  }
+
+  private async superParts(dayAgo: Date) {
+    const [flagsOpen, flagsHigh, errors, errorsHigh, lastBackup, recentAuditLogs, health] = await Promise.all([
+      this.prisma.suspiciousActivityFlag.count({ where: { status: { in: NEEDS_A_LOOK } } }),
+      this.prisma.suspiciousActivityFlag.count({ where: { status: { in: NEEDS_A_LOOK }, severity: { in: HIGH } } }),
+      this.prisma.errorLog.count({ where: { resolved: false, createdAt: { gte: dayAgo } } }),
+      this.prisma.errorLog.count({ where: { resolved: false, createdAt: { gte: dayAgo }, severity: { in: HIGH } } }),
+      this.prisma.backupRecord.findFirst({ where: { status: 'SUCCESS' }, orderBy: { completedAt: 'desc' } }),
+      // Changes only: a run of sign-ins would push them off the card (the
+      // audit log still lists every sign-in).
+      this.prisma.auditLog.findMany({
+        where: { action: { notIn: SIGN_IN_ACTIONS } },
+        take: 6,
+        orderBy: { createdAt: 'desc' },
+        include: { adminUser: { select: { name: true, role: true } } },
+      }),
+      this.health.status(),
+    ]);
+    const backup = lastBackup ? { completedAt: lastBackup.completedAt, sizeMb: lastBackup.sizeMb } : null;
+    const errors24h = { count: errors, high: errorsHigh };
+    return {
+      securityFlags: { open: flagsOpen, high: flagsHigh },
+      errors24h,
+      lastBackup: backup,
+      // entityLabel names the record ("Yearly Pro", a payer, a ticket's
+      // subject); adminRole colours the avatar; reason is what the admin typed.
+      recentAuditLogs: (await withEntityLabels(this.prisma, recentAuditLogs)).map((log) => ({
+        id: log.id,
+        action: log.action,
+        entityType: log.entityType,
+        entityId: log.entityId,
+        entityLabel: log.entityLabel,
+        adminName: log.adminUser.name,
+        adminRole: log.adminUser.role,
+        reason: auditReason(log.newValue),
+        createdAt: log.createdAt,
+      })),
+      system: {
+        ...health,
+        lastBackup: backup,
+        errors24h,
+        // Everything answers and is set up, and nothing high broke today.
+        allWorking: health.database.ok && health.email.configured && health.email.lastSendOk !== false && errorsHigh === 0,
+      },
+    };
+  }
+
+  // Tickets the team owes an answer, and since when the longest has waited.
+  private async unanswered() {
+    const open = await this.prisma.supportTicket.findMany({
+      where: UNSOLVED,
+      select: { status: true, createdAt: true, messages: NEWEST_MESSAGE },
+    });
+    return ticketsNoReply(open.map((ticket) => ({ status: ticket.status, createdAt: ticket.createdAt, newest: ticket.messages[0] ?? null })));
+  }
+
+  // AdminDashboardSupport: the team's numbers, this admin's own queue, and
+  // the most-voted ideas still open.
+  private async supportCut(adminId: string, now: Date, weekAgo: Date) {
+    const monthAgo = new Date(now.getTime() - 30 * DAY_MS);
+    const [byStatus, unsolved, solvedThisWeek, firstReplies, ideas] = await Promise.all([
+      this.prisma.supportTicket.groupBy({ by: ['status'], _count: true }),
+      this.prisma.supportTicket.findMany({
+        where: UNSOLVED,
+        select: { id: true, subject: true, status: true, priority: true, createdAt: true, assignedToAdminId: true, platformUserId: true, messages: NEWEST_MESSAGE },
+      }),
+      this.prisma.supportTicket.count({ where: { resolvedAt: { gte: weekAgo } } }),
+      this.prisma.supportTicket.findMany({
+        where: { createdAt: { gte: monthAgo } },
+        select: {
+          createdAt: true,
+          messages: { where: { senderType: 'ADMIN', isInternal: false }, orderBy: { createdAt: 'asc' }, take: 1, select: { createdAt: true } },
+        },
+      }),
+      this.prisma.featureRequest.findMany({
+        where: { status: { notIn: ['SHIPPED', 'DECLINED'] } },
+        orderBy: [{ voteCount: 'desc' }, { createdAt: 'asc' }],
+        take: 3,
+        select: { id: true, title: true, status: true, voteCount: true },
+      }),
+    ]);
+
+    const count = (status: string) => byStatus.find((row) => row.status === status)?._count ?? 0;
+    const withWait = unsolved.map((ticket) => ({ ...ticket, waitingSince: waitingForReply({ status: ticket.status, createdAt: ticket.createdAt, newest: ticket.messages[0] ?? null }) }));
+    const mine = withWait.filter((ticket) => ticket.assignedToAdminId === adminId);
+    const late = (since: Date | null) => since !== null && now.getTime() - since.getTime() > REPLY_GOAL_MS;
+    const answered = firstReplies.filter((ticket) => ticket.messages.length > 0);
+    const avgFirstReplyMinutes = answered.length
+      ? Math.round(answered.reduce((sum, ticket) => sum + (ticket.messages[0].createdAt.getTime() - ticket.createdAt.getTime()), 0) / answered.length / 60_000)
+      : null;
+    // Waiting on us first (longest wait first), then the ones waiting on the user.
+    const queue = [...mine]
+      .sort((a, b) => Number(b.waitingSince !== null) - Number(a.waitingSince !== null) || (a.waitingSince ?? a.createdAt).getTime() - (b.waitingSince ?? b.createdAt).getTime())
+      .slice(0, 8);
+    const names = await requesterNames(
+      this.prisma,
+      queue.map((ticket) => ticket.platformUserId),
+    );
+
+    return {
+      openTickets: count('OPEN') + count('IN_PROGRESS'),
+      noReply: withWait.filter((ticket) => ticket.waitingSince !== null).length,
+      assignedToYou: mine.length,
+      assignedToYouPastGoal: mine.filter((ticket) => late(ticket.waitingSince)).length,
+      waitingOnUser: count('WAITING_ON_USER'),
+      solvedThisWeek,
+      avgFirstReplyMinutes,
+      queue: queue.map((ticket) => ({
+        id: ticket.id,
+        subject: ticket.subject,
+        status: ticket.status,
+        priority: ticket.priority,
+        userName: names.get(ticket.platformUserId) ?? null,
+        // Null when the team answered last and the customer hasn't written back.
+        waitingSince: ticket.waitingSince,
+        pastGoal: late(ticket.waitingSince),
+        updatedFrom: ticket.messages[0]?.createdAt ?? ticket.createdAt,
+      })),
+      topIdeas: ideas,
     };
   }
 }

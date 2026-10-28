@@ -21,7 +21,7 @@ export class AdminAuthController {
   @UseFilters(LoginRateLimitFilter)
   @Post('login')
   login(@Body() dto: LoginDto, @Req() req: Request) {
-    return this.adminAuthService.login(dto, { ipAddress: req.ip, userAgent: req.headers['user-agent'] });
+    return this.adminAuthService.login(dto, { ipAddress: req.ip, userAgent: req.headers['user-agent'] }, req.headers['x-trusted-device']);
   }
 
   // The second half of Google sign-in: the better-auth session cookie the
@@ -29,7 +29,11 @@ export class AdminAuthController {
   @Throttle({ default: { limit: 10, ttl: 60 * 1000 } })
   @Post('session/exchange')
   exchangeSession(@Req() req: Request) {
-    return this.adminAuthService.exchangeSession(req.headers.cookie, { ipAddress: req.ip, userAgent: req.headers['user-agent'] });
+    return this.adminAuthService.exchangeSession(
+      req.headers.cookie,
+      { ipAddress: req.ip, userAgent: req.headers['user-agent'] },
+      req.headers['x-trusted-device'],
+    );
   }
 
   @Post('refresh')

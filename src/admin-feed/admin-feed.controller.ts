@@ -8,7 +8,8 @@ import { AdminSearchService } from './admin-search.service.js';
 import { AdminSearchQueryDto } from './dto/admin-search-query.dto.js';
 
 // The admin top bar: the bell's feed (each admin sees their role's part)
-// and the Ctrl K search, which every admin may use, as every admin may read.
+// and the Ctrl K search, which every admin may use for what their role
+// works with.
 @UseGuards(AdminAuthGuard, RolesGuard)
 @Controller('admin')
 export class AdminFeedController {
@@ -28,8 +29,9 @@ export class AdminFeedController {
     return this.feedService.markSeen(admin.id);
   }
 
+  // Each role finds only the kinds its pages show (searchKindsFor).
   @Get('search')
-  search(@Query() query: AdminSearchQueryDto) {
-    return this.searchService.search(query.q);
+  search(@Query() query: AdminSearchQueryDto, @CurrentAdmin() admin: RequestAdminUser) {
+    return this.searchService.search(query.q, admin.role);
   }
 }

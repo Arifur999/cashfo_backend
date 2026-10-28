@@ -15,9 +15,14 @@ const folderName = (name: string) =>
     .trim()
     .slice(0, 60) || 'Workspace';
 
-// Settings > Resources > Download my data: the customer's profile and every
-// workspace they own, as spreadsheets in one .zip, a folder per workspace.
-// Saved passwords (the vault) are left out on purpose.
+// The folder for the personal trackers, which belong to the person, not to
+// any workspace.
+const HABITS_FOLDER = 'Habit Tracker';
+
+// Settings > Resources > Download my data: the customer's profile, their
+// Habit Tracker (habits, to-dos, books, skills, Namaz and Ramadan sheets,
+// qaza) and every workspace they own, as spreadsheets in one .zip, a folder
+// per workspace. Saved passwords (the vault) are left out on purpose.
 @Injectable()
 export class AccountExportService {
   constructor(private readonly prisma: PrismaService) {}
@@ -29,7 +34,9 @@ export class AccountExportService {
     });
 
     const files: ZipEntry[] = [{ name: 'profile.csv', data: toCsv(['Name', 'Email', 'Phone', 'Language', 'Joined'], [[user.name, user.email, user.phone, user.preferredLanguage, user.createdAt]]) }];
-    const used = new Set<string>();
+    files.push(...(await this.habitSheets(userId)).map((sheet) => ({ name: `${HABITS_FOLDER}/${sheet.name}`, data: sheet.data })));
+    // A workspace that happens to share the trackers' folder name gets its own.
+    const used = new Set<string>([HABITS_FOLDER]);
     for (const workspace of user.ownedBusinesses) {
       // Two workspaces with one name get their own folders.
       let folder = folderName(workspace.isDefault ? 'Personal' : workspace.name);
@@ -100,6 +107,105 @@ export class AccountExportService {
           contacts.map((c) => [c.name, c.type, c.category === 'LOAN' ? 'Loans' : 'Dena-Pawna', c.phone, c.email, c.address, c.openingBalance, c.status, c.notes]),
         ),
       },
+    ];
+  }
+
+  // The Habit Tracker: every row is the person's own (userId), or hangs off
+  // one of their habits, sheets, books or skills.
+  private async habitSheets(userId: string): Promise<ZipEntry[]> {
+    const [habits, habitLogs, sheets, todos, repeats, books, bookNotes, bookGoals, skills, skillGoals, prayer, qaza] = await Promise.all([
+      this.prisma.habit.findMany({ where: { userId }, orderBy: { createdAt: 'asc' } }),
+      this.prisma.habitLog.findMany({ where: { habit: { userId } }, orderBy: [{ date: 'asc' }], include: { habit: { select: { name: true } } } }),
+      this.prisma.habitMonthTracker.findMany({
+        where: { userId },
+        orderBy: [{ category: 'asc' }, { year: 'asc' }, { month: 'asc' }, { createdAt: 'asc' }],
+        include: { checks: { orderBy: [{ day: 'asc' }, { item: 'asc' }] }, paraLogs: { orderBy: { day: 'asc' } } },
+      }),
+      this.prisma.todoItem.findMany({ where: { list: { userId } }, orderBy: [{ list: { date: 'asc' } }, { createdAt: 'asc' }], include: { list: { select: { date: true } } } }),
+      this.prisma.todoRepeat.findMany({ where: { userId }, orderBy: { createdAt: 'asc' } }),
+      this.prisma.book.findMany({ where: { userId }, orderBy: { createdAt: 'asc' }, include: { logs: { orderBy: { date: 'asc' } } } }),
+      this.prisma.bookNote.findMany({ where: { book: { userId } }, orderBy: { createdAt: 'asc' }, include: { book: { select: { title: true } } } }),
+      this.prisma.bookGoal.findMany({ where: { userId }, orderBy: { year: 'asc' } }),
+      this.prisma.skill.findMany({ where: { userId }, orderBy: { createdAt: 'asc' }, include: { logs: { orderBy: { date: 'asc' } } } }),
+      this.prisma.skillGoal.findMany({ where: { userId }, orderBy: { year: 'asc' } }),
+      this.prisma.prayerSettings.findUnique({ where: { userId } }),
+      this.prisma.qazaLog.findMany({ where: { userId }, orderBy: [{ date: 'asc' }, { createdAt: 'asc' }] }),
+    ]);
+
+    // An hours skill keeps its target, progress and log in minutes.
+    const countedIn = (unit: string) => (unit === 'HOURS' ? 'MINUTES' : unit);
+    // "Namaz 2026-10", "Ramadan 2026" or a challenge's own name.
+    const sheetName = (sheet: (typeof sheets)[number]) => {
+      if (sheet.category === 'Others') return sheet.name ?? 'Challenge';
+      if (sheet.category === 'Ramadan' || sheet.month === null) return [sheet.category, sheet.year].filter((part) => part !== null).join(' ');
+      return `${sheet.category} ${sheet.year}-${String(sheet.month).padStart(2, '0')}`;
+    };
+
+    return [
+      {
+        name: 'habits.csv',
+        data: toCsv(
+          ['Name', 'Category', 'How often', 'Week days', 'Times a week', 'Target', 'Unit', 'Archived', 'Created'],
+          habits.map((h) => [h.name, h.category, h.frequencyType, h.weeklyDays.join(' '), h.weeklyCount, h.targetValue, h.unit, h.isArchived, h.createdAt]),
+        ),
+      },
+      { name: 'habit-logs.csv', data: toCsv(['Date', 'Habit', 'Done', 'Value', 'Note'], habitLogs.map((l) => [day(l.date), l.habit.name, l.completed, l.value, l.note])) },
+      {
+        name: 'month-sheets.csv',
+        data: toCsv(
+          ['Sheet', 'Kind', 'Month', 'Year', 'Days', 'Items', 'Created'],
+          sheets.map((t) => [sheetName(t), t.category, t.month, t.year, t.totalDays, t.items.join('; '), t.createdAt]),
+        ),
+      },
+      {
+        name: 'month-sheet-checks.csv',
+        data: toCsv(
+          ['Sheet', 'Kind', 'Day', 'Item', 'Status'],
+          sheets.flatMap((t) => t.checks.map((c) => [sheetName(t), t.category, c.day, c.item, t.category === 'Namaz' ? c.status : null])),
+        ),
+      },
+      { name: 'ramadan-paras.csv', data: toCsv(['Sheet', 'Day', 'Paras'], sheets.flatMap((t) => t.paraLogs.map((p) => [sheetName(t), p.day, p.paras]))) },
+      {
+        name: 'prayer-settings.csv',
+        data: toCsv(
+          ['City', 'Latitude', 'Longitude', 'Method', 'Asr school', 'Hijri adjustment', 'Qaza counted from'],
+          prayer ? [[prayer.city, prayer.latitude, prayer.longitude, prayer.method, prayer.asrSchool, prayer.hijriAdjust, day(prayer.qazaSince)]] : [],
+        ),
+      },
+      { name: 'qaza-made-up.csv', data: toCsv(['Date', 'Prayer', 'Count', 'Recorded at'], qaza.map((q) => [day(q.date), q.prayer, q.count, q.createdAt])) },
+      {
+        name: 'todos.csv',
+        data: toCsv(
+          ['Date', 'Task', 'Done', 'Priority', 'Due time', 'Remind minutes before', 'Moved from', 'Repeats'],
+          todos.map((t) => [day(t.list.date), t.text, t.completed, t.priority, t.dueTime, t.remindBefore, day(t.movedFrom), t.repeatId ? 'yes' : null]),
+        ),
+      },
+      {
+        name: 'todo-repeats.csv',
+        data: toCsv(
+          ['Task', 'Repeats', 'Week days', 'Day of month', 'Priority', 'Due time', 'Starts on', 'Ends on'],
+          repeats.map((r) => [r.text, r.kind, r.weekdays.join(' '), r.monthDay, r.priority, r.dueTime, day(r.startsOn), day(r.endsOn)]),
+        ),
+      },
+      {
+        name: 'books.csv',
+        data: toCsv(
+          ['Title', 'Author', 'Pages', 'Pages read', 'Status', 'Started', 'Finished', 'Added'],
+          books.map((b) => [b.title, b.author, b.totalPages, b.pagesRead, b.status, b.startedAt, b.finishedAt, b.createdAt]),
+        ),
+      },
+      { name: 'reading-log.csv', data: toCsv(['Date', 'Book', 'Pages'], books.flatMap((b) => b.logs.map((l) => [day(l.date), b.title, l.pages]))) },
+      { name: 'book-notes.csv', data: toCsv(['Book', 'Page', 'Note', 'Written'], bookNotes.map((n) => [n.book.title, n.page, n.text, n.createdAt])) },
+      { name: 'reading-goals.csv', data: toCsv(['Year', 'Books'], bookGoals.map((g) => [g.year, g.target])) },
+      {
+        name: 'skills.csv',
+        data: toCsv(
+          ['Name', 'Where', 'Counted in', 'Target', 'Progress', 'Status', 'Started', 'Completed', 'Added'],
+          skills.map((k) => [k.name, k.source, countedIn(k.unit), k.target, k.progress, k.status, k.startedAt, k.completedAt, k.createdAt]),
+        ),
+      },
+      { name: 'skill-log.csv', data: toCsv(['Date', 'Skill', 'Amount', 'Counted in'], skills.flatMap((k) => k.logs.map((l) => [day(l.date), k.name, l.amount, countedIn(k.unit)]))) },
+      { name: 'skill-goals.csv', data: toCsv(['Year', 'Skills'], skillGoals.map((g) => [g.year, g.target])) },
     ];
   }
 

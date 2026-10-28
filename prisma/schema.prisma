@@ -90,6 +90,7 @@ model SubscriptionPlan {
   couponUsages  CouponRedemption[]
   payments      Payment[]
   businesses    Business[] // end-user app (Prompt 1): workspaces on this plan
+  subscriptions UserSubscription[]
 }
 
 enum BillingCycle {
@@ -109,6 +110,8 @@ model Coupon {
   validUntil      DateTime
   applicablePlans String[] // array of SubscriptionPlan.id, empty = applies to all
   isActive        Boolean            @default(true)
+  // A person may use it once (checked against CouponRedemption.userId).
+  oncePerPerson   Boolean            @default(false)
   createdAt       DateTime           @default(now())
   redemptions     CouponRedemption[]
 }
@@ -122,27 +125,90 @@ model CouponRedemption {
   id             String           @id @default(uuid())
   couponId       String
   coupon         Coupon           @relation(fields: [couponId], references: [id])
-  platformUserId String
+  // Legacy sandbox rows only; a customer's redemption sets userId instead.
+  platformUserId String?
+  // The customer (User.id) who used it -- a loose reference, like the rest.
+  userId         String?
+  // The payment it took money off: one redemption per payment.
+  paymentId      String?          @unique
   planId         String
   plan           SubscriptionPlan @relation(fields: [planId], references: [id])
   redeemedAt     DateTime         @default(now())
+
+  @@index([couponId, userId])
 }
 
 model PlanChangeLog {
   id             String   @id @default(uuid())
-  platformUserId String
+  // Legacy sandbox rows only; a customer's change sets userId instead.
+  platformUserId String?
+  userId         String?
   fromPlanId     String?
   toPlanId       String
   changedBy      String // AdminUser id, or "SYSTEM" if automated
   reason         String?
   createdAt      DateTime @default(now())
+
+  @@index([userId, createdAt])
+}
+
+// A customer's plan: one row per customer, the source of truth for "my
+// plan" (src/billing/subscriptions.service.ts). Their workspaces'
+// Business.planId stays a mirror of planId, written by
+// SubscriptionsService.applyPlan(), so everything that reads a workspace's
+// plan (MRR, feature flags, announcements, owners, search, campaigns)
+// keeps working unchanged.
+model UserSubscription {
+  id                 String             @id @default(uuid())
+  userId             String             @unique
+  user               User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  planId             String
+  plan               SubscriptionPlan   @relation(fields: [planId], references: [id])
+  status             SubscriptionStatus
+  trialEndsAt        DateTime?
+  currentPeriodStart DateTime?
+  // When the paid period ends. Null on the free plan, and on a paid plan an
+  // admin set by hand: that never expires until an admin sets an end.
+  currentPeriodEnd   DateTime?
+  cancelAtPeriodEnd  Boolean            @default(false)
+  // The list price paid for the running period: a new plan price starts at
+  // each person's next renewal.
+  lockedPrice        Decimal?           @db.Decimal(10, 2)
+  // One free trial per person.
+  trialUsedAt        DateTime?
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  @@index([status, currentPeriodEnd])
+}
+
+enum SubscriptionStatus {
+  TRIALING
+  ACTIVE
+  // The period ended without a renewal; the plan stays for the grace days.
+  PAST_DUE
+  // Ended by the customer's cancel or a full refund (now on the free plan).
+  CANCELLED
+  // The period or the trial ran out (now on the free plan).
+  EXPIRED
+}
+
+enum PaymentPurpose {
+  NEW
+  RENEWAL
+  UPGRADE
 }
 
 // --- Prompt 4: Payments (payments, invoices, refunds). ---
 
 model Payment {
   id                 String           @id @default(uuid())
-  platformUserId     String
+  // Legacy sandbox payments (POST /admin/dev/simulate-payment) only; a
+  // customer's payment sets userId instead.
+  platformUserId     String?
+  userId             String?
+  user               User?            @relation(fields: [userId], references: [id], onDelete: SetNull)
+  purpose            PaymentPurpose   @default(NEW)
   planId             String
   plan               SubscriptionPlan @relation(fields: [planId], references: [id])
   amount             Decimal          @db.Decimal(10, 2)
@@ -154,12 +220,28 @@ model Payment {
   status             PaymentStatus
   failureReason      String?
   paidAt             DateTime?
+  // The plan's price at checkout, before any discount.
+  listPrice          Decimal?         @db.Decimal(10, 2)
+  // The friend's first-payment discount, when it beat the coupon.
+  referralDiscount   Decimal?         @db.Decimal(10, 2)
+  // The paid period this payment bought (set when it is marked paid).
+  periodStart        DateTime?
+  periodEnd          DateTime?
+  // The number the money came from, typed in at Mark paid.
+  payerAccount       String?
+  // An unpaid checkout lapses at this time.
+  expiresAt          DateTime?
+  // The admin who marked it paid.
+  markedPaidBy       String?
   createdAt          DateTime         @default(now())
   invoice            Invoice?
   refund             Refund?
+  // The referral this payment earned a commission for (the friend's first).
+  referral           Referral?
 
   @@index([platformUserId, createdAt])
-  @@index([status])
+  @@index([userId, createdAt])
+  @@index([status, expiresAt])
 }
 
 enum PaymentGateway {
@@ -178,15 +260,18 @@ enum PaymentStatus {
 }
 
 model Invoice {
-  id            String   @id @default(uuid())
-  paymentId     String   @unique
-  payment       Payment  @relation(fields: [paymentId], references: [id])
-  invoiceNumber String   @unique // e.g. INV-2026-000123, auto-generated sequential
+  id            String    @id @default(uuid())
+  paymentId     String    @unique
+  payment       Payment   @relation(fields: [paymentId], references: [id])
+  invoiceNumber String    @unique // e.g. INV-2026-000123, auto-generated sequential
   issuedTo      String // snapshot of user name/email at time of invoice
   lineItems     Json // [{ description, amount }]
-  totalAmount   Decimal  @db.Decimal(10, 2)
+  totalAmount   Decimal   @db.Decimal(10, 2)
   pdfUrl        String? // populated later when PDF generation is added
-  createdAt     DateTime @default(now())
+  // When the invoice was last emailed to the customer (mark-paid sends it,
+  // and an admin can send it again).
+  emailedAt     DateTime?
+  createdAt     DateTime  @default(now())
 }
 
 model Refund {
@@ -311,6 +396,31 @@ enum LegalDocType {
   FAQ
 }
 
+// Every saved version of a legal page: drafts being written and each one
+// published. Publishing copies the version onto LegalDocument (what the app
+// reads) and keeps this row as history.
+model LegalDocumentVersion {
+  id          String                @id @default(uuid())
+  type        LegalDocType
+  version     Int
+  contentEn   String                @db.Text
+  contentBn   String?               @db.Text
+  status      LegalDocVersionStatus @default(DRAFT)
+  createdBy   String?
+  publishedBy String?
+  publishedAt DateTime?
+  createdAt   DateTime              @default(now())
+  updatedAt   DateTime              @updatedAt
+
+  @@unique([type, version])
+  @@index([type, status])
+}
+
+enum LegalDocVersionStatus {
+  DRAFT
+  PUBLISHED
+}
+
 // --- Prompt 6: Support (tickets, ticket messages, feature requests + votes). ---
 
 model SupportTicket {
@@ -355,14 +465,17 @@ enum TicketStatus {
 }
 
 model TicketMessage {
-  id            String        @id @default(uuid())
+  id            String            @id @default(uuid())
   ticketId      String
-  ticket        SupportTicket @relation(fields: [ticketId], references: [id])
+  ticket        SupportTicket     @relation(fields: [ticketId], references: [id])
   senderType    SenderType
   senderId      String // AdminUser id or PlatformUser id depending on senderType
-  message       String        @db.Text
+  message       String            @db.Text
   attachmentUrl String?
-  createdAt     DateTime      @default(now())
+  // An admin-only note on the ticket: never shown in api/support/*, and no
+  // bell or email goes out for it.
+  isInternal    Boolean           @default(false)
+  createdAt     DateTime          @default(now())
   attachment    TicketAttachment?
 
   @@index([ticketId, createdAt])
@@ -384,6 +497,18 @@ model TicketAttachment {
 enum SenderType {
   ADMIN
   USER
+}
+
+// A canned answer the support team picks from while replying (Admin >
+// Tickets > Saved replies), in English and optionally Bangla.
+model SavedReply {
+  id        String   @id @default(uuid())
+  title     String
+  bodyEn    String   @db.Text
+  bodyBn    String?  @db.Text
+  createdBy String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 model FeatureRequest {
@@ -466,6 +591,11 @@ model SuspiciousActivityFlag {
   type           SuspiciousActivityType
   description    String
   relatedAdminId String?
+  // The customer it is about (UNUSUAL_LOGIN_LOCATION), when it is one.
+  relatedUserId  String?
+  // Names what the flag is about (e.g. "location:<userId>:<country>"), so a
+  // check that runs again on the timer adds nothing new.
+  dedupeKey      String?                @unique
   relatedIp      String?
   severity       Severity               @default(MEDIUM)
   status         FlagStatus             @default(OPEN)
@@ -599,7 +729,11 @@ enum NotificationChannel {
 
 model NotificationLog {
   id             String                @id @default(uuid())
+  // Holds the customer's User.id (the column name is legacy, as on
+  // SupportTicket); no foreign key.
   platformUserId String
+  // The campaign that sent it, if one did.
+  campaignId     String?
   templateKey    String
   channel        NotificationChannel
   status         NotificationLogStatus
@@ -609,6 +743,7 @@ model NotificationLog {
 
   @@index([platformUserId, createdAt])
   @@index([templateKey])
+  @@index([campaignId])
 }
 
 enum NotificationLogStatus {
@@ -628,6 +763,8 @@ model BulkNotificationCampaign {
   sentCount    Int                 @default(0)
   failedCount  Int                 @default(0)
   createdBy    String
+  // When sending finished.
+  sentAt       DateTime?
   createdAt    DateTime            @default(now())
 }
 
@@ -647,33 +784,33 @@ enum CampaignStatus {
 // =====================================================================
 
 model User {
-  id                  String               @id @default(uuid())
-  name                String
-  email               String               @unique
-  phone               String?
+  id                      String                   @id @default(uuid())
+  name                    String
+  email                   String                   @unique
+  phone                   String?
   // Uploaded via POST /api/auth/avatar (same local-disk multer pattern as
   // Contact.photoUrl -- see contact-photo-upload.ts's comment), served back
   // statically from /uploads/avatars. Null shows the initials-circle
   // fallback in the UI instead.
-  avatarUrl           String?
+  avatarUrl               String?
   // No password column: the hash lives on this user's "credential"
   // AuthAccount row, where better-auth reads it (src/auth/credential-account.ts).
   // When the password was last set (CredentialsService.set); null before
   // this was recorded, or for a Google-only account.
-  passwordChangedAt   DateTime?
+  passwordChangedAt       DateTime?
   // Settings > App > Reminders: which in-app reminders the bell's feed
   // gets (UserNotificationsService), and when its checks last ran -- they
   // run when the feed is read, at most every half hour.
-  remindBudget        Boolean              @default(true)
-  remindLoans         Boolean              @default(true)
-  remindSavings       Boolean              @default(false)
-  remindersCheckedAt  DateTime?
+  remindBudget            Boolean                  @default(true)
+  remindLoans             Boolean                  @default(true)
+  remindSavings           Boolean                  @default(false)
+  remindersCheckedAt      DateTime?
   // The master switch for the Habit Tracker's timed reminders (habits,
   // challenges, to-dos, namaz, Ramadan, books, skills): bell and push alike.
-  remindHabits        Boolean              @default(true)
+  remindHabits            Boolean                  @default(true)
   // Admins only: when they last pressed "Mark all as read" on the bell;
   // its rows newer than this are unread (AdminFeedService).
-  adminFeedSeenAt     DateTime?
+  adminFeedSeenAt         DateTime?
   // Shareable short code for this user's own referral link ("Referral
   // Program" menu) -- nullable because pre-existing users only get one
   // lazily backfilled the first time they open that page (see
@@ -681,58 +818,169 @@ model User {
   // one immediately (see UserAuthService.register()). Unique so a code
   // uniquely identifies its owner when a new signup's referralCode DTO
   // field is looked up.
-  referralCode        String?              @unique
+  referralCode            String?                  @unique
   // Settings > Password Manager's own unlock secret -- deliberately separate
   // from the account password (a leaked account password must not also unlock
   // the vault). Null until the user completes first-time vault setup (see
   // PasswordVaultService.setVaultPassword()); the vault menu shows a "Set up"
   // prompt instead of an unlock form until then.
-  vaultPasswordHash   String?
-  preferredLanguage   LanguagePreference   @default(EN)
-  status              UserStatus           @default(ACTIVE)
+  vaultPasswordHash       String?
+  preferredLanguage       LanguagePreference       @default(EN)
+  status                  UserStatus               @default(ACTIVE)
   // Which side of the product this account reaches: USER is the end-user
   // app, every other value is an admin role (see src/common/roles.ts).
-  role                Role                 @default(USER)
-  emailVerifiedAt     DateTime?
+  role                    Role                     @default(USER)
+  emailVerifiedAt         DateTime?
   // better-auth's own flag; emailVerifiedAt above keeps the "when".
-  emailVerified       Boolean              @default(false)
+  emailVerified           Boolean                  @default(false)
   // Loose reference to the admin who created this account (Admin Users >
   // Create); null for anyone who signed up themselves.
-  createdBy           String?
-  lastLoginAt         DateTime?
-  createdAt           DateTime             @default(now())
-  updatedAt           DateTime             @updatedAt
-  memberships         BusinessMember[]
-  ownedBusinesses     Business[]           @relation("BusinessOwner")
-  sessions            UserSession[]
-  vaultEntries        VaultEntry[]
-  habits              Habit[]
-  habitMonthTrackers  HabitMonthTracker[]
-  books               Book[]
-  bookGoals           BookGoal[]
-  skills              Skill[]
-  skillGoals          SkillGoal[]
-  todoLists           TodoList[]
-  todoRepeats         TodoRepeat[]
-  prayerSettings      PrayerSettings?
-  qazaLogs            QazaLog[]
+  createdBy               String?
+  lastLoginAt             DateTime?
+  // Settings > Resources > Delete my account (src/account-deletion): the
+  // account is locked at once (status PENDING_DELETION) and purged on
+  // deletionScheduledFor, 30 days on, unless the owner signs in before
+  // then, which restores it. Both null otherwise.
+  deletionRequestedAt     DateTime?
+  deletionScheduledFor    DateTime?
+  // Settings > App > Numbers and dates. digitStyle null = follow the
+  // language (Bangla digits in Bangla). The week start also drives the
+  // server's weekly streaks and reading weeks.
+  digitStyle              DigitStyle?
+  numberGrouping          NumberGrouping           @default(LAKH)
+  dateStyle               DateStyle                @default(D_MMM_YYYY)
+  weekStart               WeekStart                @default(SATURDAY)
+  // Password Manager: how long an unlock lasts (1-30 minutes; null = the
+  // server's VAULT_TOKEN_EXPIRES_IN), and the wrong unlock tries counted
+  // in the current 10-minute window (vaultUnlockFailedAt = its first).
+  vaultLockMinutes        Int?
+  vaultUnlockFailures     Int                      @default(0)
+  vaultUnlockFailedAt     DateTime?
+  // Settings > Security > Alerts (sent by email once Resend is set up):
+  // a new device signed in, many wrong passwords in a row (at most one
+  // email an hour, failedTriesAlertedAt), and an emailed code before a
+  // password reset link is honoured.
+  alertNewDevice          Boolean                  @default(true)
+  alertFailedTries        Boolean                  @default(true)
+  askCodeBeforeReset      Boolean                  @default(false)
+  failedTriesAlertedAt    DateTime?
+  // Settings > App > Reminders: last month's summary by email on the 1st
+  // (Dhaka), and the 'YYYY-MM' it was last sent for, so it goes once.
+  monthlySummaryEmail     Boolean                  @default(false)
+  monthlySummarySentFor   String?
+  createdAt               DateTime                 @default(now())
+  updatedAt               DateTime                 @updatedAt
+  memberships             BusinessMember[]
+  ownedBusinesses         Business[]               @relation("BusinessOwner")
+  sessions                UserSession[]
+  vaultEntries            VaultEntry[]
+  habits                  Habit[]
+  habitMonthTrackers      HabitMonthTracker[]
+  books                   Book[]
+  bookGoals               BookGoal[]
+  skills                  Skill[]
+  skillGoals              SkillGoal[]
+  todoLists               TodoList[]
+  todoRepeats             TodoRepeat[]
+  prayerSettings          PrayerSettings?
+  qazaLogs                QazaLog[]
   // Every Referral row this user created by inviting someone else (as the
   // referrer), vs. the single Referral row recording that this user was
   // THEMSELVES referred by someone else's code at registration.
-  referralsMade       Referral[]           @relation("Referrer")
-  referredAs          Referral?            @relation("Referred")
-  passwordResetTokens PasswordResetToken[]
+  referralsMade           Referral[]               @relation("Referrer")
+  referredAs              Referral?                @relation("Referred")
+  passwordResetTokens     PasswordResetToken[]
   // Admin actions this account performed (admin roles only).
-  auditLogs           AuditLog[]
-  authSessions        AuthSession[]
-  authAccounts        AuthAccount[]
-  notifications       UserNotification[]
-  pushSubscriptions   PushSubscription[]
-  reminders           Reminder[]
+  auditLogs               AuditLog[]
+  authSessions            AuthSession[]
+  authAccounts            AuthAccount[]
+  notifications           UserNotification[]
+  pushSubscriptions       PushSubscription[]
+  reminders               Reminder[]
+  subscription            UserSubscription?
+  payments                Payment[]
+  payoutMethods           PayoutMethod[]
+  payoutRequests          PayoutRequest[]
+  oneTimeCodes            OneTimeCode[]
+  // Two-step sign-in (src/two-step): the authenticator app, its backup
+  // codes, the computers that skip the code for 30 days, and open
+  // second-step challenges.
+  twoFactor               TwoFactor?
+  twoFactorBackupCodes    TwoFactorBackupCode[]
+  trustedDevices          TrustedDevice[]
+  twoStepChallenges       TwoStepChallenge[]
+  // Admins only: the invites this admin sent (src/admin-invites).
+  adminInvitesSent        AdminInvite[]            @relation("AdminInvitesSent")
+  // Admin notes on a customer's page (only admins read them), and the
+  // notes an admin wrote.
+  adminNotesAbout         AdminNote[]              @relation("AdminNoteSubject")
+  adminNotesWritten       AdminNote[]              @relation("AdminNoteAuthor")
+  emailVerificationTokens EmailVerificationToken[]
 
   // No separate @@index([email]) -- @unique above already creates a unique
   // index covering lookups by email (same reasoning as PlatformUser).
   @@index([role])
+  // The account purge looks for PENDING_DELETION rows whose day has come.
+  @@index([status, deletionScheduledFor])
+}
+
+enum DigitStyle {
+  LATIN
+  BENGALI
+}
+
+enum NumberGrouping {
+  // 1,23,45,678 (lakh and crore)
+  LAKH
+  // 12,345,678
+  INTERNATIONAL
+}
+
+enum DateStyle {
+  // 2 Oct 2026
+  D_MMM_YYYY
+  // 02/10/2026
+  DD_MM_YYYY
+  // 2026-10-02
+  YYYY_MM_DD
+}
+
+enum WeekStart {
+  SATURDAY
+  SUNDAY
+  MONDAY
+}
+
+// A note an admin left on a customer's page (Admin > Users > a user >
+// Notes). The customer never sees these. Soft-deleted, so the audit trail
+// keeps its subject.
+model AdminNote {
+  id            String    @id @default(uuid())
+  subjectUserId String
+  subject       User      @relation("AdminNoteSubject", fields: [subjectUserId], references: [id], onDelete: Cascade)
+  authorId      String
+  author        User      @relation("AdminNoteAuthor", fields: [authorId], references: [id])
+  body          String    @db.Text
+  createdAt     DateTime  @default(now())
+  deletedAt     DateTime?
+
+  @@index([subjectUserId, createdAt])
+}
+
+// "Verify your email" (Settings > Profile): one row per link mailed, only
+// the token's SHA-256 kept, like PasswordResetToken. `email` is the address
+// the link proves, so a link mailed before an email change proves nothing.
+model EmailVerificationToken {
+  id        String    @id @default(uuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  email     String
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
 }
 
 // One identity table for everyone who signs in -- end users and the admin
@@ -752,15 +1000,15 @@ enum Role {
 // One signed-in device. The app's JWTs carry this row's id (sid), so
 // deleting the row signs that device out on its next request.
 model AuthSession {
-  id        String   @id @default(uuid())
-  token     String   @unique
-  expiresAt DateTime
-  ipAddress String?
-  userAgent String?
-  userId    String
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id             String   @id @default(uuid())
+  token          String   @unique
+  expiresAt      DateTime
+  ipAddress      String?
+  userAgent      String?
+  userId         String
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
   // Set on a super admin's read-only "View as customer" session: the admin's
   // User id (AdminOwnersController's impersonate). Null for every real sign-in.
   impersonatedBy String?
@@ -850,6 +1098,100 @@ model PasswordResetToken {
   @@index([userId])
 }
 
+// --- Two-step sign-in (src/two-step), for customers and admins alike. ---
+
+// An account's authenticator app (TOTP, RFC 6238: SHA-1, 6 digits, 30 s).
+// The secret is sealed with AES-256-GCM (common/secret-box.ts, keyed by
+// TWO_FACTOR_ENCRYPTION_KEY, falling back to VAULT_ENCRYPTION_KEY).
+// enabledAt null = set-up started but not confirmed with a code yet.
+model TwoFactor {
+  userId           String    @id
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  secretCiphertext String
+  enabledAt        DateTime?
+  // The newest 30-second step a code was accepted for: a code works once.
+  lastUsedStep     BigInt?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+}
+
+// Ten single-use codes for a lost phone, shown once. Stored as an HMAC,
+// never in the clear; usedAt set on use.
+model TwoFactorBackupCode {
+  id        String    @id @default(uuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  codeHash  String
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+}
+
+// "Don't ask again on this computer for 30 days". The browser keeps the raw
+// token in an httpOnly cookie; only its SHA-256 is stored. Changing or
+// resetting the password removes them all.
+model TrustedDevice {
+  id         String   @id @default(uuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash  String   @unique
+  userAgent  String?
+  ipAddress  String?
+  expiresAt  DateTime
+  lastUsedAt DateTime @default(now())
+  createdAt  DateTime @default(now())
+
+  @@index([userId])
+}
+
+enum TwoStepPurpose {
+  // The password (or Google) checked out; the code is still to come.
+  SIGN_IN
+  // An admin who must turn two-step on before getting in.
+  SETUP
+}
+
+// One pending second step: the challenge token (a JWT) names this row by
+// its id (jti). Single use, five minutes (fifteen for SETUP), five tries.
+model TwoStepChallenge {
+  id         String         @id @default(uuid())
+  userId     String
+  user       User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  purpose    TwoStepPurpose
+  attempts   Int            @default(0)
+  expiresAt  DateTime
+  consumedAt DateTime?
+  createdAt  DateTime       @default(now())
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+// An admin invite (Security > Admin team > Invite an admin): a one-time
+// link, mailed, that works for 7 days. Only the link token's SHA-256 is
+// kept. The person picks their name and password and turns on two-step
+// while accepting; the TOTP secret shown on that page waits here, sealed.
+model AdminInvite {
+  id                      String    @id @default(uuid())
+  email                   String
+  name                    String?
+  // An admin role only (never USER).
+  role                    Role
+  tokenHash               String    @unique
+  invitedById             String
+  invitedBy               User      @relation("AdminInvitesSent", fields: [invitedById], references: [id])
+  expiresAt               DateTime
+  pendingSecretCiphertext String?
+  acceptedAt              DateTime?
+  acceptedUserId          String?
+  revokedAt               DateTime?
+  lastSentAt              DateTime  @default(now())
+  createdAt               DateTime  @default(now())
+
+  @@index([email])
+}
+
 // A personal credential vault -- "Password Manager" menu (client's own
 // Facebook/bank/etc. logins, unrelated to this app's own accounting data).
 // passwordCiphertext is reversible (AES-256-GCM via vault-crypto.ts), NOT a
@@ -907,6 +1249,9 @@ enum LanguagePreference {
 enum UserStatus {
   ACTIVE
   SUSPENDED
+  // The owner asked to delete the account: locked, restorable by signing
+  // in until User.deletionScheduledFor, then purged (becomes DELETED).
+  PENDING_DELETION
   DELETED
 }
 
@@ -1869,36 +2214,221 @@ enum AssetStatus {
 // else's code in RegisterDto creates one Referral row here linking the two.
 // =====================================================================
 
-// Tracks one referral relationship: referrer invited referredUser, who
-// registered using referrer's referralCode. rewardAmount is a SNAPSHOT of
-// the admin-configured reward at the moment this referral was created
-// (SettingsService's referralRewardAmount) -- a later admin change to the
-// reward amount never retroactively changes an already-created Referral's
-// own amount, same "snapshot at creation time" reasoning as
-// AssetsService.purchase() storing purchasePrice rather than a live lookup.
-// PENDING -> CONFIRMED once referredUser has been registered 30+ days
-// (self-healing on every read, same pattern as
-// SavingsGoalsService.maybeMarkCompleted()) -> WITHDRAWN once the user
-// cashes out their available balance (see ReferralsService.withdraw()).
+// One referral relationship: referrer invited referredUser, who signed up
+// with the referrer's referralCode.
+//
+// A COMMISSION row (every sign-up since the commission rules): JOINED at
+// sign-up -> PENDING when the friend's first payment is confirmed (the
+// referrer earns commissionRate % of what the friend paid, held for the
+// refund window until availableAt) -> AVAILABLE -> PAID_OUT once payout
+// requests have covered it (paidOutAmount, FIFO by availableAt). CANCELLED
+// when the friend is refunded inside the window, the referrer wasn't on a
+// paid plan when the friend paid, the sign-up looked like self-referral,
+// or an admin cancelled it (cancelReason).
+//
+// A SIGNUP_BONUS row is the old rule (a flat rewardAmount 30 days after the
+// friend signed up): commissionAmount = rewardAmount, PENDING until
+// availableAt, then withdrawable like a commission. CONFIRMED / WITHDRAWN
+// are the old rule's statuses, kept only so a rollback can still read the
+// table; nothing writes them (the migration moved them to AVAILABLE /
+// PAID_OUT).
 model Referral {
-  id             String         @id @default(uuid())
-  referrerId     String
-  referrer       User           @relation("Referrer", fields: [referrerId], references: [id])
-  referredUserId String         @unique
-  referredUser   User           @relation("Referred", fields: [referredUserId], references: [id])
-  rewardAmount   Decimal        @db.Decimal(14, 2)
-  status         ReferralStatus @default(PENDING)
-  confirmedAt    DateTime?
-  withdrawnAt    DateTime?
-  createdAt      DateTime       @default(now())
+  id               String             @id @default(uuid())
+  referrerId       String
+  referrer         User               @relation("Referrer", fields: [referrerId], references: [id])
+  referredUserId   String             @unique
+  referredUser     User               @relation("Referred", fields: [referredUserId], references: [id])
+  // The old rule's flat reward (a snapshot of referral_reward_amount); 0
+  // for a commission row.
+  rewardAmount     Decimal            @db.Decimal(14, 2)
+  status           ReferralStatus     @default(JOINED)
+  kind             ReferralKind       @default(COMMISSION)
+  // The friend's first confirmed payment, and what they paid for it.
+  paymentId        String?            @unique
+  payment          Payment?           @relation(fields: [paymentId], references: [id], onDelete: SetNull)
+  paidAmount       Decimal?           @db.Decimal(14, 2)
+  // Snapshots at the friend's payment: the rate (20.00 = 20 %) and the
+  // commission, rounded down to whole taka.
+  commissionRate   Decimal?           @db.Decimal(5, 2)
+  commissionAmount Decimal?           @db.Decimal(14, 2)
+  // When the commission leaves the refund window (paidAt + hold days).
+  availableAt      DateTime?
+  // How much of commissionAmount paid payout requests have covered.
+  paidOutAmount    Decimal            @default(0) @db.Decimal(14, 2)
+  paidOutAt        DateTime?
+  cancelledAt      DateTime?
+  // FRIEND_REFUNDED | REFERRER_NOT_ON_PAID_PLAN | PROGRAM_OFF |
+  // SELF_REFERRAL | MONTHLY_LIMIT | ADMIN
+  cancelReason     String?
+  confirmedAt      DateTime?
+  withdrawnAt      DateTime?
+  createdAt        DateTime           @default(now())
+  allocations      PayoutAllocation[]
 
   @@index([referrerId])
+  @@index([referrerId, status])
+  @@index([status, availableAt])
 }
 
 enum ReferralStatus {
+  JOINED
   PENDING
+  AVAILABLE
+  PAID_OUT
+  CANCELLED
+  // The old rule's statuses; nothing writes them any more.
   CONFIRMED
   WITHDRAWN
+}
+
+enum ReferralKind {
+  SIGNUP_BONUS
+  COMMISSION
+}
+
+enum PayoutMethodType {
+  BKASH
+  NAGAD
+  ROCKET
+  BANK
+}
+
+enum BankAccountType {
+  SAVINGS
+  CURRENT
+}
+
+// Where a member wants their referral money sent: a bKash, Nagad or Rocket
+// number (a personal account), or a bank account. Deleting one only hides
+// it (deletedAt): a payout request keeps its own snapshot anyway.
+model PayoutMethod {
+  id              String           @id @default(uuid())
+  userId          String
+  user            User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type            PayoutMethodType
+  // The name on the account; it must match the member's own name (checked
+  // softly, shown to the admin).
+  accountName     String
+  // BKASH / NAGAD / ROCKET: 01XXXXXXXXX (Rocket may add a twelfth digit).
+  walletNumber    String?
+  bankName        String?
+  branch          String?
+  bankAccountType BankAccountType?
+  accountNumber   String?
+  // Nine digits.
+  routingNumber   String?
+  isDefault       Boolean          @default(false)
+  deletedAt       DateTime?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  payoutRequests  PayoutRequest[]
+
+  @@index([userId])
+}
+
+enum PayoutStatus {
+  REQUESTED
+  APPROVED
+  PAID
+  REJECTED
+  CANCELLED
+}
+
+// A member's withdrawal of referral money. REQUESTED (the money is set
+// aside: the balance counts it as taken; the member may cancel) ->
+// APPROVED (an admin checked it) -> PAID (the admin sent it and recorded
+// the transaction id). REQUESTED or APPROVED -> REJECTED gives the money
+// back to the balance, as does the member's CANCELLED.
+model PayoutRequest {
+  id                  String             @id @default(uuid())
+  // Shown as WD-1048.
+  number              Int                @unique @default(autoincrement())
+  userId              String
+  user                User               @relation(fields: [userId], references: [id])
+  // Taken from the balance; the member receives amount - fee.
+  amount              Decimal            @db.Decimal(14, 2)
+  fee                 Decimal            @default(0) @db.Decimal(14, 2)
+  methodId            String?
+  method              PayoutMethod?      @relation(fields: [methodId], references: [id], onDelete: SetNull)
+  // The method as it was when requested: type, names and numbers.
+  methodSnapshot      Json
+  status              PayoutStatus       @default(REQUESTED)
+  // "Add it as income when it's paid": the member's workspace and wallet,
+  // and the posting made at Mark paid.
+  incomeBusinessId    String?
+  incomeAccountId     String?
+  incomeTransactionId String?
+  codeConfirmedAt     DateTime
+  approvedAt          DateTime?
+  approvedBy          String?
+  paidAt              DateTime?
+  // What the admin actually sent.
+  paidAmount          Decimal?           @db.Decimal(14, 2)
+  trxId               String?
+  rejectedAt          DateTime?
+  rejectReason        String?
+  cancelledAt         DateTime?
+  // The admin who paid or rejected it.
+  processedBy         String?
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+  allocations         PayoutAllocation[]
+
+  @@index([status, createdAt])
+  @@index([userId, createdAt])
+}
+
+// Which commissions a paid payout covered, and how much of each (FIFO by
+// availableAt): "why this member was owed this".
+model PayoutAllocation {
+  id         String        @id @default(uuid())
+  payoutId   String
+  payout     PayoutRequest @relation(fields: [payoutId], references: [id], onDelete: Cascade)
+  referralId String
+  referral   Referral      @relation(fields: [referralId], references: [id], onDelete: Cascade)
+  amount     Decimal       @db.Decimal(14, 2)
+  createdAt  DateTime      @default(now())
+
+  @@index([payoutId])
+  @@index([referralId])
+}
+
+enum OneTimeCodePurpose {
+  PAYOUT_REQUEST
+  // Resetting the Password Manager's vault password.
+  VAULT_RESET
+  // A password reset link, for an account with "Ask for a code before a
+  // password reset" on.
+  PASSWORD_RESET
+}
+
+enum OneTimeCodeChannel {
+  EMAIL
+  SMS
+}
+
+// A six-digit code sent to the member to confirm something (a payout
+// request). Only its hash is kept (sha256 of code + id); `payload` is what
+// the code confirms, re-checked when it is used. At most five wrong tries
+// and five sends; it lapses after ten minutes and works once.
+model OneTimeCode {
+  id          String             @id @default(uuid())
+  userId      String
+  user        User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  purpose     OneTimeCodePurpose
+  channel     OneTimeCodeChannel
+  destination String
+  codeHash    String
+  payload     Json
+  attempts    Int                @default(0)
+  sends       Int                @default(1)
+  expiresAt   DateTime
+  consumedAt  DateTime?
+  lastSentAt  DateTime           @default(now())
+  createdAt   DateTime           @default(now())
+
+  @@index([userId, purpose])
+  @@index([expiresAt])
 }
 
 // =====================================================================
@@ -2027,11 +2557,11 @@ enum GroupMemberStatus {
 }
 
 model GroupContribution {
-  id            String      @id @default(uuid())
+  id            String                @id @default(uuid())
   businessId    String
-  business      Business    @relation(fields: [businessId], references: [id])
+  business      Business              @relation(fields: [businessId], references: [id])
   groupMemberId String
-  groupMember   GroupMember @relation(fields: [groupMemberId], references: [id])
+  groupMember   GroupMember           @relation(fields: [groupMemberId], references: [id])
   amount        Decimal               @db.Decimal(14, 2)
   kind          GroupContributionKind @default(DEPOSIT)
   date          DateTime              @db.Date
@@ -2043,17 +2573,17 @@ model GroupContribution {
 }
 
 model GroupExpense {
-  id             String       @id @default(uuid())
+  id             String              @id @default(uuid())
   businessId     String
-  business       Business     @relation(fields: [businessId], references: [id])
-  amount         Decimal      @db.Decimal(14, 2)
-  date           DateTime     @db.Date
+  business       Business            @relation(fields: [businessId], references: [id])
+  amount         Decimal             @db.Decimal(14, 2)
+  date           DateTime            @db.Date
   // Loose string, NOT a categoryId FK to GroupExpenseCategoryOption -- same
   // "picker list is decoupled from what's stored" convention as
   // Asset.category/AssetCategoryOption (see that model's own comment):
   // deleting a category option must never break/cascade-delete existing
   // expenses, it should just stop being offered for NEW ones.
-  category       String       @default("Other")
+  category       String              @default("Other")
   description    String?
   paidByMemberId String?
   paidByMember   GroupMember?        @relation(fields: [paidByMemberId], references: [id])
@@ -2188,6 +2718,20 @@ enum UserNotificationType {
   SUPPORT_REPLY
   // A Habit Tracker reminder came due (RemindersScheduler).
   REMINDER
+  // A payment was confirmed, failed or refunded, or the plan is ending.
+  BILLING
+  // A friend bought a plan, or a commission became withdrawable or was
+  // cancelled (Referral Program).
+  REFERRAL
+  // A referral withdrawal was approved, paid or rejected.
+  PAYOUT
+  // Two-step sign-in was turned on or off (by the customer or the support
+  // team), or a new device signed in.
+  SECURITY
+  // An in-app message from an admin campaign.
+  CAMPAIGN
+  // A feature request the customer voted for changed status.
+  IDEA
 }
 
 // A browser or phone that gets web push notifications for one customer

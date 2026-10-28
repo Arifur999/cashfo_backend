@@ -2,8 +2,11 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Prisma, WorkspaceType } from '@prisma/client';
 import { randomBytes } from 'crypto';
 import { AccountsService } from '../accounts/accounts.service.js';
+import { dhakaMonthStart, dhakaToday } from '../common/dhaka.js';
 import { MailService } from '../mail/mail.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { looksLikeSamePerson } from '../referrals/referral-money.js';
+import type { ReferralSettings } from '../settings/referral-settings.js';
 import { SettingsService } from '../settings/settings.service.js';
 
 export interface ProvisionOptions {
@@ -34,12 +37,12 @@ export class UserProvisioningService {
     if (existing) return existing;
 
     const freePlan = await this.prisma.subscriptionPlan.findUnique({ where: { slug: 'free' } });
-    // Read outside the transaction below -- SettingsService.get() uses the
-    // plain (non-transactional) client, and calling it from inside an open
+    // Read outside the transaction below -- SettingsService uses the plain
+    // (non-transactional) client, and calling it from inside an open
     // interactive transaction against `prisma dev`'s single-connection pool
-    // starves that transaction until it times out (P2028). The reward amount
-    // is a snapshot; it needs no transactional consistency with the rest.
-    const referralRewardAmount = options.referralCode ? (await this.settingsService.get()).referralRewardAmount : undefined;
+    // starves that transaction until it times out (P2028). The rules need no
+    // transactional consistency with the rest.
+    const referralRules = options.referralCode ? await this.settingsService.getReferralSettings() : undefined;
 
     const createdId = await this.prisma.$transaction(async (tx) => {
       // Two first requests racing (two tabs, a double submit) would each
@@ -48,8 +51,8 @@ export class UserProvisioningService {
       if (await tx.business.findFirst({ where: { ownerId: userId, isDefault: true }, select: { id: true } })) return null;
 
       await this.assignReferralCode(tx, userId);
-      if (options.referralCode && referralRewardAmount !== undefined) {
-        await this.recordReferral(tx, userId, options.referralCode, referralRewardAmount);
+      if (options.referralCode && referralRules) {
+        await this.recordReferral(tx, userId, options.referralCode, referralRules);
       }
 
       const business = await tx.business.create({
@@ -65,6 +68,11 @@ export class UserProvisioningService {
       // The default workspace never exists without its starter Chart of
       // Accounts -- seeded in this same transaction, all-or-nothing.
       await this.accountsService.seedDefaultAccounts(business.id, WorkspaceType.PERSONAL, tx);
+      // The customer's plan (UserSubscription, src/billing): the free plan,
+      // which the workspace above mirrors.
+      if (freePlan) {
+        await tx.userSubscription.upsert({ where: { userId }, create: { userId, planId: freePlan.id, status: 'ACTIVE' }, update: {} });
+      }
       return business.id;
     });
 
@@ -95,12 +103,40 @@ export class UserProvisioningService {
     }
   }
 
-  // An unknown or stale code is silently ignored -- a bad referral link must
-  // never block a signup.
-  private async recordReferral(tx: Prisma.TransactionClient, userId: string, referralCode: string, rewardAmount: number) {
-    const referrer = await tx.user.findUnique({ where: { referralCode } });
-    if (!referrer || referrer.id === userId) return;
-    await tx.referral.create({ data: { referrerId: referrer.id, referredUserId: userId, rewardAmount, status: 'PENDING' } });
+  // The friend JOINED with someone's code; the referrer earns when the
+  // friend's first payment is confirmed (ReferralCommissionsService). An
+  // unknown or stale code, or the user's own, is silently ignored -- a bad
+  // referral link must never block a signup. A sign-up with the referrer's
+  // own phone or email, or past the referrer's monthly limit, is kept as
+  // CANCELLED (the admin sees it; it earns nothing and gives no discount).
+  private async recordReferral(tx: Prisma.TransactionClient, userId: string, referralCode: string, rules: Pick<ReferralSettings, 'blockSelf' | 'maxPerMonth'>) {
+    const code = referralCode.trim().toUpperCase();
+    if (!code) return;
+    const [referrer, friend] = await Promise.all([
+      tx.user.findUnique({ where: { referralCode: code }, select: { id: true, email: true, phone: true, role: true } }),
+      tx.user.findUniqueOrThrow({ where: { id: userId }, select: { email: true, phone: true } }),
+    ]);
+    if (!referrer || referrer.id === userId || referrer.role !== 'USER') return;
+
+    let cancelReason: 'SELF_REFERRAL' | 'MONTHLY_LIMIT' | null = null;
+    if (rules.blockSelf && looksLikeSamePerson(referrer, friend)) cancelReason = 'SELF_REFERRAL';
+    else if (rules.maxPerMonth !== null) {
+      const { year, month } = dhakaToday();
+      const thisMonth = await tx.referral.count({
+        where: { referrerId: referrer.id, createdAt: { gte: dhakaMonthStart(year, month) }, status: { not: 'CANCELLED' } },
+      });
+      if (thisMonth >= rules.maxPerMonth) cancelReason = 'MONTHLY_LIMIT';
+    }
+    await tx.referral.create({
+      data: {
+        referrerId: referrer.id,
+        referredUserId: userId,
+        rewardAmount: 0,
+        kind: 'COMMISSION',
+        status: cancelReason ? 'CANCELLED' : 'JOINED',
+        ...(cancelReason && { cancelReason, cancelledAt: new Date() }),
+      },
+    });
   }
 
   // Best-effort: a flaky or unconfigured email provider must never fail a

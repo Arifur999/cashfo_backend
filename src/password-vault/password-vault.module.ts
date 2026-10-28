@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
+import { OneTimeCodesModule } from '../one-time-codes/one-time-codes.module.js';
 import { UserAuthModule } from '../user-auth/user-auth.module.js';
 import { VaultAccessGuard } from './guards/vault-access.guard.js';
 import { PasswordVaultController } from './password-vault.controller.js';
@@ -10,8 +11,8 @@ import { PasswordVaultService } from './password-vault.service.js';
   // signs and VaultAccessGuard verifies with their own explicit
   // secret/expiry (VAULT_TOKEN_SECRET), not a module default.
   // UserAuthModule: gives us UserAuthGuard for the controller's class-level
-  // guard.
-  imports: [JwtModule.register({}), UserAuthModule],
+  // guard. OneTimeCodesModule: the emailed code before a reset.
+  imports: [JwtModule.register({}), UserAuthModule, OneTimeCodesModule],
   controllers: [PasswordVaultController],
   providers: [PasswordVaultService, VaultAccessGuard],
 })

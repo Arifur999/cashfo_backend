@@ -15,6 +15,8 @@ const OPEN_DURING_MAINTENANCE = [
   '/api/auth/session/exchange',
   '/api/auth/refresh',
   '/api/auth/logout',
+  // A payment gateway confirming a payment: the money has moved either way.
+  '/api/billing/webhooks',
 ];
 
 // Maintenance mode (Settings > General) closes the customer API: every other
@@ -45,6 +47,12 @@ export class MaintenanceMiddleware implements NestMiddleware {
     }
 
     res.setHeader('Retry-After', '300');
-    res.status(503).json({ statusCode: 503, error: 'Service Unavailable', message: settings.maintenanceMessage, maintenance: true });
+    res.status(503).json({
+      statusCode: 503,
+      error: 'Service Unavailable',
+      message: settings.maintenanceMessage,
+      messageBn: settings.maintenanceMessageBn,
+      maintenance: true,
+    });
   }
 }

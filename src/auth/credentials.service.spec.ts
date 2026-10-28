@@ -7,6 +7,7 @@ const fakeDb = (account: { password: string | null } | null = null) => ({
     upsert: vi.fn().mockResolvedValue({}),
   },
   user: { update: vi.fn().mockResolvedValue({}) },
+  trustedDevice: { deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
 });
 
 const serviceWith = (db: ReturnType<typeof fakeDb>) => new CredentialsService(db as never);
@@ -34,6 +35,8 @@ describe('CredentialsService', () => {
     expect(args.update.password).not.toBe('Secret-123');
     // Settings says when it last changed.
     expect(db.user.update).toHaveBeenCalledWith({ where: { id: 'user-1' }, data: { passwordChangedAt: expect.any(Date) } });
+    // Every computer trusted to skip the two-step code asks for it again.
+    expect(db.trustedDevice.deleteMany).toHaveBeenCalledWith({ where: { userId: 'user-1' } });
   });
 
   it('writes through the transaction client it is given', async () => {

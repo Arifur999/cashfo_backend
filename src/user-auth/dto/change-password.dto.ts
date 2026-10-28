@@ -1,4 +1,5 @@
-import { IsNotEmpty, IsString, Matches, MaxLength, MinLength } from 'class-validator';
+import { IsBoolean, IsNotEmpty, IsString, Matches, MaxLength, MinLength, ValidateIf } from 'class-validator';
+import { whenSent } from '../../common/dto.js';
 
 export class ChangePasswordDto {
   @IsString()
@@ -11,4 +12,10 @@ export class ChangePasswordDto {
   @MinLength(8)
   @Matches(/(?=.*[A-Za-z])(?=.*\d)/, { message: 'Password must contain at least one letter and one number' })
   newPassword: string;
+
+  // "Sign out of my other devices" (customer ChangePasswordDialog); left
+  // out means yes. An admin's change always signs the others out.
+  @ValidateIf(whenSent)
+  @IsBoolean()
+  signOutOthers?: boolean;
 }

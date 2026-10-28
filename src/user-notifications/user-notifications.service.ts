@@ -3,6 +3,7 @@ import { Prisma } from '@prisma/client';
 import { AnnouncementsService } from '../announcements/announcements.service.js';
 import { BudgetsService } from '../budgets/budgets.service.js';
 import { dhakaDateOnly, dhakaToday } from '../common/dhaka.js';
+import { MailService } from '../mail/mail.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { ReceivablesPayablesService } from '../receivables-payables/receivables-payables.service.js';
 import { SavingsGoalsService } from '../savings-goals/savings-goals.service.js';
@@ -34,6 +35,7 @@ export class UserNotificationsService {
     private readonly receivablesPayablesService: ReceivablesPayablesService,
     private readonly savingsGoalsService: SavingsGoalsService,
     private readonly announcementsService: AnnouncementsService,
+    private readonly mail: MailService,
   ) {}
 
   async feed(userId: string) {
@@ -57,16 +59,34 @@ export class UserNotificationsService {
     return { count };
   }
 
+  // monthlySummaryEmail: last month's summary by email on the 1st
+  // (src/monthly-summary); emailReady: whether email is set up yet, until
+  // when the app keeps that switch marked "Coming soon".
   async preferences(userId: string) {
-    const user = await this.prisma.user.findUniqueOrThrow({ where: { id: userId }, select: { remindBudget: true, remindLoans: true, remindSavings: true } });
-    return { budget: user.remindBudget, loans: user.remindLoans, savings: user.remindSavings };
+    const user = await this.prisma.user.findUniqueOrThrow({
+      where: { id: userId },
+      select: { remindBudget: true, remindLoans: true, remindSavings: true, monthlySummaryEmail: true },
+    });
+    return {
+      budget: user.remindBudget,
+      loans: user.remindLoans,
+      savings: user.remindSavings,
+      monthlySummaryEmail: user.monthlySummaryEmail,
+      emailReady: this.mail.configured,
+    };
   }
 
   // A reminder switched on is checked the next time the feed is read.
   async setPreferences(userId: string, dto: UpdateReminderPreferencesDto) {
     await this.prisma.user.update({
       where: { id: userId },
-      data: { remindBudget: dto.budget, remindLoans: dto.loans, remindSavings: dto.savings, remindersCheckedAt: null },
+      data: {
+        remindBudget: dto.budget,
+        remindLoans: dto.loans,
+        remindSavings: dto.savings,
+        monthlySummaryEmail: dto.monthlySummaryEmail,
+        remindersCheckedAt: null,
+      },
     });
     return this.preferences(userId);
   }

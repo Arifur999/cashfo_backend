@@ -60,6 +60,10 @@ The Google exchange is how a browser session becomes app tokens: Google returns 
 
 The site has one login page for everyone. `POST /api/auth/sign-in` (email and password) and `POST /api/auth/session/sign-in` (the Google landing page's cookie exchange) look the account's role up and hand it to the admin or the end-user side above, unchanged (`src/sign-in/`). The answer's `audience` -- `admin` or `user` -- says which kind of tokens came back, and so where the frontend sends the person next. The side-specific endpoints stay for clients that already use them.
 
+### Two-step sign-in
+
+Customers and admins can turn on two-step sign-in with an authenticator app (TOTP, RFC 6238; `src/two-step/`). When it is on, every way in -- password, Google, a customer password reset, on the unified and the side-specific endpoints -- ends the session the first step opened and answers `{ twoStepRequired: true, challengeToken, audience, expiresAt, email }` instead of tokens. `POST /api/auth/sign-in/two-step` with the code (or one of the ten single-use backup codes) finishes the sign-in. A challenge lasts five minutes and takes five tries. With `trustDevice: true` the answer also carries a `trustedDeviceToken`, which the frontend keeps in an httpOnly cookie and forwards as `x-trusted-device` on later sign-ins; those skip the code for 30 days, and a new password ends every trusted computer. With the `adminTwoStepRequired` setting on, an admin without two-step gets `{ twoStepSetupRequired: true, setupToken }` and sets it up before any token is issued. Admin invites (`src/admin-invites/`) turn it on while the invite is accepted.
+
 ### Client address
 
 `TRUST_PROXY` tells Express which proxies to believe (`src/common/trust-proxy.ts`); `req.ip` is then the real client for the login throttle, login history and audit log, and better-auth is handed the same address.

@@ -80,6 +80,15 @@ export async function seedDemoEndUsers(prisma: PrismaClient, plans: { id: string
         },
       });
     }
+    // The customer's plan (UserSubscription) matches their default
+    // workspace's, as the migration that added it back-filled.
+    if (defaultBusiness.planId) {
+      await prisma.userSubscription.upsert({
+        where: { userId: user.id },
+        create: { userId: user.id, planId: defaultBusiness.planId, status: 'ACTIVE' },
+        update: {},
+      });
+    }
     // Checked by account count, not "was this business just created" --
     // Prompt 4 added account-seeding after these test users already existed
     // from Prompt 1's original seed run, so this also retroactively backfills

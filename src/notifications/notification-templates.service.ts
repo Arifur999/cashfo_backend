@@ -1,5 +1,6 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { CreateNotificationTemplateDto } from './dto/create-notification-template.dto.js';
 import { UpdateNotificationTemplateDto } from './dto/update-notification-template.dto.js';
 
 @Injectable()
@@ -8,6 +9,41 @@ export class NotificationTemplatesService {
 
   list() {
     return this.prisma.notificationTemplate.findMany({ orderBy: { key: 'asc' } });
+  }
+
+  // A template made in the admin panel (one for a campaign, say). Keys are
+  // unique: the code and campaigns find a template by its key.
+  async create(dto: CreateNotificationTemplateDto, adminId: string, ipAddress?: string) {
+    const taken = await this.prisma.notificationTemplate.findUnique({ where: { key: dto.key }, select: { id: true } });
+    if (taken) {
+      throw new ConflictException('A template with this key already exists');
+    }
+
+    const result = await this.prisma.notificationTemplate.create({
+      data: {
+        key: dto.key,
+        channel: dto.channel,
+        subjectEn: dto.subjectEn?.trim() || null,
+        subjectBn: dto.subjectBn?.trim() || null,
+        bodyEn: dto.bodyEn,
+        bodyBn: dto.bodyBn,
+        variables: dto.variables ?? [],
+        isActive: dto.isActive ?? true,
+      },
+    });
+
+    await this.prisma.auditLog.create({
+      data: {
+        adminUserId: adminId,
+        action: 'NOTIFICATION_TEMPLATE_CREATED',
+        entityType: 'NotificationTemplate',
+        entityId: result.id,
+        newValue: { key: result.key, channel: result.channel, isActive: result.isActive },
+        ipAddress,
+      },
+    });
+
+    return result;
   }
 
   async update(id: string, dto: UpdateNotificationTemplateDto, adminId: string, ipAddress?: string) {

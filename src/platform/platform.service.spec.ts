@@ -31,3 +31,25 @@ describe('PlatformService.translations', () => {
     expect(Object.getPrototypeOf(bn)).toBe(Object.prototype);
   });
 });
+
+describe('PlatformService.publicInfo', () => {
+  it('carries the sign-up switch and both maintenance messages', async () => {
+    const settings = {
+      getCached: vi.fn().mockResolvedValue({
+        platformName: 'Smartly',
+        supportEmail: 'help@example.com',
+        signupsOpen: false,
+        maintenanceMode: true,
+        maintenanceMessage: 'Back soon',
+        maintenanceMessageBn: 'শীঘ্রই ফিরছি',
+      }),
+    };
+    const service = new PlatformService({} as never, settings as never, {} as never, {} as never, {} as never);
+    await expect(service.publicInfo()).resolves.toEqual({
+      platformName: 'Smartly',
+      supportEmail: 'help@example.com',
+      signupsOpen: false,
+      maintenance: { enabled: true, message: 'Back soon', messageBn: 'শীঘ্রই ফিরছি' },
+    });
+  });
+});
