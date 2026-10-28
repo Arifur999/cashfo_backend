@@ -13,6 +13,8 @@ import { CreateTransferDto } from './dto/create-transfer.dto.js';
 // right two entries to construct and lets that service do the real work
 // (including the debit=credit check, cross-workspace guard, and balance
 // recalculation).
+type PostedEntry = Awaited<ReturnType<TransactionsService['createTransaction']>>;
+
 @Injectable()
 export class QuickEntriesService {
   constructor(
@@ -20,12 +22,14 @@ export class QuickEntriesService {
     private readonly transactionsService: TransactionsService,
   ) {}
 
-  async createIncome(businessId: string, dto: CreateIncomeDto, userId: string, tx?: Prisma.TransactionClient) {
+  async createIncome(businessId: string, dto: CreateIncomeDto, userId: string, tx?: Prisma.TransactionClient): Promise<PostedEntry> {
+    // A charge is posted with it, in one database transaction.
+    if (dto.charge && !tx) return this.prisma.$transaction((client) => this.createIncome(businessId, dto, userId, client));
     const toAccount = await this.requireMoneyAccount(businessId, dto.toAccountId, 'toAccountId');
     const incomeAccountId = dto.incomeAccountId ?? (await this.getDefaultIncomeAccountId(businessId));
     const incomeAccount = await this.requireAccountOfType(businessId, incomeAccountId, 'INCOME', 'incomeAccountId');
 
-    return this.transactionsService.createTransaction(
+    const posted = await this.transactionsService.createTransaction(
       businessId,
       {
         transactionType: 'INCOME',
@@ -41,13 +45,24 @@ export class QuickEntriesService {
       userId,
       tx,
     );
+    if (dto.charge && tx) {
+      await this.transactionsService.postCharge(
+        tx,
+        businessId,
+        posted.id,
+        { amount: dto.charge, moneyAccountId: toAccount.id, date: dto.date, contactId: dto.contactId },
+        userId,
+      );
+    }
+    return posted;
   }
 
-  async createExpense(businessId: string, dto: CreateExpenseDto, userId: string, tx?: Prisma.TransactionClient) {
+  async createExpense(businessId: string, dto: CreateExpenseDto, userId: string, tx?: Prisma.TransactionClient): Promise<PostedEntry> {
+    if (dto.charge && !tx) return this.prisma.$transaction((client) => this.createExpense(businessId, dto, userId, client));
     const fromAccount = await this.requireMoneyAccount(businessId, dto.fromAccountId, 'fromAccountId');
     const expenseAccount = await this.requireAccountOfType(businessId, dto.expenseAccountId, 'EXPENSE', 'expenseAccountId');
 
-    return this.transactionsService.createTransaction(
+    const posted = await this.transactionsService.createTransaction(
       businessId,
       {
         transactionType: 'EXPENSE',
@@ -63,6 +78,16 @@ export class QuickEntriesService {
       userId,
       tx,
     );
+    if (dto.charge && tx) {
+      await this.transactionsService.postCharge(
+        tx,
+        businessId,
+        posted.id,
+        { amount: dto.charge, moneyAccountId: fromAccount.id, date: dto.date, contactId: dto.contactId },
+        userId,
+      );
+    }
+    return posted;
   }
 
   async createTransfer(businessId: string, dto: CreateTransferDto, userId: string, tx?: Prisma.TransactionClient) {
@@ -105,7 +130,13 @@ export class QuickEntriesService {
     return this.correct(businessId, transactionId, 'TRANSFER', userId, (tx) => this.createTransfer(businessId, dto, userId, tx));
   }
 
-  private correct<T extends { id: string }>(businessId: string, transactionId: string, kind: 'INCOME' | 'EXPENSE' | 'TRANSFER', userId: string, post: (tx: Prisma.TransactionClient) => Promise<T>) {
+  private correct<T extends { id: string }>(
+    businessId: string,
+    transactionId: string,
+    kind: 'INCOME' | 'EXPENSE' | 'TRANSFER',
+    userId: string,
+    post: (tx: Prisma.TransactionClient) => Promise<T>,
+  ) {
     return this.prisma.$transaction(async (tx) => {
       const original = await tx.transaction.findUnique({ where: { id: transactionId }, select: { businessId: true, transactionType: true } });
       if (!original || original.businessId !== businessId) {

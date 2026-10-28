@@ -46,6 +46,51 @@ export class ReceivablesPayablesController {
     return this.service.payPayment(businessId, dto, user.id);
   }
 
+  // Edit: the entry is voided 'Corrected' and this one posted in its place.
+  @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
+  @Post('receivables/:transactionId/correct')
+  correctSale(
+    @Param('businessId') businessId: string,
+    @Param('transactionId') transactionId: string,
+    @Body() dto: CreateReceivableDto,
+    @CurrentUser() user: RequestUser,
+  ) {
+    return this.service.correctSale(businessId, transactionId, dto, user.id);
+  }
+
+  @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
+  @Post('payables/:transactionId/correct')
+  correctPurchase(
+    @Param('businessId') businessId: string,
+    @Param('transactionId') transactionId: string,
+    @Body() dto: CreatePayableDto,
+    @CurrentUser() user: RequestUser,
+  ) {
+    return this.service.correctPurchase(businessId, transactionId, dto, user.id);
+  }
+
+  @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
+  @Post('payments/receive/:transactionId/correct')
+  correctReceivedPayment(
+    @Param('businessId') businessId: string,
+    @Param('transactionId') transactionId: string,
+    @Body() dto: ReceivePaymentDto,
+    @CurrentUser() user: RequestUser,
+  ) {
+    return this.service.correctReceivedPayment(businessId, transactionId, dto, user.id);
+  }
+
+  @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
+  @Post('payments/pay/:transactionId/correct')
+  correctPaidPayment(
+    @Param('businessId') businessId: string,
+    @Param('transactionId') transactionId: string,
+    @Body() dto: PayPaymentDto,
+    @CurrentUser() user: RequestUser,
+  ) {
+    return this.service.correctPaidPayment(businessId, transactionId, dto, user.id);
+  }
+
   @Get('contacts/:id/balance-detail')
   balanceDetail(@Param('businessId') businessId: string, @Param('id') id: string) {
     return this.service.getContactBalanceDetail(businessId, id);

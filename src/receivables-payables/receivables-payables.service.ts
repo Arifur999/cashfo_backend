@@ -157,6 +157,8 @@ const STATEMENT_POSTING_SELECT = {
 // "which two accounts, which direction" handed to
 // TransactionsService.createTransaction() -- same wrapper pattern as
 // Prompt 6's QuickEntriesService.
+type PostedEntry = Awaited<ReturnType<TransactionsService['createTransaction']>>;
+
 @Injectable()
 export class ReceivablesPayablesService {
   constructor(
@@ -173,7 +175,8 @@ export class ReceivablesPayablesService {
   // the entry against the AR account, so nothing downstream (aging,
   // the Loan Dashboard, the Trial Balance) needs to know which flavor
   // this was.
-  async recordSale(businessId: string, dto: CreateReceivableDto, userId: string) {
+  async recordSale(businessId: string, dto: CreateReceivableDto, userId: string, tx?: Prisma.TransactionClient): Promise<PostedEntry> {
+    if (!tx) return this.prisma.$transaction((client) => this.recordSale(businessId, dto, userId, client));
     const contact = await this.requireContact(businessId, dto.contactId);
     // The Customer/Supplier rule is for trade contacts only: a loan can be
     // given to (or taken from) any kind of loan contact, a Bank, an NGO or
@@ -182,23 +185,18 @@ export class ReceivablesPayablesService {
       throw new BadRequestException('This contact must be a Customer (or Customer & Supplier) to record a credit sale');
     }
     const arAccount = await this.requireSystemAccount(businessId, 'receivable', 'ASSET', 'Accounts Receivable');
+    const moneyAccountId = contact.category === 'LOAN' ? (await this.requireMoneyAccountForLoan(businessId, dto.moneyAccountId)).id : null;
 
-    const otherEntry =
-      contact.category === 'LOAN'
-        ? { accountId: (await this.requireMoneyAccountForLoan(businessId, dto.moneyAccountId)).id, entryType: 'CREDIT' as const }
-        : {
-            accountId: (
-              await this.requireAccountOfType(
-                businessId,
-                dto.incomeAccountId ?? (await this.getDefaultIncomeAccountId(businessId)),
-                'INCOME',
-                'incomeAccountId',
-              )
-            ).id,
-            entryType: 'CREDIT' as const,
-          };
+    const otherEntry = moneyAccountId
+      ? { accountId: moneyAccountId, entryType: 'CREDIT' as const }
+      : {
+          accountId: (
+            await this.requireAccountOfType(businessId, dto.incomeAccountId ?? (await this.getDefaultIncomeAccountId(businessId)), 'INCOME', 'incomeAccountId')
+          ).id,
+          entryType: 'CREDIT' as const,
+        };
 
-    return this.transactionsService.createTransaction(
+    const posted = await this.transactionsService.createTransaction(
       businessId,
       {
         transactionType: 'SALE',
@@ -213,14 +211,17 @@ export class ReceivablesPayablesService {
         ],
       },
       userId,
+      tx,
     );
+    return this.withCharge(tx, businessId, posted, dto, moneyAccountId, userId);
   }
 
   // Mirror of recordSale() above -- for BUSINESS this is a credit purchase
   // (expense recognized, Dr Expense / Cr Accounts Payable); for LOAN this
   // is taking out a loan (real cash lands in a money account right now,
   // none of it an expense: Dr the money account / Cr Accounts Payable).
-  async recordPurchase(businessId: string, dto: CreatePayableDto, userId: string) {
+  async recordPurchase(businessId: string, dto: CreatePayableDto, userId: string, tx?: Prisma.TransactionClient): Promise<PostedEntry> {
+    if (!tx) return this.prisma.$transaction((client) => this.recordPurchase(businessId, dto, userId, client));
     const contact = await this.requireContact(businessId, dto.contactId);
     // Trade contacts only, as in recordSale().
     if (contact.category !== 'LOAN' && contact.type !== 'SUPPLIER' && contact.type !== 'BOTH') {
@@ -228,19 +229,13 @@ export class ReceivablesPayablesService {
     }
     const apAccount = await this.requireSystemAccount(businessId, 'payable', 'LIABILITY', 'Accounts Payable');
 
+    const moneyAccountId = contact.category === 'LOAN' ? (await this.requireMoneyAccountForLoan(businessId, dto.moneyAccountId)).id : null;
     const debitAccountId =
-      contact.category === 'LOAN'
-        ? (await this.requireMoneyAccountForLoan(businessId, dto.moneyAccountId)).id
-        : (
-            await this.requireAccountOfType(
-              businessId,
-              dto.expenseAccountId ?? (await this.getDefaultExpenseAccountId(businessId)),
-              'EXPENSE',
-              'expenseAccountId',
-            )
-          ).id;
+      moneyAccountId ??
+      (await this.requireAccountOfType(businessId, dto.expenseAccountId ?? (await this.getDefaultExpenseAccountId(businessId)), 'EXPENSE', 'expenseAccountId'))
+        .id;
 
-    return this.transactionsService.createTransaction(
+    const posted = await this.transactionsService.createTransaction(
       businessId,
       {
         transactionType: 'PURCHASE',
@@ -255,20 +250,23 @@ export class ReceivablesPayablesService {
         ],
       },
       userId,
+      tx,
     );
+    return this.withCharge(tx, businessId, posted, dto, moneyAccountId, userId);
   }
 
-  async receivePayment(businessId: string, dto: ReceivePaymentDto, userId: string) {
+  async receivePayment(businessId: string, dto: ReceivePaymentDto, userId: string, tx?: Prisma.TransactionClient): Promise<PostedEntry> {
     const contact = await this.requireContact(businessId, dto.contactId);
     const arAccount = await this.requireSystemAccount(businessId, 'receivable', 'ASSET', 'Accounts Receivable');
     const moneyAccount = await this.requireMoneyAccount(businessId, dto.moneyAccountId);
 
     // Checked and posted under the contact's lock: two payments sent at
-    // once can't both fit under the same outstanding balance.
-    return this.transactionsService.withLocks([`contact:${contact.id}`], async (tx) => {
-      await this.validatePaymentAmount(businessId, contact, 'RECEIVABLE', dto.amount, dto.appliedToTransactionId, tx);
+    // once can't both fit under the same outstanding balance. A caller with
+    // its own transaction (an Edit) holds that lock already.
+    const post = async (client: Prisma.TransactionClient) => {
+      await this.validatePaymentAmount(businessId, contact, 'RECEIVABLE', dto.amount, dto.appliedToTransactionId, client);
 
-      return this.transactionsService.createTransaction(
+      const posted = await this.transactionsService.createTransaction(
         businessId,
         {
           transactionType: 'PAYMENT',
@@ -283,22 +281,25 @@ export class ReceivablesPayablesService {
           ],
         },
         userId,
-        tx,
+        client,
       );
-    });
+      return this.withCharge(client, businessId, posted, dto, moneyAccount.id, userId);
+    };
+    return tx ? post(tx) : this.transactionsService.withLocks([`contact:${contact.id}`], post);
   }
 
-  async payPayment(businessId: string, dto: PayPaymentDto, userId: string) {
+  async payPayment(businessId: string, dto: PayPaymentDto, userId: string, tx?: Prisma.TransactionClient): Promise<PostedEntry> {
     const contact = await this.requireContact(businessId, dto.contactId);
     const apAccount = await this.requireSystemAccount(businessId, 'payable', 'LIABILITY', 'Accounts Payable');
     const moneyAccount = await this.requireMoneyAccount(businessId, dto.moneyAccountId);
 
     // Checked and posted under the contact's lock: two payments sent at
-    // once can't both fit under the same outstanding balance.
-    return this.transactionsService.withLocks([`contact:${contact.id}`], async (tx) => {
-      await this.validatePaymentAmount(businessId, contact, 'PAYABLE', dto.amount, dto.appliedToTransactionId, tx);
+    // once can't both fit under the same outstanding balance. A caller with
+    // its own transaction (an Edit) holds that lock already.
+    const post = async (client: Prisma.TransactionClient) => {
+      await this.validatePaymentAmount(businessId, contact, 'PAYABLE', dto.amount, dto.appliedToTransactionId, client);
 
-      return this.transactionsService.createTransaction(
+      const posted = await this.transactionsService.createTransaction(
         businessId,
         {
           transactionType: 'PAYMENT',
@@ -313,9 +314,90 @@ export class ReceivablesPayablesService {
           ],
         },
         userId,
-        tx,
+        client,
       );
+      return this.withCharge(client, businessId, posted, dto, moneyAccount.id, userId);
+    };
+    return tx ? post(tx) : this.transactionsService.withLocks([`contact:${contact.id}`], post);
+  }
+
+  // Editing a loan or trade entry: the original is voided 'Corrected' (its
+  // charge with it) and the corrected one posted in the same database
+  // transaction under the contacts' locks, as Income & Expense's Edit does
+  // (QuickEntriesService.correct). An entry stays the kind it was.
+  correctSale(businessId: string, transactionId: string, dto: CreateReceivableDto, userId: string) {
+    return this.correct(businessId, transactionId, 'SALE', dto.contactId, userId, (tx) => this.recordSale(businessId, dto, userId, tx));
+  }
+
+  correctPurchase(businessId: string, transactionId: string, dto: CreatePayableDto, userId: string) {
+    return this.correct(businessId, transactionId, 'PURCHASE', dto.contactId, userId, (tx) => this.recordPurchase(businessId, dto, userId, tx));
+  }
+
+  correctReceivedPayment(businessId: string, transactionId: string, dto: ReceivePaymentDto, userId: string) {
+    return this.correct(businessId, transactionId, 'RECEIVED', dto.contactId, userId, (tx) => this.receivePayment(businessId, dto, userId, tx));
+  }
+
+  correctPaidPayment(businessId: string, transactionId: string, dto: PayPaymentDto, userId: string) {
+    return this.correct(businessId, transactionId, 'PAID', dto.contactId, userId, (tx) => this.payPayment(businessId, dto, userId, tx));
+  }
+
+  private async correct(
+    businessId: string,
+    transactionId: string,
+    kind: 'SALE' | 'PURCHASE' | 'RECEIVED' | 'PAID',
+    contactId: string,
+    userId: string,
+    post: (tx: Prisma.TransactionClient) => Promise<PostedEntry>,
+  ) {
+    const original = await this.prisma.transaction.findUnique({
+      where: { id: transactionId },
+      select: { businessId: true, transactionType: true, contactId: true, entries: { select: { account: { select: { accountSubtype: true } } } } },
     });
+    if (!original || original.businessId !== businessId) {
+      throw new NotFoundException('Transaction not found');
+    }
+    // A payment is money received when it settles Accounts Receivable.
+    const actual =
+      original.transactionType === 'PAYMENT'
+        ? original.entries.some((entry) => entry.account.accountSubtype === 'receivable')
+          ? 'RECEIVED'
+          : 'PAID'
+        : original.transactionType;
+    if (actual !== kind) {
+      throw new BadRequestException("This entry is of another kind, so it can't be corrected as this one");
+    }
+    const keys = [...new Set([original.contactId, contactId].filter((id): id is string => !!id))].map((id) => `contact:${id}`);
+    return this.transactionsService.withLocks(keys, async (tx) => {
+      await this.transactionsService.voidTransaction(businessId, transactionId, 'Corrected', userId, tx);
+      const corrected = await post(tx);
+      // So History can say what it corrected (and the original, what replaced it).
+      await tx.transaction.update({ where: { id: corrected.id }, data: { correctedFromId: transactionId } });
+      return { ...corrected, correctedFromId: transactionId };
+    });
+  }
+
+  // The entry's charge, when one was sent: only a loan entry has a wallet
+  // to pay it from (a trade sale or purchase moves no money).
+  private async withCharge(
+    tx: Prisma.TransactionClient,
+    businessId: string,
+    posted: PostedEntry,
+    dto: { charge?: number; date: string; contactId: string },
+    moneyAccountId: string | null,
+    userId: string,
+  ): Promise<PostedEntry> {
+    if (!dto.charge) return posted;
+    if (!moneyAccountId) {
+      throw new BadRequestException('A charge can only be paid with a loan entry, out of its wallet');
+    }
+    await this.transactionsService.postCharge(
+      tx,
+      businessId,
+      posted.id,
+      { amount: dto.charge, moneyAccountId, date: dto.date, contactId: dto.contactId },
+      userId,
+    );
+    return posted;
   }
 
   async getContactBalanceDetail(businessId: string, contactId: string) {
@@ -383,7 +465,10 @@ export class ReceivablesPayablesService {
     let balanceBroughtForward = new Prisma.Decimal(contact.openingBalance);
     if (filters.dateFrom && accountIds.length > 0) {
       const priorEntries = await this.prisma.transactionEntry.findMany({
-        where: { accountId: { in: accountIds }, transaction: { contactId, status: 'POSTED', reversalOfId: null, transactionDate: { lt: new Date(filters.dateFrom) } } },
+        where: {
+          accountId: { in: accountIds },
+          transaction: { contactId, status: 'POSTED', reversalOfId: null, transactionDate: { lt: new Date(filters.dateFrom) } },
+        },
       });
       for (const entry of priorEntries) {
         const amount = new Prisma.Decimal(entry.amount);
@@ -409,7 +494,14 @@ export class ReceivablesPayablesService {
     // Profit or interest paid to or received from them: an expense or an
     // income with this contact (never a reversal, which only undoes one).
     const profits = await this.prisma.transaction.findMany({
-      where: { businessId, contactId, transactionType: { in: ['INCOME', 'EXPENSE'] }, reversalOfId: null, ...(dateFilter && { transactionDate: dateFilter }) },
+      where: {
+        businessId,
+        contactId,
+        transactionType: { in: ['INCOME', 'EXPENSE'] },
+        reversalOfId: null,
+        chargeForId: null,
+        ...(dateFilter && { transactionDate: dateFilter }),
+      },
       include: { entries: { where: { entryType: 'DEBIT' }, select: { amount: true } } },
     });
 
@@ -417,7 +509,11 @@ export class ReceivablesPayablesService {
     // moves the balance (loan-statement.ts).
     const items: LoanStatementItem[] = [
       ...entries.map((entry) => ({ transaction: entry.transaction, principal: entry })),
-      ...profits.map((transaction) => ({ transaction, principal: null, profit: transaction.entries.reduce((sum, entry) => sum.plus(entry.amount), new Prisma.Decimal(0)) })),
+      ...profits.map((transaction) => ({
+        transaction,
+        principal: null,
+        profit: transaction.entries.reduce((sum, entry) => sum.plus(entry.amount), new Prisma.Decimal(0)),
+      })),
     ];
     const rows: LoanStatementRow[] = loanStatementRows(items, balanceBroughtForward);
 
@@ -455,10 +551,18 @@ export class ReceivablesPayablesService {
     // Before the period only to carry its balance forward. Sequential, for
     // the connection-pool reason getContactBalanceDetail() gives.
     const prior = filters.dateFrom
-      ? await this.prisma.transaction.findMany({ where: { ...where, transactionDate: { lt: new Date(filters.dateFrom) } }, select: STATEMENT_POSTING_SELECT, orderBy })
+      ? await this.prisma.transaction.findMany({
+          where: { ...where, transactionDate: { lt: new Date(filters.dateFrom) } },
+          select: STATEMENT_POSTING_SELECT,
+          orderBy,
+        })
       : [];
     const periodDates = transactionDateWindow(filters);
-    const period = await this.prisma.transaction.findMany({ where: { ...where, ...(periodDates && { transactionDate: periodDates }) }, select: STATEMENT_POSTING_SELECT, orderBy });
+    const period = await this.prisma.transaction.findMany({
+      where: { ...where, ...(periodDates && { transactionDate: periodDates }) },
+      select: STATEMENT_POSTING_SELECT,
+      orderBy,
+    });
 
     return {
       contactId,
@@ -605,7 +709,14 @@ export class ReceivablesPayablesService {
     const today = todayUtcMidnight();
     const horizon = today.getTime() + days * DAY_MS;
     const due = await this.prisma.transaction.findMany({
-      where: { businessId, transactionType: { in: ['SALE', 'PURCHASE'] }, status: 'POSTED', reversalOfId: null, contactId: { not: null }, dueDate: { gte: today, lte: new Date(horizon) } },
+      where: {
+        businessId,
+        transactionType: { in: ['SALE', 'PURCHASE'] },
+        status: 'POSTED',
+        reversalOfId: null,
+        contactId: { not: null },
+        dueDate: { gte: today, lte: new Date(horizon) },
+      },
       select: { contactId: true },
       distinct: ['contactId'],
     });
@@ -613,7 +724,10 @@ export class ReceivablesPayablesService {
     const contacts = await this.prisma.contact.findMany({ where: { businessId, id: { in: due.map((row) => row.contactId as string) } } });
 
     const rows: DueReminderRow[] = [];
-    const sides = { RECEIVABLE: await this.computeDirections(businessId, contacts, 'RECEIVABLE'), PAYABLE: await this.computeDirections(businessId, contacts, 'PAYABLE') };
+    const sides = {
+      RECEIVABLE: await this.computeDirections(businessId, contacts, 'RECEIVABLE'),
+      PAYABLE: await this.computeDirections(businessId, contacts, 'PAYABLE'),
+    };
     for (const contact of contacts) {
       for (const direction of ['RECEIVABLE', 'PAYABLE'] as const) {
         const breakdown = sides[direction].get(contact.id)!;
@@ -655,7 +769,15 @@ export class ReceivablesPayablesService {
 
     // Profit or interest with a loan contact, posted and not undone.
     const profitPostings = await this.prisma.transaction.findMany({
-      where: { businessId, contactId: { not: null }, contact: { category: 'LOAN' }, transactionType: { in: ['INCOME', 'EXPENSE'] }, status: 'POSTED', reversalOfId: null },
+      where: {
+        businessId,
+        contactId: { not: null },
+        contact: { category: 'LOAN' },
+        transactionType: { in: ['INCOME', 'EXPENSE'] },
+        status: 'POSTED',
+        reversalOfId: null,
+        chargeForId: null,
+      },
       select: { contactId: true, transactionDate: true, transactionType: true, entries: { where: { entryType: 'DEBIT' }, select: { amount: true } } },
     });
     const profit = profitTotals(
@@ -718,7 +840,13 @@ export class ReceivablesPayablesService {
       netBalance: totalPawna.minus(totalDena).toFixed(2),
       activeAccounts: rows.length,
       profitPaidThisYear: profit.paidThisYear.toFixed(2),
-      topProfit: profit.top ? { contactId: profit.top.contactId, contactName: contacts.find((contact) => contact.id === profit.top?.contactId)?.name ?? '', monthly: profit.top.monthly.toFixed(2) } : null,
+      topProfit: profit.top
+        ? {
+            contactId: profit.top.contactId,
+            contactName: contacts.find((contact) => contact.id === profit.top?.contactId)?.name ?? '',
+            monthly: profit.top.monthly.toFixed(2),
+          }
+        : null,
       rows,
     };
   }
@@ -801,7 +929,10 @@ export class ReceivablesPayablesService {
     const receivable = await this.computeDirections(businessId, contacts, 'RECEIVABLE');
     const payable = await this.computeDirections(businessId, contacts, 'PAYABLE');
     return new Map(
-      contacts.map((contact) => [contact.id, new Prisma.Decimal(contact.openingBalance).plus(receivable.get(contact.id)!.balance).minus(payable.get(contact.id)!.balance)]),
+      contacts.map((contact) => [
+        contact.id,
+        new Prisma.Decimal(contact.openingBalance).plus(receivable.get(contact.id)!.balance).minus(payable.get(contact.id)!.balance),
+      ]),
     );
   }
 
