@@ -42,8 +42,11 @@ export class NotificationTemplatesService {
     return { sentTo: admin.email };
   }
 
-  list() {
-    return this.prisma.notificationTemplate.findMany({ orderBy: { key: 'asc' } });
+  // builtIn: one every install starts with, which can be turned off but not
+  // deleted.
+  async list() {
+    const templates = await this.prisma.notificationTemplate.findMany({ orderBy: { key: 'asc' } });
+    return templates.map((template) => ({ ...template, builtIn: BUILT_IN_TEMPLATE_KEYS.includes(template.key) }));
   }
 
   // A template made in the admin panel (one for a campaign, say). Keys are
