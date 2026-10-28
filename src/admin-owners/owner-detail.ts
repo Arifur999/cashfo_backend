@@ -70,7 +70,7 @@ export async function ownerExtras(
       where: { platformUserId: userId },
       orderBy: { updatedAt: 'desc' },
       take: 5,
-      select: { id: true, subject: true, status: true, priority: true, category: true, createdAt: true, updatedAt: true },
+      select: { id: true, number: true, subject: true, status: true, priority: true, category: true, createdAt: true, updatedAt: true },
     }),
     prisma.supportTicket.groupBy({ by: ['status'], where: { platformUserId: userId }, _count: true }),
     prisma.userSession.findMany({ where: { userId }, orderBy: { lastUsedAt: 'desc' }, take: 10 }),

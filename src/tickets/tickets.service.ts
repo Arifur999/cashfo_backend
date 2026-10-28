@@ -12,6 +12,10 @@ import { ListTicketsQueryDto, TICKET_STATUS_GROUPS, UNASSIGNED, type TicketStatu
 import { UpdateTicketDto } from './dto/update-ticket.dto.js';
 
 const RESOLVED_STATUSES: TicketStatus[] = [TicketStatus.RESOLVED, TicketStatus.CLOSED];
+const DAY_MS = 24 * 60 * 60 * 1000;
+// Waiting on the customer this long with nothing new: closed.
+export const QUIET_DAYS = 7;
+const QUIET_SWEEP_EVERY_MS = 30 * 60 * 1000;
 
 // A list row's newest message: it says whether the user is waiting on an
 // answer. Notes for admins are left out: the customer never saw them, so
@@ -63,6 +67,9 @@ export interface Requester {
   name: string;
   email: string;
   plan: { id: string; name: string } | null;
+  // A customer's: when they joined and the language they read the app in.
+  joinedAt?: Date;
+  language?: string | null;
 }
 
 // Where a ticket goes after an admin writes on it: the status they picked,
@@ -75,6 +82,8 @@ const isStatusGroup = (status: TicketStatusFilter): status is keyof typeof TICKE
 @Injectable()
 export class TicketsService {
   private readonly logger = new Logger(TicketsService.name);
+  // When quiet tickets were last closed (closeQuietTickets()).
+  private quietSweepAt = 0;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -82,7 +91,22 @@ export class TicketsService {
     private readonly configService: ConfigService,
   ) {}
 
+  // A ticket answered and left waiting on the customer for QUIET_DAYS with
+  // nothing new is closed. There is no job scheduler: it runs when the team
+  // reads the queue, at most every half hour.
+  async closeQuietTickets(now = Date.now()) {
+    if (now - this.quietSweepAt < QUIET_SWEEP_EVERY_MS) return 0;
+    this.quietSweepAt = now;
+    const { count } = await this.prisma.supportTicket.updateMany({
+      where: { status: TicketStatus.WAITING_ON_USER, updatedAt: { lt: new Date(now - QUIET_DAYS * DAY_MS) } },
+      data: { status: TicketStatus.CLOSED, resolvedAt: new Date(now) },
+    });
+    if (count > 0) this.logger.log(`Closed ${count} ticket(s) quiet for ${QUIET_DAYS} days`);
+    return count;
+  }
+
   async list(query: ListTicketsQueryDto) {
+    await this.closeQuietTickets();
     const page = query.page ?? 1;
     const limit = query.limit ?? 10;
 
@@ -103,7 +127,13 @@ export class TicketsService {
         this.prisma.platformUser.findMany({ where: nameOrEmail, select: { id: true } }),
       ]);
       const requesterIds = [...customers, ...legacyUsers].map((u) => u.id);
-      where.OR = [{ subject: { contains: query.search, mode: 'insensitive' } }, { platformUserId: { in: requesterIds } }];
+      // "#482" or "482" also finds the ticket by its number.
+      const ticketNumber = /^#?(\d{1,9})$/.exec(query.search.trim())?.[1];
+      where.OR = [
+        { subject: { contains: query.search, mode: 'insensitive' } },
+        { platformUserId: { in: requesterIds } },
+        ...(ticketNumber ? [{ number: Number(ticketNumber) }] : []),
+      ];
     }
 
     // sort=waiting ranks the tickets owing a reply first, then by priority,
@@ -200,7 +230,14 @@ export class TicketsService {
       // Who wrote in, named as a feature request names its requester:
       // isCustomer when it is a customer's account, whose record the page
       // can open by this id; a legacy platform user has none.
-      requester: person && { id: person.id, name: person.name, email: person.email, isCustomer: customerIds.has(person.id) },
+      requester: person && {
+        id: person.id,
+        name: person.name,
+        email: person.email,
+        isCustomer: customerIds.has(person.id),
+        joinedAt: person.joinedAt ?? null,
+        language: person.language ?? null,
+      },
       assignedAdmin,
       requesterTickets: { total, solved },
     };
@@ -362,6 +399,7 @@ export class TicketsService {
   // unassigned, what is in progress and stale, what waits on the user, what
   // got solved this week and how fast the first reply came.
   async stats() {
+    await this.closeQuietTickets();
     const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
     const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     const monthAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
@@ -469,11 +507,13 @@ export class TicketsService {
         id: true,
         name: true,
         email: true,
+        createdAt: true,
+        preferredLanguage: true,
         ownedBusinesses: { where: { isDefault: true, deletedAt: null }, select: { plan: { select: { id: true, name: true } } }, take: 1 },
       },
     });
     const found = new Map<string, Requester>(
-      customers.map((u) => [u.id, { id: u.id, name: u.name, email: u.email, plan: u.ownedBusinesses[0]?.plan ?? null }]),
+      customers.map((u) => [u.id, { id: u.id, name: u.name, email: u.email, plan: u.ownedBusinesses[0]?.plan ?? null, joinedAt: u.createdAt, language: u.preferredLanguage }]),
     );
 
     const missing = unique.filter((id) => !found.has(id));

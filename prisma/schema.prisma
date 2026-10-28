@@ -368,6 +368,9 @@ model Announcement {
   startAt    DateTime
   endAt      DateTime?
   isActive   Boolean          @default(true)
+  // Where the banner's "Try it" goes: a page of the app ("/habit-tracker")
+  // or an https address. Null = no link.
+  linkUrl    String?
   createdBy  String // AdminUser id
   createdAt  DateTime         @default(now())
 }
@@ -425,6 +428,8 @@ enum LegalDocVersionStatus {
 
 model SupportTicket {
   id                String          @id @default(uuid())
+  // Its short number for people ("ticket #482"), counted up from 1.
+  number            Int             @unique @default(autoincrement())
   platformUserId    String
   subject           String
   category          TicketCategory

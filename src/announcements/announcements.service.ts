@@ -39,7 +39,7 @@ export class AnnouncementsService {
         AND: [{ OR: [{ endAt: null }, { endAt: { gt: now } }] }, { OR: [{ targetPlan: null }, { targetPlan: { in: planIds } }] }],
       },
       orderBy: { startAt: 'desc' },
-      select: { id: true, title: true, titleBn: true, body: true, bodyBn: true, type: true, startAt: true, endAt: true },
+      select: { id: true, title: true, titleBn: true, body: true, bodyBn: true, type: true, startAt: true, endAt: true, linkUrl: true },
     });
     return rows;
   }
@@ -59,6 +59,7 @@ export class AnnouncementsService {
         targetPlan: dto.targetPlan,
         startAt: new Date(dto.startAt),
         endAt: dto.endAt ? new Date(dto.endAt) : undefined,
+        linkUrl: dto.linkUrl || null,
         createdBy: adminId,
       },
     });
@@ -85,8 +86,26 @@ export class AnnouncementsService {
         ...(dto.startAt !== undefined && { startAt }),
         ...(dto.endAt !== undefined && { endAt }),
         ...(dto.isActive !== undefined && { isActive: dto.isActive }),
+        ...(dto.linkUrl !== undefined && { linkUrl: dto.linkUrl || null }),
       },
     });
+  }
+
+  // Gone from the apps at once; the audit log keeps what it said.
+  async remove(id: string, adminId: string, ipAddress?: string) {
+    const existing = await this.requireAnnouncement(id);
+    await this.prisma.announcement.delete({ where: { id } });
+    await this.prisma.auditLog.create({
+      data: {
+        adminUserId: adminId,
+        action: 'ANNOUNCEMENT_DELETED',
+        entityType: 'Announcement',
+        entityId: id,
+        oldValue: { title: existing.title, type: existing.type, startAt: existing.startAt.toISOString(), isActive: existing.isActive },
+        ipAddress,
+      },
+    });
+    return { id };
   }
 
   private async requireAnnouncement(id: string) {

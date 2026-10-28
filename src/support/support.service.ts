@@ -10,6 +10,7 @@ import { subjectOf } from './subject.js';
 // come from attachment()).
 const CONVERSATION_SELECT = {
   id: true,
+  number: true,
   subject: true,
   category: true,
   status: true,

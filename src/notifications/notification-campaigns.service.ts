@@ -173,6 +173,24 @@ export class NotificationCampaignsService {
     }
   }
 
+  // A campaign that never sent (a draft, one scheduled, or one cancelled)
+  // can go; a sent one stays, with its log, as the record of who got what.
+  async remove(id: string, adminId: string, ipAddress?: string) {
+    const campaign = await this.requireCampaign(id);
+    const unsent: CampaignStatus[] = ['DRAFT', 'SCHEDULED', 'CANCELLED'];
+    if (!unsent.includes(campaign.status)) {
+      throw new BadRequestException("A sent campaign stays as a record and can't be deleted");
+    }
+    // Guarded on the status read above, as cancel() is: a send that started
+    // in between wins.
+    const { count } = await this.prisma.bulkNotificationCampaign.deleteMany({ where: { id, status: campaign.status } });
+    if (count === 0) throw new ConflictException('This campaign has just started sending');
+    await this.prisma.auditLog.create({
+      data: { adminUserId: adminId, action: 'CAMPAIGN_DELETED', entityType: 'BulkNotificationCampaign', entityId: id, oldValue: { title: campaign.title, status: campaign.status }, ipAddress },
+    });
+    return { id };
+  }
+
   async cancel(id: string, adminId: string, ipAddress?: string) {
     const campaign = await this.requireCampaign(id);
     if (!SENDABLE_STATUSES.includes(campaign.status)) {

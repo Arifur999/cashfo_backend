@@ -265,7 +265,7 @@ export class PaymentsService {
             },
             orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
             take: 10,
-            select: { id: true, subject: true, status: true, priority: true, category: true, createdAt: true },
+            select: { id: true, number: true, subject: true, status: true, priority: true, category: true, createdAt: true },
           })
         : [],
     ]);

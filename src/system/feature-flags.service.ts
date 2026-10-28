@@ -31,13 +31,13 @@ export class FeatureFlagsService {
     return Object.fromEntries(flags.map((flag) => [flag.key, this.isOnFor(flag, userId, planIds)]));
   }
 
-  async create(dto: CreateFeatureFlagDto, adminId: string) {
+  async create(dto: CreateFeatureFlagDto, adminId: string, ipAddress?: string) {
     const existing = await this.prisma.featureFlag.findUnique({ where: { key: dto.key } });
     if (existing) {
       throw new ConflictException('A feature flag with this key already exists');
     }
 
-    return this.prisma.featureFlag.create({
+    const result = await this.prisma.featureFlag.create({
       data: {
         key: dto.key,
         name: dto.name,
@@ -48,6 +48,19 @@ export class FeatureFlagsService {
         updatedBy: adminId,
       },
     });
+    // A new flag can switch a feature on for people at once, so it is
+    // logged like a change to one.
+    await this.prisma.auditLog.create({
+      data: {
+        adminUserId: adminId,
+        action: 'FEATURE_FLAG_CREATED',
+        entityType: 'FeatureFlag',
+        entityId: result.id,
+        newValue: { key: result.key, isEnabled: result.isEnabled, rolloutPercent: result.rolloutPercent, targetPlanIds: result.targetPlanIds },
+        ipAddress,
+      },
+    });
+    return result;
   }
 
   async update(id: string, dto: UpdateFeatureFlagDto, adminId: string, ipAddress?: string) {

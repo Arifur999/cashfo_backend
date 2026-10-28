@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { unlink, writeFile } from 'node:fs/promises';
+import { readdir, stat, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -10,7 +10,8 @@ import { PrismaService } from '../prisma/prisma.service.js';
 export interface SystemHealth {
   // This answer came from a running server.
   api: 'up';
-  database: { ok: boolean; latencyMs: number | null };
+  // sizeBytes: the whole database on disk (null when it can't be read).
+  database: { ok: boolean; latencyMs: number | null; sizeBytes: number | null };
   // configured: RESEND_API_KEY is set. lastSendAt/lastSendOk: this server's
   // most recent send (null before the first, or after a restart).
   email: { configured: boolean; lastSendAt: Date | null; lastSendOk: boolean | null };
@@ -21,7 +22,25 @@ export interface SystemHealth {
   // (a test file is written and deleted). imageHostConfigured:
   // IMGBB_API_KEY is set -- photos, avatars and screenshots go to imgbb,
   // not this disk, and fail without it.
-  storage: { writable: boolean; path: string; imageHostConfigured: boolean };
+  // sizeBytes: what the uploads folder holds, counted at most every ten
+  // minutes (null when it can't be read).
+  storage: { writable: boolean; path: string; imageHostConfigured: boolean; sizeBytes: number | null };
+}
+
+const SIZE_EVERY_MS = 10 * 60 * 1000;
+// Past this many files the count stops: a rough size is enough here.
+const MAX_FILES = 50_000;
+
+// The bytes a folder holds, its subfolders included.
+export async function folderSize(dir: string, budget = { files: MAX_FILES }): Promise<number> {
+  let total = 0;
+  for (const entry of await readdir(dir, { withFileTypes: true })) {
+    if (budget.files-- <= 0) break;
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) total += await folderSize(path, budget);
+    else if (entry.isFile()) total += (await stat(path)).size;
+  }
+  return total;
 }
 
 // The folder main.ts serves at /uploads (a Docker volume in production).
@@ -44,6 +63,8 @@ export async function isWritable(dir: string): Promise<boolean> {
 // payment gateway are set up, and whether file storage works.
 @Injectable()
 export class SystemHealthService {
+  private storageSize: { at: number; bytes: number | null } | null = null;
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly mail: MailService,
@@ -56,18 +77,24 @@ export class SystemHealthService {
     let database: SystemHealth['database'];
     try {
       await this.prisma.$queryRaw`SELECT 1`;
-      database = { ok: true, latencyMs: Date.now() - started };
+      database = { ok: true, latencyMs: Date.now() - started, sizeBytes: null };
+      const [{ bytes }] = await this.prisma.$queryRaw<{ bytes: bigint }[]>`SELECT pg_database_size(current_database()) AS "bytes"`;
+      database.sizeBytes = Number(bytes);
     } catch {
-      database = { ok: false, latencyMs: null };
+      database ??= { ok: false, latencyMs: null, sizeBytes: null };
     }
     const last = this.mail.lastSend;
-    const writable = await isWritable(join(process.cwd(), UPLOADS_DIR));
+    const uploads = join(process.cwd(), UPLOADS_DIR);
+    const writable = await isWritable(uploads);
+    if (!this.storageSize || Date.now() - this.storageSize.at > SIZE_EVERY_MS) {
+      this.storageSize = { at: Date.now(), bytes: await folderSize(uploads).catch(() => null) };
+    }
     return {
       api: 'up',
       database,
       email: { configured: this.mail.configured, lastSendAt: last?.at ?? null, lastSendOk: last?.ok ?? null },
       paymentGateway: { configured: this.gateways.anyConfigured() },
-      storage: { writable, path: UPLOADS_DIR, imageHostConfigured: Boolean(this.config.get<string>('IMGBB_API_KEY')) },
+      storage: { writable, path: UPLOADS_DIR, imageHostConfigured: Boolean(this.config.get<string>('IMGBB_API_KEY')), sizeBytes: this.storageSize.bytes },
     };
   }
 }

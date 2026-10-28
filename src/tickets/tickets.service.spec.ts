@@ -53,6 +53,8 @@ const CUSTOMER = {
   id: 'cust-rahim',
   name: 'Rahim Uddin',
   email: 'rahim@example.com',
+  createdAt: new Date('2026-03-12T00:00:00.000Z'),
+  preferredLanguage: 'BN',
   role: 'USER',
   ownedBusinesses: [{ plan: { id: 'plan-pro', name: 'Monthly Pro' } }],
 };
@@ -117,6 +119,7 @@ const fakePrisma = (tickets: Ticket[]) => {
         return found ? shape(found, args) : null;
       }),
       count: vi.fn(async (args: FindArgs = {}) => tickets.filter((t) => matches(t, args.where)).length),
+      updateMany: vi.fn(async () => ({ count: 0 })),
       groupBy: vi.fn(async ({ by: [field] }: { by: (keyof Ticket)[] }) => {
         const counts = new Map<unknown, number>();
         for (const t of tickets) counts.set(t[field], (counts.get(t[field]) ?? 0) + 1);
@@ -316,9 +319,16 @@ describe('TicketsService.getById', () => {
     const { service } = setup([ticket('t1', { messages: [asked(2)] }), ticket('t0', { status: 'RESOLVED' })]);
     const result = await service.getById('t1');
 
-    expect(result.requester).toEqual({ id: 'cust-rahim', name: 'Rahim Uddin', email: 'rahim@example.com', isCustomer: true });
-    // What the page reads today is unchanged.
-    expect(result.platformUser).toEqual({ id: 'cust-rahim', name: 'Rahim Uddin', email: 'rahim@example.com', plan: { id: 'plan-pro', name: 'Monthly Pro' } });
+    // With when they joined and their language, for the From card.
+    expect(result.requester).toEqual({
+      id: 'cust-rahim',
+      name: 'Rahim Uddin',
+      email: 'rahim@example.com',
+      isCustomer: true,
+      joinedAt: new Date('2026-03-12T00:00:00.000Z'),
+      language: 'BN',
+    });
+    expect(result.platformUser).toMatchObject({ id: 'cust-rahim', name: 'Rahim Uddin', email: 'rahim@example.com', plan: { id: 'plan-pro', name: 'Monthly Pro' } });
     expect(result).toMatchObject({ id: 't1', assignedAdmin: null, requesterTickets: { total: 1, solved: 1 } });
     expect(result.messages).toHaveLength(1);
   });
@@ -327,7 +337,7 @@ describe('TicketsService.getById', () => {
     const { service } = setup([ticket('t1', { platformUserId: 'legacy-karim' })]);
     const result = await service.getById('t1');
 
-    expect(result.requester).toEqual({ id: 'legacy-karim', name: 'Karim Mia', email: 'karim@example.com', isCustomer: false });
+    expect(result.requester).toEqual({ id: 'legacy-karim', name: 'Karim Mia', email: 'karim@example.com', isCustomer: false, joinedAt: null, language: null });
     expect(result.platformUser).toEqual({ id: 'legacy-karim', name: 'Karim Mia', email: 'karim@example.com', plan: null });
   });
 
@@ -456,5 +466,22 @@ describe('ListTicketsQueryDto', () => {
   it('refuses a flag that is neither true nor false, and any other sort', async () => {
     expect((await parse({ awaitingReply: 'yes', sort: 'newest' })).errors).toEqual(['awaitingReply', 'sort']);
     expect((await parse({ awaitingReply: '', sort: '' })).errors).toEqual(['awaitingReply', 'sort']);
+  });
+});
+
+describe('TicketsService.closeQuietTickets', () => {
+  it('closes tickets left waiting on the customer for a week, at most every half hour', async () => {
+    const { service, prisma } = setup([]);
+    prisma.supportTicket.updateMany.mockResolvedValue({ count: 2 });
+    const now = Date.UTC(2026, 9, 28, 6);
+    await expect(service.closeQuietTickets(now)).resolves.toBe(2);
+    expect(prisma.supportTicket.updateMany).toHaveBeenCalledWith({
+      where: { status: 'WAITING_ON_USER', updatedAt: { lt: new Date(now - 7 * 24 * 60 * 60 * 1000) } },
+      data: { status: 'CLOSED', resolvedAt: new Date(now) },
+    });
+    await expect(service.closeQuietTickets(now + 10 * 60 * 1000)).resolves.toBe(0);
+    expect(prisma.supportTicket.updateMany).toHaveBeenCalledTimes(1);
+    await service.closeQuietTickets(now + 31 * 60 * 1000);
+    expect(prisma.supportTicket.updateMany).toHaveBeenCalledTimes(2);
   });
 });
