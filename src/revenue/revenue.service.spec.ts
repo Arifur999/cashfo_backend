@@ -1,6 +1,6 @@
 import { RevenueService } from './revenue.service.js';
 
-vi.mock('./mrr.js', () => ({ computeMrr: vi.fn().mockResolvedValue(299), PAYING_WORKSPACE_WHERE: {} }));
+vi.mock('./mrr.js', () => ({ computeMrr: vi.fn().mockResolvedValue(299), PAID_SUBSCRIPTION_WHERE: {} }));
 
 const NOW = new Date('2026-10-20T06:00:00.000Z');
 

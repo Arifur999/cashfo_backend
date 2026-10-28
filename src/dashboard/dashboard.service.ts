@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { BillingCycle, FlagStatus, Prisma, Severity, UserStatus } from '@prisma/client';
+import { FlagStatus, Prisma, Severity, UserStatus } from '@prisma/client';
 import { AnalyticsService } from '../analytics/analytics.service.js';
 import { dhakaDateKey } from '../common/dhaka.js';
 import { AdminRole, END_USER_WHERE } from '../common/roles.js';
@@ -7,6 +7,7 @@ import { requesterNames } from '../admin-feed/requester-names.js';
 import { auditReason, withEntityLabels } from '../audit-logs/audit-entity-labels.js';
 import { SystemHealthService } from '../health/system-health.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { PAID_SUBSCRIPTION_WHERE } from '../revenue/mrr.js';
 import { RevenueService } from '../revenue/revenue.service.js';
 import { accountsByPlan, type DashboardPeriod, lastFullMonths, perDhakaDay, periodDays, shareOf, ticketsNoReply, waitingForReply } from './dashboard-maths.js';
 
@@ -131,12 +132,8 @@ export class DashboardService {
       this.revenue.overview(),
       this.revenue.summary(),
       // Paid = a paid plan, active or in its grace days, on a live account
-      // (a trial is not paid).
-      this.prisma.userSubscription.groupBy({
-        by: ['planId'],
-        where: { status: { in: ['ACTIVE', 'PAST_DUE'] }, plan: { billingCycle: { not: BillingCycle.FREE } }, user: { ...END_USER_WHERE, status: UserStatus.ACTIVE } },
-        _count: true,
-      }),
+      // (a trial is not paid): the same people MRR is counted from.
+      this.prisma.userSubscription.groupBy({ by: ['planId'], where: PAID_SUBSCRIPTION_WHERE, _count: true }),
       this.prisma.subscriptionPlan.findMany({ orderBy: { displayOrder: 'asc' }, select: { id: true, name: true, price: true, billingCycle: true } }),
       this.prisma.userSubscription.groupBy({ by: ['planId'], where: { user: { ...SIGNED_UP, status: { notIn: DELETED_STATUSES } } }, _count: true }),
       this.prisma.user.count({ where: { ...SIGNED_UP, status: { notIn: DELETED_STATUSES }, subscription: null } }),

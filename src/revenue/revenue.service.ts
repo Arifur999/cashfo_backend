@@ -4,7 +4,7 @@ import { dhakaDateKey, dhakaMonthStart, dhakaToday } from '../common/dhaka.js';
 import { payerIdOf } from '../admin-feed/requester-names.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { monthEnds, paidPeopleAt } from '../subscription-plans/plan-history.js';
-import { computeMrr, PAYING_WORKSPACE_WHERE } from './mrr.js';
+import { computeMrr, PAID_SUBSCRIPTION_WHERE } from './mrr.js';
 
 // Payments that brought money in: refunds are subtracted separately.
 const REVENUE_STATUSES: PaymentStatus[] = [PaymentStatus.SUCCESS, PaymentStatus.REFUNDED];
@@ -92,7 +92,7 @@ export class RevenueService {
     const thisMonthStart = dhakaMonthStart(year, month);
 
     const freePlan = await this.prisma.subscriptionPlan.findFirst({ where: { billingCycle: BillingCycle.FREE } });
-    const currentPaidCount = await this.prisma.business.count({ where: PAYING_WORKSPACE_WHERE });
+    const currentPaidCount = await this.prisma.userSubscription.count({ where: PAID_SUBSCRIPTION_WHERE });
 
     let churnedThisMonth = 0;
     if (freePlan) {
@@ -129,7 +129,7 @@ export class RevenueService {
   }
 
   // The Revenue page: MRR and ARR as the dashboard counts them (from the
-  // workspaces' plans), and everything the payments themselves tell --
+  // paid subscriptions), and everything the payments themselves tell --
   // paid people at each of the last six month ends and the MRR they
   // carried, who joined and left this month, this month's takings by
   // plan, its refunds and what coupons cost.
