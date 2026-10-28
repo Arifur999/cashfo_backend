@@ -125,7 +125,9 @@ export class AccountBalanceService {
       this.prisma.transactionEntry.count({ where }),
       this.prisma.transactionEntry.findMany({
         where,
-        include: { transaction: true },
+        // The transaction's other legs name where the money came from or
+        // went to (a statement's particulars).
+        include: { transaction: { include: { entries: { select: { accountId: true, categoryId: true, account: { select: { name: true } } } } } } },
         // The entry id breaks ties (one date holds many transactions, and a
         // transaction can touch the account twice) so every request sees the
         // same order and a row never shows on two pages or none.
@@ -159,6 +161,10 @@ export class AccountBalanceService {
         // back.
         reversalOfId: entry.transaction.reversalOfId,
         runningBalance: running,
+        // The accounts on the other side of this posting ("Mutual trust
+        // bank" for a transfer out), and its category when it has one.
+        counterAccounts: [...new Set((entry.transaction.entries ?? []).filter((leg) => leg.accountId !== accountId).map((leg) => leg.account.name))],
+        category: (entry.transaction.entries ?? []).find((leg) => leg.categoryId)?.categoryId ?? null,
       };
     });
 
@@ -174,6 +180,9 @@ export class AccountBalanceService {
     return {
       accountId,
       accountName: account.name,
+      // For a statement's heading.
+      accountNumber: account.accountNumber,
+      accountSubtype: account.accountSubtype,
       openingBalance: account.openingBalance,
       balanceBroughtForward: balanceBroughtForward.toFixed(2),
       entries: pageRows,

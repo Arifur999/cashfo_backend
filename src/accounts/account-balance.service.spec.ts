@@ -356,3 +356,60 @@ describe('WalletsOverviewQueryDto', () => {
     expect(await refusal({ dateFrom: '2026-09-01' })).toEqual(['property dateFrom should not exist']);
   });
 });
+
+describe('AccountBalanceService.getLedger particulars', () => {
+  it("names each row's other accounts and its category, for a statement", async () => {
+    const { service, prisma } = setup('ASSET', '0.00', [credit('e1', '2026-10-28', '20000.00')]);
+    prisma.transactionEntry.findMany.mockResolvedValueOnce([
+      {
+        id: 'e1',
+        transactionId: 'tx-1',
+        accountId: 'acc',
+        entryType: 'CREDIT',
+        amount: new Prisma.Decimal('20000.00'),
+        note: null,
+        transaction: {
+          transactionType: 'TRANSFER',
+          transactionDate: new Date('2026-10-28'),
+          description: null,
+          referenceNo: 'TRF-1',
+          status: 'POSTED',
+          entries: [
+            { accountId: 'acc', categoryId: null, account: { name: 'Cash Wallet' } },
+            { accountId: 'mtb', categoryId: null, account: { name: 'Mutual trust bank' } },
+          ],
+        },
+      },
+    ]);
+    const result = await service.getLedger('biz-1', 'acc');
+    expect(result.entries[0]).toMatchObject({ counterAccounts: ['Mutual trust bank'], category: null });
+    expect(result).toMatchObject({ accountName: 'Cash' });
+  });
+
+  it('carries the category of an income or expense', async () => {
+    const { service, prisma } = setup('ASSET', '0.00', [debit('e2', '2026-10-28', '500.00')]);
+    prisma.transactionEntry.findMany.mockResolvedValueOnce([
+      {
+        id: 'e2',
+        transactionId: 'tx-2',
+        accountId: 'acc',
+        entryType: 'DEBIT',
+        amount: new Prisma.Decimal('500.00'),
+        note: 'October salary',
+        transaction: {
+          transactionType: 'INCOME',
+          transactionDate: new Date('2026-10-28'),
+          description: null,
+          referenceNo: null,
+          status: 'POSTED',
+          entries: [
+            { accountId: 'acc', categoryId: null, account: { name: 'Cash' } },
+            { accountId: 'inc', categoryId: 'Salary', account: { name: 'Salary Income' } },
+          ],
+        },
+      },
+    ]);
+    const result = await service.getLedger('biz-1', 'acc');
+    expect(result.entries[0]).toMatchObject({ counterAccounts: ['Salary Income'], category: 'Salary', description: 'October salary' });
+  });
+});
