@@ -12,7 +12,7 @@ export const toBdMobile = (raw: string): string | null => {
 
 // Bangla (or any non-ASCII) text has to go as "unicode", which fits 70
 // characters a part instead of 160.
-export const isUnicode = (text: string) => /[^\x00-\x7F]/.test(text);
+export const isUnicode = (text: string) => [...text].some((char) => char.charCodeAt(0) > 0x7f);
 
 // MRAM answers a refused send with one of these four-digit codes.
 export const MRAM_ERRORS: Record<string, string> = {
