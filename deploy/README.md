@@ -17,7 +17,7 @@ pull request (either repo)
      (the API also: every migration on an empty database + the bootstrap)
 merge to main
   -> CI again as the quality gate, then the image is pushed to
-     ghcr.io/arifur999/cashfo-api or ghcr.io/arifur999/cashfo-web
+     ghcr.io/arifur999/smartly-api or ghcr.io/arifur999/cashfo-web
   -> within 2 min, smartly-deploy.timer on the VPS sees the new digest
   -> docker compose up -d   (a new API image runs smartly-migrate first)
   -> waits until smartly-api and smartly-web are both healthy
@@ -88,7 +88,7 @@ enforced, but a red quality gate still publishes nothing.)
 Encrypt for anything.
 
 **2. Images.** Merge to `main` in both repos and wait for each *Deploy*
-workflow to go green. Both packages (`cashfo-api`, `cashfo-web`) are private,
+workflow to go green. Both packages (`smartly-api`, `cashfo-web`) are private,
 so the server has to log in to ghcr.io before it can pull them: see
 [Private repos and images](#private-repos-and-images).
 
@@ -247,14 +247,14 @@ the fingerprint it shows is `SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU`
 first green *Deploy* under the new names:
 
 ```bash
-sed -i -e 's|^API_IMAGE=.*|API_IMAGE=ghcr.io/arifur999/cashfo-api:latest|' \
+sed -i -e 's|^API_IMAGE=.*|API_IMAGE=ghcr.io/arifur999/smartly-api:latest|' \
        -e 's|^WEB_IMAGE=.*|WEB_IMAGE=ghcr.io/arifur999/cashfo-web:latest|' /opt/smartly/.env
 systemctl start smartly-deploy && journalctl -u smartly-deploy -n 20 --no-pager
 ```
 
 When `docker ps --filter name=smartly-` shows both containers on the new
 images, delete the old packages: GitHub -> your profile -> Packages ->
-`cashfo_backend` (then `cashfo`) -> Package settings -> *Delete this package*.
+`cashfo_backend`, `cashfo-api` (then `cashfo`) -> Package settings -> *Delete this package*.
 They were renamed, not hidden, because GitHub cannot make a public package
 private again.
 
