@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { BudgetCategoryType, Prisma, TransactionType } from '@prisma/client';
 import { dhakaToday } from '../common/dhaka.js';
 import { PrismaService } from '../prisma/prisma.service.js';
@@ -8,12 +8,24 @@ import { CreateIncomeGoalDto } from './dto/create-income-goal.dto.js';
 import { UpdateBudgetCategoryDto } from './dto/update-budget-category.dto.js';
 import { UpdateBudgetTargetDto } from './dto/update-budget-target.dto.js';
 import { UpdateIncomeGoalDto } from './dto/update-income-goal.dto.js';
+import { SaveMonthlyPlanDto } from './dto/save-monthly-plan.dto.js';
+import { BUDGET_CATEGORY_COLORS } from './budget-category-visuals.js';
 
 // Which side of the ledger a category's "spent"/"earned" figure is summed
 // against, and which Business column backs its "total target" -- the one
 // thing that differs between Budget Planning (EXPENSE) and Income Planning
 // (INCOME); everything else in this service is shared.
 const TRANSACTION_TYPE_FOR: Record<BudgetCategoryType, TransactionType> = { EXPENSE: 'EXPENSE', INCOME: 'INCOME' };
+
+// A month's bounds at UTC midnight, the way @db.Date transaction dates are stored.
+const monthBounds = (year: number, month: number) => ({ gte: new Date(Date.UTC(year, month - 1, 1)), lt: new Date(Date.UTC(year, month, 1)) });
+
+// The first colour no category of the type uses yet, else the next in turn:
+// a category made from just a name still gets its own dot.
+export const nextCategoryColor = (used: string[]): string => {
+  const free = BUDGET_CATEGORY_COLORS.find((color) => !used.includes(color));
+  return free ?? BUDGET_CATEGORY_COLORS[used.length % BUDGET_CATEGORY_COLORS.length];
+};
 
 @Injectable()
 export class BudgetsService {
@@ -185,6 +197,81 @@ export class BudgetsService {
     return { id };
   }
 
+  // ---- Budget Planning: a month's income target and expense budget ----
+
+  // What came in and went out in a month: the categorised side of each
+  // POSTED income or expense (the money-account side never carries a
+  // category), so nothing is counted twice -- the same sum as earned above.
+  async monthTotals(businessId: string, year: number, month: number) {
+    const sum = (transactionType: TransactionType) =>
+      this.prisma.transactionEntry.aggregate({
+        _sum: { amount: true },
+        where: { categoryId: { not: null }, transaction: { businessId, status: 'POSTED', reversalOfId: null, transactionType, transactionDate: monthBounds(year, month) } },
+      });
+    const [income, expense] = await Promise.all([sum('INCOME'), sum('EXPENSE')]);
+    return { earned: (income._sum.amount ?? new Prisma.Decimal(0)).toFixed(2), spent: (expense._sum.amount ?? new Prisma.Decimal(0)).toFixed(2) };
+  }
+
+  // Every month with a plan, newest first, with what came in and went out.
+  async listMonthlyPlans(businessId: string) {
+    const plans = await this.prisma.incomeGoal.findMany({ where: { businessId }, orderBy: [{ year: 'desc' }, { month: 'desc' }] });
+    return Promise.all(plans.map(async (plan) => ({ ...planOf(plan), ...(await this.monthTotals(businessId, plan.year, plan.month)) })));
+  }
+
+  // One month as the page shows it: its plan (null figures when none was
+  // set) and what came in and went out.
+  async getMonthlyPlan(businessId: string, year: number, month: number) {
+    const plan = await this.prisma.incomeGoal.findUnique({ where: { businessId_year_month: { businessId, year, month } } });
+    const figures = plan ? planOf(plan) : { id: null, month, year, incomeTarget: null, expenseBudget: null };
+    return { ...figures, ...(await this.monthTotals(businessId, year, month)) };
+  }
+
+  // "Set monthly budget": makes the month's plan or replaces its figures.
+  async saveMonthlyPlan(businessId: string, dto: SaveMonthlyPlanDto) {
+    await this.prisma.incomeGoal.upsert({
+      where: { businessId_year_month: { businessId, year: dto.year, month: dto.month } },
+      create: { businessId, year: dto.year, month: dto.month, amount: dto.incomeTarget, expenseBudget: dto.expenseBudget },
+      update: { amount: dto.incomeTarget, expenseBudget: dto.expenseBudget },
+    });
+    return this.getMonthlyPlan(businessId, dto.year, dto.month);
+  }
+
+  // ---- Category Set ----
+
+  // Both kinds of category, each with how many live transactions use it
+  // (by name, as entries carry it).
+  async listCategorySet(businessId: string) {
+    const [categories, incomeCounts, expenseCounts] = await Promise.all([
+      this.prisma.budgetCategory.findMany({ where: { businessId }, orderBy: [{ displayOrder: 'asc' }, { createdAt: 'asc' }] }),
+      this.categoryUse(businessId, 'INCOME'),
+      this.categoryUse(businessId, 'EXPENSE'),
+    ]);
+    const used = { INCOME: incomeCounts, EXPENSE: expenseCounts };
+    const rowOf = (category: (typeof categories)[number]) => ({
+      id: category.id,
+      type: category.type,
+      name: category.name,
+      icon: category.icon,
+      color: category.color,
+      monthlyLimit: category.monthlyLimit ? new Prisma.Decimal(category.monthlyLimit).toFixed(2) : null,
+      transactionCount: used[category.type].get(category.name) ?? 0,
+    });
+    return {
+      income: categories.filter((category) => category.type === 'INCOME').map(rowOf),
+      expense: categories.filter((category) => category.type === 'EXPENSE').map(rowOf),
+    };
+  }
+
+  // How many live transactions of a type name each category.
+  private async categoryUse(businessId: string, transactionType: TransactionType): Promise<Map<string, number>> {
+    const rows = await this.prisma.transactionEntry.groupBy({
+      by: ['categoryId'],
+      where: { categoryId: { not: null }, transaction: { businessId, status: 'POSTED', reversalOfId: null, transactionType } },
+      _count: { _all: true },
+    });
+    return new Map(rows.filter((row) => row.categoryId !== null).map((row) => [row.categoryId as string, row._count._all]));
+  }
+
   private async requireIncomeGoal(businessId: string, id: string) {
     const goal = await this.prisma.incomeGoal.findUnique({ where: { id } });
     if (!goal || goal.businessId !== businessId) {
@@ -193,28 +280,30 @@ export class BudgetsService {
     return goal;
   }
 
+  // An expense category's monthly limit is optional now (Category Set asks
+  // only for a type and a name; the month's budget is set as a whole), and a
+  // colour left out is picked for it.
   async createCategory(businessId: string, dto: CreateBudgetCategoryDto) {
     const type = dto.type ?? BudgetCategoryType.EXPENSE;
-    if (type === BudgetCategoryType.EXPENSE && dto.monthlyLimit == null) {
-      throw new BadRequestException('A monthly limit is required for expense categories');
-    }
 
     const existing = await this.prisma.budgetCategory.findUnique({ where: { businessId_type_name: { businessId, type, name: dto.name } } });
     if (existing) {
       throw new ConflictException(`A ${type === 'INCOME' ? 'income' : 'budget'} category named "${dto.name}" already exists`);
     }
-    const count = await this.prisma.budgetCategory.count({ where: { businessId, type } });
+    const siblings = await this.prisma.budgetCategory.findMany({ where: { businessId, type }, select: { color: true } });
+    const count = siblings.length;
+    const color = dto.color ?? nextCategoryColor(siblings.map((sibling) => sibling.color));
     return this.prisma.budgetCategory.create({
       data: {
         businessId,
         type,
         name: dto.name,
         icon: dto.icon,
-        color: dto.color,
+        color,
         // INCOME never has a per-category limit, regardless of what's sent
         // (see BudgetCategory.monthlyLimit's schema comment) -- there's
         // just the one Business.monthlyIncomeTarget instead.
-        monthlyLimit: type === BudgetCategoryType.INCOME ? null : dto.monthlyLimit,
+        monthlyLimit: type === BudgetCategoryType.INCOME ? null : (dto.monthlyLimit ?? null),
         displayOrder: count,
       },
     });
@@ -271,4 +360,15 @@ export class BudgetsService {
     }
     return category;
   }
+}
+
+// A plan's own figures, as the page reads them.
+function planOf(plan: { id: string; month: number; year: number; amount: Prisma.Decimal; expenseBudget: Prisma.Decimal | null }) {
+  return {
+    id: plan.id as string | null,
+    month: plan.month,
+    year: plan.year,
+    incomeTarget: new Prisma.Decimal(plan.amount).toFixed(2) as string | null,
+    expenseBudget: plan.expenseBudget ? new Prisma.Decimal(plan.expenseBudget).toFixed(2) : null,
+  };
 }

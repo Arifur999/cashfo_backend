@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Put, Query } from '@nestjs/common';
 import { BudgetCategoryType, MemberRole } from '@prisma/client';
 import { BudgetsService } from './budgets.service.js';
 import { BudgetQueryDto } from './dto/budget-query.dto.js';
@@ -7,6 +7,7 @@ import { CreateIncomeGoalDto } from './dto/create-income-goal.dto.js';
 import { UpdateBudgetCategoryDto } from './dto/update-budget-category.dto.js';
 import { UpdateBudgetTargetDto } from './dto/update-budget-target.dto.js';
 import { UpdateIncomeGoalDto } from './dto/update-income-goal.dto.js';
+import { MonthlyPlanQueryDto, SaveMonthlyPlanDto } from './dto/save-monthly-plan.dto.js';
 import { RequireBusinessMembership } from '../business-access/decorators/require-business-membership.decorator.js';
 import { RequireRole } from '../business-access/decorators/require-role.decorator.js';
 
@@ -63,6 +64,29 @@ export class BudgetsController {
   @Delete('income-goals/:id')
   deleteIncomeGoal(@Param('businessId') businessId: string, @Param('id') id: string) {
     return this.budgetsService.deleteIncomeGoal(businessId, id);
+  }
+
+  // Category Set: both kinds, with how many transactions use each.
+  @Get('category-set')
+  listCategorySet(@Param('businessId') businessId: string) {
+    return this.budgetsService.listCategorySet(businessId);
+  }
+
+  // Budget Planning: every month with a plan, and one month as viewed.
+  @Get('monthly-plans')
+  listMonthlyPlans(@Param('businessId') businessId: string) {
+    return this.budgetsService.listMonthlyPlans(businessId);
+  }
+
+  @Get('monthly-plan')
+  getMonthlyPlan(@Param('businessId') businessId: string, @Query() query: MonthlyPlanQueryDto) {
+    return this.budgetsService.getMonthlyPlan(businessId, query.year, query.month);
+  }
+
+  @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
+  @Put('monthly-plan')
+  saveMonthlyPlan(@Param('businessId') businessId: string, @Body() dto: SaveMonthlyPlanDto) {
+    return this.budgetsService.saveMonthlyPlan(businessId, dto);
   }
 
   @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)

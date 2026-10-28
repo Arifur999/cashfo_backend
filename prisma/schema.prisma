@@ -2014,15 +2014,19 @@ enum BudgetCategoryType {
 // business within that row's month/year, regardless of which Income
 // Category it was logged against.
 model IncomeGoal {
-  id         String   @id @default(uuid())
-  businessId String
-  business   Business @relation(fields: [businessId], references: [id])
-  month      Int // 1-12
-  year       Int
-  amount     Decimal  @db.Decimal(14, 2)
-  notes      String?
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  id            String   @id @default(uuid())
+  businessId    String
+  business      Business @relation(fields: [businessId], references: [id])
+  month         Int // 1-12
+  year          Int
+  // The month's income target.
+  amount        Decimal  @db.Decimal(14, 2)
+  // The month's expense budget (Budget Planning); null for a plan made
+  // before there was one.
+  expenseBudget Decimal? @db.Decimal(14, 2)
+  notes         String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 
   @@unique([businessId, year, month])
   @@index([businessId])
