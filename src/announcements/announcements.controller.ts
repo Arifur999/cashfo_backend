@@ -1,4 +1,5 @@
-import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
+import type { Request } from 'express';
 import { AdminRole } from '../common/roles.js';
 import { CurrentAdmin } from '../admin-auth/decorators/current-admin.decorator.js';
 import { Roles } from '../admin-auth/decorators/roles.decorator.js';
@@ -34,5 +35,11 @@ export class AnnouncementsController {
   @Patch(':id')
   update(@Param('id') id: string, @Body() dto: UpdateAnnouncementDto) {
     return this.announcementsService.update(id, dto);
+  }
+
+  @Roles(AdminRole.SUPER_ADMIN, AdminRole.CONTENT_ADMIN)
+  @Delete(':id')
+  remove(@Param('id') id: string, @CurrentAdmin() admin: RequestAdminUser, @Req() req: Request) {
+    return this.announcementsService.remove(id, admin.id, req.ip);
   }
 }

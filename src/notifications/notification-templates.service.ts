@@ -1,4 +1,5 @@
-import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { BUILT_IN_TEMPLATE_KEYS } from '../database/seed/content.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { CreateNotificationTemplateDto } from './dto/create-notification-template.dto.js';
 import { UpdateNotificationTemplateDto } from './dto/update-notification-template.dto.js';
@@ -44,6 +45,28 @@ export class NotificationTemplatesService {
     });
 
     return result;
+  }
+
+  // Only one made in the panel, and only when no campaign still to send
+  // uses it. A built-in one comes back on the next deploy, so it is turned
+  // off instead.
+  async remove(id: string, adminId: string, ipAddress?: string) {
+    const existing = await this.prisma.notificationTemplate.findUnique({ where: { id } });
+    if (!existing) {
+      throw new NotFoundException('Notification template not found');
+    }
+    if (BUILT_IN_TEMPLATE_KEYS.includes(existing.key)) {
+      throw new BadRequestException("A built-in template can't be deleted. Turn it off instead.");
+    }
+    const waiting = await this.prisma.bulkNotificationCampaign.count({ where: { templateKey: existing.key, status: { in: ['DRAFT', 'SCHEDULED', 'SENDING'] } } });
+    if (waiting > 0) {
+      throw new ConflictException("A campaign that hasn't been sent yet uses this template");
+    }
+    await this.prisma.notificationTemplate.delete({ where: { id } });
+    await this.prisma.auditLog.create({
+      data: { adminUserId: adminId, action: 'NOTIFICATION_TEMPLATE_DELETED', entityType: 'NotificationTemplate', entityId: id, oldValue: { key: existing.key, channel: existing.channel }, ipAddress },
+    });
+    return { id };
   }
 
   async update(id: string, dto: UpdateNotificationTemplateDto, adminId: string, ipAddress?: string) {

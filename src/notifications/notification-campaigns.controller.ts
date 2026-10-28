@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
 import type { Request } from 'express';
 import { AdminRole } from '../common/roles.js';
 import { CurrentAdmin } from '../admin-auth/decorators/current-admin.decorator.js';
@@ -53,5 +53,12 @@ export class NotificationCampaignsController {
   @Patch(':id/cancel')
   cancel(@Param('id') id: string, @CurrentAdmin() admin: RequestAdminUser, @Req() req: Request) {
     return this.notificationCampaignsService.cancel(id, admin.id, req.ip);
+  }
+
+  @UseGuards(RolesGuard)
+  @Roles(AdminRole.SUPER_ADMIN, AdminRole.SUPPORT_ADMIN)
+  @Delete(':id')
+  remove(@Param('id') id: string, @CurrentAdmin() admin: RequestAdminUser, @Req() req: Request) {
+    return this.notificationCampaignsService.remove(id, admin.id, req.ip);
   }
 }

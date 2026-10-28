@@ -89,6 +89,23 @@ export class AnnouncementsService {
     });
   }
 
+  // Gone from the apps at once; the audit log keeps what it said.
+  async remove(id: string, adminId: string, ipAddress?: string) {
+    const existing = await this.requireAnnouncement(id);
+    await this.prisma.announcement.delete({ where: { id } });
+    await this.prisma.auditLog.create({
+      data: {
+        adminUserId: adminId,
+        action: 'ANNOUNCEMENT_DELETED',
+        entityType: 'Announcement',
+        entityId: id,
+        oldValue: { title: existing.title, type: existing.type, startAt: existing.startAt.toISOString(), isActive: existing.isActive },
+        ipAddress,
+      },
+    });
+    return { id };
+  }
+
   private async requireAnnouncement(id: string) {
     const announcement = await this.prisma.announcement.findUnique({ where: { id } });
     if (!announcement) {

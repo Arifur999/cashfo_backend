@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Patch, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Req, UseGuards } from '@nestjs/common';
 import type { Request } from 'express';
 import { AdminRole } from '../common/roles.js';
 import { CurrentAdmin } from '../admin-auth/decorators/current-admin.decorator.js';
@@ -32,5 +32,12 @@ export class NotificationTemplatesController {
   @Patch(':id')
   update(@Param('id') id: string, @Body() dto: UpdateNotificationTemplateDto, @CurrentAdmin() admin: RequestAdminUser, @Req() req: Request) {
     return this.notificationTemplatesService.update(id, dto, admin.id, req.ip);
+  }
+
+  @UseGuards(RolesGuard)
+  @Roles(AdminRole.SUPER_ADMIN, AdminRole.CONTENT_ADMIN)
+  @Delete(':id')
+  remove(@Param('id') id: string, @CurrentAdmin() admin: RequestAdminUser, @Req() req: Request) {
+    return this.notificationTemplatesService.remove(id, admin.id, req.ip);
   }
 }
