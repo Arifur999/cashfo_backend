@@ -38,7 +38,13 @@ export class GlobalExceptionFilter extends BaseExceptionFilter {
     // expected 4xx responses (validation errors, auth failures, throttling,
     // a body too large) are normal traffic, not something an on-call admin
     // needs surfaced here.
-    if (status >= 500) {
+    // A 503 saying email or SMS isn't set up yet is the platform's known
+    // state (System health shows it), not an incident: logging it would bury
+    // real failures under one row per click.
+    if (status >= 500 && isSetupGap(response)) {
+      const request = host.switchToHttp().getRequest<Request>();
+      this.logger.warn(`${request.method} ${request.path} -> ${status}: ${setupGapReason(response)}`);
+    } else if (status >= 500) {
       const request = host.switchToHttp().getRequest<Request>();
       try {
         await this.errorLogsService.report({
@@ -58,6 +64,17 @@ export class GlobalExceptionFilter extends BaseExceptionFilter {
     super.catch(response, host);
   }
 }
+
+// The reason of a 503 that only says a channel isn't set up
+// (EMAIL_NOT_CONFIGURED, SMS_NOT_CONFIGURED), or null.
+export function setupGapReason(exception: unknown): string | null {
+  if (!(exception instanceof HttpException) || exception.getStatus() !== 503) return null;
+  const body = exception.getResponse();
+  const reason = body && typeof body === 'object' ? (body as { reason?: unknown }).reason : null;
+  return typeof reason === 'string' && /^[A-Z]+_NOT_CONFIGURED$/.test(reason) ? reason : null;
+}
+
+export const isSetupGap = (exception: unknown) => setupGapReason(exception) !== null;
 
 const INVALID_VALUE = 'One of the values sent is not valid';
 
