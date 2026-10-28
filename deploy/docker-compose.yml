@@ -66,6 +66,10 @@ x-api-env: &api-env
   IMGBB_API_KEY: ${IMGBB_API_KEY:-}
   RESEND_API_KEY: ${RESEND_API_KEY:-}
   MAIL_FROM: ${MAIL_FROM:-onboarding@resend.dev}
+  # Text SMS through MRAM (codes, phone verification, reset by phone); off
+  # unless both are set. The server's IP must be allowed in the MRAM panel.
+  SMS_API_KEY: ${SMS_API_KEY:-}
+  SMS_SENDER_ID: ${SMS_SENDER_ID:-}
   # Web push for Habit Tracker reminders; off unless all three are set.
   VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
   VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}

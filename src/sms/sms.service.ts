@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { ipv4Request } from './sms-http.js';
 import { isUnicode, readMramBalance, readMramReply, toBdMobile } from './sms-text.js';
 
 const DEFAULT_API_URL = 'https://msg.mram.com.bd';
@@ -60,9 +61,10 @@ export class SmsService {
       msg: text,
     });
     try {
-      const response = await fetch(`${this.apiUrl}/smsapi`, { method: 'POST', body, signal: AbortSignal.timeout(TIMEOUT_MS) });
-      const reply = readMramReply(await response.text());
-      if (!response.ok || !reply.ok) {
+      const response = await ipv4Request(`${this.apiUrl}/smsapi`, { body, timeoutMs: TIMEOUT_MS });
+      const reply = readMramReply(response.text);
+      const httpOk = response.status >= 200 && response.status < 300;
+      if (!httpOk || !reply.ok) {
         const why = reply.ok ? `HTTP ${response.status}` : `${reply.code} ${reply.reason}`;
         throw new Error(`MRAM refused the SMS: ${why}`);
       }
@@ -83,8 +85,8 @@ export class SmsService {
     if (this.cachedBalance && Date.now() - this.cachedBalance.at < BALANCE_TTL_MS) return this.cachedBalance.value;
     let value: number | null = null;
     try {
-      const response = await fetch(`${this.apiUrl}/miscapi/${encodeURIComponent(this.apiKey)}/getBalance`, { signal: AbortSignal.timeout(TIMEOUT_MS) });
-      if (response.ok) value = readMramBalance(await response.text());
+      const response = await ipv4Request(`${this.apiUrl}/miscapi/${encodeURIComponent(this.apiKey)}/getBalance`, { timeoutMs: TIMEOUT_MS });
+      if (response.status === 200) value = readMramBalance(response.text);
     } catch {
       value = null;
     }
