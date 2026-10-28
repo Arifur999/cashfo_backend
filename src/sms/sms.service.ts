@@ -46,9 +46,10 @@ export class SmsService {
     return (realValue(this.config.get<string>('SMS_API_URL')) || DEFAULT_API_URL).replace(/\/+$/, '');
   }
 
-  // Sends one transactional SMS; throws when the number can't take one or
-  // MRAM refuses it. The key never reaches a log or an error.
-  async send(to: string, text: string): Promise<void> {
+  // Sends one SMS (a transactional one unless a campaign says promotional);
+  // throws when the number can't take one or MRAM refuses it. The key never
+  // reaches a log or an error.
+  async send(to: string, text: string, label: 'transactional' | 'promotional' = 'transactional'): Promise<void> {
     if (!this.configured) throw new Error('SMS is not set up');
     const contact = toBdMobile(to);
     if (!contact) throw new Error('Not a Bangladeshi mobile number');
@@ -57,7 +58,7 @@ export class SmsService {
       senderid: this.senderId,
       type: isUnicode(text) ? 'unicode' : 'text',
       contacts: contact,
-      label: 'transactional',
+      label,
       msg: text,
     });
     try {

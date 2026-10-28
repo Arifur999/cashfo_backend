@@ -37,7 +37,7 @@ describe('deleting a campaign', () => {
       },
       auditLog: audit(),
     };
-    return { service: new NotificationCampaignsService(prisma as never, {} as never, {} as never, {} as never), prisma };
+    return { service: new NotificationCampaignsService(prisma as never, {} as never, {} as never, {} as never, {} as never), prisma };
   };
 
   it('deletes one that never sent, guarded on its status', async () => {
