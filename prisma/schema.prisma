@@ -368,6 +368,9 @@ model Announcement {
   startAt    DateTime
   endAt      DateTime?
   isActive   Boolean          @default(true)
+  // Where the banner's "Try it" goes: a page of the app ("/habit-tracker")
+  // or an https address. Null = no link.
+  linkUrl    String?
   createdBy  String // AdminUser id
   createdAt  DateTime         @default(now())
 }

@@ -39,7 +39,7 @@ export class AnnouncementsService {
         AND: [{ OR: [{ endAt: null }, { endAt: { gt: now } }] }, { OR: [{ targetPlan: null }, { targetPlan: { in: planIds } }] }],
       },
       orderBy: { startAt: 'desc' },
-      select: { id: true, title: true, titleBn: true, body: true, bodyBn: true, type: true, startAt: true, endAt: true },
+      select: { id: true, title: true, titleBn: true, body: true, bodyBn: true, type: true, startAt: true, endAt: true, linkUrl: true },
     });
     return rows;
   }
@@ -59,6 +59,7 @@ export class AnnouncementsService {
         targetPlan: dto.targetPlan,
         startAt: new Date(dto.startAt),
         endAt: dto.endAt ? new Date(dto.endAt) : undefined,
+        linkUrl: dto.linkUrl || null,
         createdBy: adminId,
       },
     });
@@ -85,6 +86,7 @@ export class AnnouncementsService {
         ...(dto.startAt !== undefined && { startAt }),
         ...(dto.endAt !== undefined && { endAt }),
         ...(dto.isActive !== undefined && { isActive: dto.isActive }),
+        ...(dto.linkUrl !== undefined && { linkUrl: dto.linkUrl || null }),
       },
     });
   }
