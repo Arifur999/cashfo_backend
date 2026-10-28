@@ -102,7 +102,7 @@ describe('TransactionsService and charges', () => {
         findUnique: vi
           .fn()
           .mockResolvedValueOnce(original)
-          .mockResolvedValueOnce({ ...original, id: 'charge-1', transactionType: 'EXPENSE' }),
+          .mockResolvedValueOnce({ ...original, id: 'charge-1', transactionType: 'EXPENSE', chargeForId: 'loan-1' }),
         updateMany: vi.fn().mockResolvedValue({ count: 1 }),
         create: vi.fn().mockResolvedValue({ id: 'reversal', entries: [] }),
         findMany: vi
@@ -119,6 +119,8 @@ describe('TransactionsService and charges', () => {
     const service = new TransactionsService(prisma as never, { recalculateBalance: vi.fn() } as never);
     await service.voidTransaction('biz-1', 'loan-1', 'Corrected', 'user-1');
     expect(tx.transaction.updateMany.mock.calls.map((call) => call[0].where.id)).toEqual(['loan-1', 'charge-1']);
+    // The charge's reversal stays a charge, so lists without charges leave it out.
+    expect(tx.transaction.create.mock.calls[1][0].data.chargeForId).toBe('loan-1');
   });
 
   it('files a charge under its category, out of the wallet', async () => {
