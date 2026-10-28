@@ -200,6 +200,9 @@ export class TransactionsService {
         contactId: original.contactId,
         createdBy: userId,
         reversalOfId: original.id,
+        // A charge's reversal is the charge's too: lists that leave charges
+        // out leave it out as well.
+        chargeForId: original.chargeForId,
         entries: {
           create: original.entries.map((e) => ({
             accountId: e.accountId,
