@@ -244,14 +244,26 @@ export class GroupExpensesService {
     if (existing) {
       throw new ConflictException(`An expense category named "${dto.name}" already exists`);
     }
+    const defaultMemberIds = await this.categoryMembers(businessId, dto.defaultSplit, dto.defaultMemberIds);
     const count = await this.prisma.groupExpenseCategoryOption.count({ where: { businessId } });
     return this.prisma.groupExpenseCategoryOption.create({
-      data: { businessId, name: dto.name, icon: dto.icon, color: dto.color, displayOrder: count, ...(dto.defaultSplit && { defaultSplit: dto.defaultSplit }) },
+      data: {
+        businessId,
+        name: dto.name,
+        icon: dto.icon,
+        color: dto.color,
+        displayOrder: count,
+        ...(dto.defaultSplit && { defaultSplit: dto.defaultSplit }),
+        ...(defaultMemberIds && { defaultMemberIds }),
+      },
     });
   }
 
   async updateExpenseCategory(businessId: string, id: string, dto: UpdateGroupExpenseCategoryDto) {
-    await this.requireExpenseCategory(businessId, id);
+    const current = await this.requireExpenseCategory(businessId, id);
+    // Shared another way than equally, it can't keep a chosen few.
+    const leavesEqual = dto.defaultSplit !== undefined && dto.defaultSplit !== 'EQUAL' && dto.defaultMemberIds === undefined && current.defaultMemberIds.length > 0;
+    const defaultMemberIds = leavesEqual ? [] : await this.categoryMembers(businessId, dto.defaultSplit ?? current.defaultSplit, dto.defaultMemberIds);
     if (dto.name !== undefined) {
       const clash = await this.prisma.groupExpenseCategoryOption.findUnique({ where: { businessId_name: { businessId, name: dto.name } } });
       if (clash && clash.id !== id) {
@@ -265,8 +277,26 @@ export class GroupExpensesService {
         ...(dto.icon !== undefined && { icon: dto.icon }),
         ...(dto.color !== undefined && { color: dto.color }),
         ...(dto.defaultSplit !== undefined && { defaultSplit: dto.defaultSplit }),
+        ...(defaultMemberIds && { defaultMemberIds }),
       },
     });
+  }
+
+  // A category's "Only selected" members, checked: each one of this
+  // group's, and only for a category shared equally. Undefined when the
+  // request didn't send any.
+  private async categoryMembers(businessId: string, split: GroupSplit | undefined, memberIds: string[] | undefined): Promise<string[] | undefined> {
+    if (memberIds === undefined) return undefined;
+    const ids = [...new Set(memberIds)];
+    if (ids.length === 0) return [];
+    if (split !== undefined && split !== 'EQUAL') {
+      throw new BadRequestException('Only selected members share a cost equally');
+    }
+    const found = await this.prisma.groupMember.count({ where: { businessId, id: { in: ids } } });
+    if (found !== ids.length) {
+      throw new BadRequestException("Some of those members aren't in this group");
+    }
+    return ids;
   }
 
   // Existing expenses keep showing this name as plain text -- see
@@ -312,8 +342,9 @@ export class GroupExpensesService {
     // Shared the way its category says, unless the expense says otherwise.
     const option = dto.split ? null : await this.prisma.groupExpenseCategoryOption.findUnique({ where: { businessId_name: { businessId, name: category } } });
     const split = dto.split ?? option?.defaultSplit ?? 'EQUAL';
+    const splits = dto.splits?.length || !option?.defaultMemberIds.length ? (dto.splits ?? []) : await this.chosenMembers(businessId, option.defaultMemberIds);
     const paidFrom = dto.paidFrom ?? 'FUND';
-    await this.checkExpense(businessId, { amount: dto.amount, paidFrom, paidByMemberId: dto.paidByMemberId ?? null, split, splits: dto.splits ?? [] });
+    await this.checkExpense(businessId, { amount: dto.amount, paidFrom, paidByMemberId: dto.paidByMemberId ?? null, split, splits });
     return this.prisma.groupExpense.create({
       data: {
         businessId,
@@ -324,10 +355,17 @@ export class GroupExpensesService {
         paidByMemberId: dto.paidByMemberId,
         paidFrom,
         split,
-        splits: { create: (dto.splits ?? []).map((s) => ({ groupMemberId: s.groupMemberId, units: s.units ?? null, amount: s.amount ?? null })) },
+        splits: { create: splits.map((s) => ({ groupMemberId: s.groupMemberId, units: s.units ?? null, amount: s.amount ?? null })) },
       },
       include: { paidByMember: true, splits: true },
     });
+  }
+
+  // A category's "Only selected" members who are still in the group, as an
+  // equal split; none left means everyone in the group that day.
+  private async chosenMembers(businessId: string, memberIds: string[]): Promise<GroupExpenseSplitDto[]> {
+    const stillHere = await this.prisma.groupMember.findMany({ where: { businessId, id: { in: memberIds }, status: 'ACTIVE' }, select: { id: true } });
+    return stillHere.map((member) => ({ groupMemberId: member.id }));
   }
 
   async updateExpense(businessId: string, id: string, dto: UpdateGroupExpenseDto) {
