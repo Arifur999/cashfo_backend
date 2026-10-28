@@ -1,5 +1,10 @@
+import { ipv4Request } from './sms-http.js';
 import { isUnicode, readMramBalance, readMramReply, toBdMobile } from './sms-text.js';
 import { SmsService } from './sms.service.js';
+
+vi.mock('./sms-http.js', () => ({ ipv4Request: vi.fn() }));
+const request = vi.mocked(ipv4Request);
+const answer = (text: string, status = 200) => request.mockResolvedValue({ status, text });
 
 const config = (values: Record<string, string | undefined>) => ({ get: (key: string) => values[key] }) as never;
 
@@ -28,7 +33,15 @@ describe('MRAM replies', () => {
 
   it('reads anything else as accepted, with its id when there is one', () => {
     expect(readMramReply('SMS SUBMITTED: ID - C20000123abc')).toEqual({ ok: true, id: 'C20000123abc' });
-    expect(readMramReply('SMS SUBMITTED')).toEqual({ ok: true, id: null });
+    expect(readMramReply('SMS SUBMITTED')).toEqual({ ok: true, id: 'SMS SUBMITTED' });
+  });
+
+  it('reads a number outside the code table as the shoot id, as furnify does', () => {
+    expect(readMramReply('2001')).toEqual({ ok: true, id: '2001' });
+    expect(readMramReply('"1016"')).toEqual({ ok: false, code: '1016', reason: 'This server address is not allowed' });
+    expect(readMramReply('1007 - insufficient balance')).toEqual({ ok: false, code: '1007', reason: 'Balance insufficient' });
+    const long = '{"shoot_id":"SH-1007-A9","accepted":2,"at":"2026-09-22T10:02:00Z"}';
+    expect(readMramReply(long).ok).toBe(true);
   });
 
   it('reads the balance', () => {
@@ -44,7 +57,7 @@ describe('MRAM replies', () => {
 });
 
 describe('SmsService', () => {
-  afterEach(() => vi.unstubAllGlobals());
+  afterEach(() => request.mockReset());
 
   it('is off until both the key and the sender id are set', () => {
     expect(new SmsService(config({})).configured).toBe(false);
@@ -54,11 +67,10 @@ describe('SmsService', () => {
   });
 
   it('posts one transactional message to the normalised number', async () => {
-    const fetch = vi.fn().mockResolvedValue(new Response('SMS SUBMITTED: ID - C1'));
-    vi.stubGlobal('fetch', fetch);
+    answer('SMS SUBMITTED: ID - C1');
     const sms = new SmsService(config({ SMS_API_KEY: 'key-1', SMS_SENDER_ID: '8809600000000' }));
     await sms.send('01712-345678', 'Smartly কোড: 123456');
-    const [url, init] = fetch.mock.calls[0] as [string, { body: URLSearchParams }];
+    const [url, init] = request.mock.calls[0] as [string, { body: URLSearchParams }];
     expect(url).toBe('https://msg.mram.com.bd/smsapi');
     expect(Object.fromEntries(init.body)).toEqual({
       api_key: 'key-1',
@@ -72,7 +84,7 @@ describe('SmsService', () => {
   });
 
   it('throws on a refusal without naming the key', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('1007')));
+    answer('1007');
     const sms = new SmsService(config({ SMS_API_KEY: 'secret-key', SMS_SENDER_ID: 's' }));
     const error = await sms.send('01712345678', 'hi').catch((caught: Error) => caught);
     expect((error as Error).message).toBe('MRAM refused the SMS: 1007 Balance insufficient');
@@ -81,10 +93,8 @@ describe('SmsService', () => {
   });
 
   it('refuses a number that is not a Bangladeshi mobile before calling MRAM', async () => {
-    const fetch = vi.fn();
-    vi.stubGlobal('fetch', fetch);
     const sms = new SmsService(config({ SMS_API_KEY: 'k', SMS_SENDER_ID: 's' }));
     await expect(sms.send('+44 7911 123456', 'hi')).rejects.toThrow('Not a Bangladeshi mobile number');
-    expect(fetch).not.toHaveBeenCalled();
+    expect(request).not.toHaveBeenCalled();
   });
 });

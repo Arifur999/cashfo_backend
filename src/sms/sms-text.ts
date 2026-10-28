@@ -36,15 +36,23 @@ export const MRAM_ERRORS: Record<string, string> = {
 
 export type MramReply = { ok: true; id: string | null } | { ok: false; code: string; reason: string };
 
-// What a send's answer means: a known error code (or nothing at all) is a
-// refusal; anything else is MRAM accepting it, with its SMS id when the
-// answer carries one ("SMS SUBMITTED: ID - C2000…").
+// A code with a few words around it is short; an accepted batch's answer
+// (an id, maybe a count and a time) can be longer and carry digits.
+const MAX_CODED_REPLY = 48;
+
+// What a send's answer means. Only MRAM's listed codes (or nothing at all)
+// are a refusal, also with a few words around them in a short answer. Any
+// other answer is MRAM accepting the message and is its SMS shoot id -- a
+// bare number such as "2001" included, as furnify's MRAM client reads it.
 export const readMramReply = (body: string): MramReply => {
-  const text = body.trim();
+  const text = body
+    .trim()
+    .replace(/^"(.*)"$/s, '$1')
+    .trim();
   if (!text) return { ok: false, code: 'EMPTY', reason: 'No answer' };
-  const code = /^\d{4}$/.exec(text)?.[0];
-  if (code) return { ok: false, code, reason: MRAM_ERRORS[code] ?? 'Unknown error' };
-  const id = /ID\s*[-:]\s*([A-Za-z0-9_-]+)/i.exec(text)?.[1] ?? null;
+  const code = text.length <= MAX_CODED_REPLY ? text.match(/(?<!\d)\d{4}(?!\d)/g)?.find((found) => MRAM_ERRORS[found]) : undefined;
+  if (code) return { ok: false, code, reason: MRAM_ERRORS[code] };
+  const id = /ID\s*[-:]\s*([A-Za-z0-9_-]+)/i.exec(text)?.[1] ?? text.slice(0, 64);
   return { ok: true, id };
 };
 
