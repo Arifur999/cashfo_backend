@@ -5,6 +5,7 @@ import { PrismaService } from '../prisma/prisma.service.js';
 import { UpdateLanguageDto } from './dto/update-language.dto.js';
 import { UpdatePreferencesDto } from './dto/update-preferences.dto.js';
 import { UpdateProfileDto } from './dto/update-profile.dto.js';
+import { canonicalPhone } from './phone.service.js';
 
 const preferencesOf = (user: Pick<User, 'digitStyle' | 'numberGrouping' | 'dateStyle' | 'weekStart'>) => ({
   digitStyle: user.digitStyle,
@@ -48,6 +49,7 @@ export class UserProfileService {
       name: user.name,
       email: user.email,
       phone: user.phone,
+      phoneVerifiedAt: user.phoneVerifiedAt,
       avatarUrl: user.avatarUrl,
       preferredLanguage: user.preferredLanguage,
       emailVerifiedAt: user.emailVerifiedAt,
@@ -112,15 +114,19 @@ export class UserProfileService {
   // Settings > Profile page's "Save Changes" -- name/phone only (email is
   // shown read-only there, changing it is a bigger, separate re-
   // verification flow this app doesn't have yet).
+  // A new number loses the verification (PhoneService); the same verified
+  // number typed another way keeps it.
   async updateProfile(userId: string, dto: UpdateProfileDto) {
+    const current = dto.phone !== undefined ? await this.prisma.user.findUniqueOrThrow({ where: { id: userId }, select: { phone: true, phoneVerifiedAt: true } }) : null;
+    const keepsVerified = !!current?.phoneVerifiedAt && !!dto.phone && canonicalPhone(dto.phone) === current.phone;
     const user = await this.prisma.user.update({
       where: { id: userId },
       data: {
         ...(dto.name !== undefined && { name: dto.name }),
-        ...(dto.phone !== undefined && { phone: dto.phone || null }),
+        ...(dto.phone !== undefined && !keepsVerified && { phone: dto.phone || null, phoneVerifiedAt: null }),
       },
     });
-    return { id: user.id, name: user.name, email: user.email, phone: user.phone, avatarUrl: user.avatarUrl };
+    return { id: user.id, name: user.name, email: user.email, phone: user.phone, phoneVerifiedAt: user.phoneVerifiedAt, avatarUrl: user.avatarUrl };
   }
 
   async updateAvatar(userId: string, avatarUrl: string | null) {

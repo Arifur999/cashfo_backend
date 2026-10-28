@@ -1096,13 +1096,16 @@ model UserSession {
 // set (without resetting the password) on every older unused token for that
 // user the moment a newer one is requested, so only the latest link ever works.
 model PasswordResetToken {
-  id        String    @id @default(uuid())
-  userId    String
-  user      User      @relation(fields: [userId], references: [id])
-  tokenHash String    @unique
-  expiresAt DateTime
-  usedAt    DateTime?
-  createdAt DateTime  @default(now())
+  id         String    @id @default(uuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id])
+  tokenHash  String    @unique
+  expiresAt  DateTime
+  usedAt     DateTime?
+  // Made after an SMS code to a verified phone proved the reset, so the
+  // page asks for no second code ("Ask for a code before a password reset").
+  codeProven Boolean   @default(false)
+  createdAt  DateTime  @default(now())
 
   @@index([userId])
 }

@@ -188,7 +188,8 @@ export class OneTimeCodesService {
     return { name: person.name, action, locale: person.preferredLanguage === 'BN' ? 'bn' : 'en', minutes: CODE_TTL_MS / 60_000 };
   }
 
-  private challengeOf(row: OneTimeCode, now: Date): Challenge {
+  // What the "enter the code" dialog shows for this row.
+  challengeOf(row: OneTimeCode, now = new Date()): Challenge {
     return {
       challengeId: row.id,
       channel: row.channel,

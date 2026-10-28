@@ -7,6 +7,9 @@ import { SettingsModule } from '../settings/settings.module.js';
 import { UploadsModule } from '../uploads/uploads.module.js';
 import { UserAuthController } from './user-auth.controller.js';
 import { UserAuthService } from './user-auth.service.js';
+import { PhoneController } from './phone.controller.js';
+import { PhoneService } from './phone.service.js';
+import { SmsModule } from '../sms/sms.module.js';
 import { UserProfileService } from './user-profile.service.js';
 import { UserProvisioningService } from './user-provisioning.service.js';
 import { UserSessionsService } from './user-sessions.service.js';
@@ -29,9 +32,9 @@ import { UserAuthGuard } from './guards/user-auth.guard.js';
   // EmailVerificationModule: the signup's verification email (sent from the
   // first device row). OneTimeCodesModule: the emailed code a password reset
   // asks for when the owner turned that on (Settings > Security > Alerts).
-  imports: [AccountsModule, UploadsModule, SettingsModule, MailModule, EmailVerificationModule, OneTimeCodesModule],
-  controllers: [UserAuthController],
-  providers: [UserAuthService, UserProfileService, UserSessionsService, UserProvisioningService, SecurityAlertsService, UserAuthGuard, LoginRateLimitFilter],
+  imports: [AccountsModule, UploadsModule, SettingsModule, MailModule, EmailVerificationModule, OneTimeCodesModule, SmsModule],
+  controllers: [UserAuthController, PhoneController],
+  providers: [UserAuthService, PhoneService, UserProfileService, UserSessionsService, UserProvisioningService, SecurityAlertsService, UserAuthGuard, LoginRateLimitFilter],
   // UserAuthService: the unified sign-in (SignInModule) hands end users to it.
   // SecurityAlertsService: a wrong two-step code counts as a failed try.
   exports: [UserAuthGuard, UserAuthService, SecurityAlertsService],
