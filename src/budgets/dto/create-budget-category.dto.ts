@@ -21,8 +21,10 @@ export class CreateBudgetCategoryDto {
   @IsIn(BUDGET_CATEGORY_ICONS)
   icon?: string | null;
 
+  // Picked for it when left out (BudgetsService.createCategory).
+  @IsOptional()
   @IsIn(BUDGET_CATEGORY_COLORS)
-  color: string;
+  color?: string;
 
   // Required for EXPENSE, not accepted for INCOME (validated in
   // BudgetsService.createCategory, which knows the resolved type -- see
