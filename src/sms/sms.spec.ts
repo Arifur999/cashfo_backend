@@ -32,7 +32,8 @@ describe('MRAM replies', () => {
   });
 
   it('reads anything else as accepted, with its id when there is one', () => {
-    expect(readMramReply('SMS SUBMITTED: ID - C20000123abc')).toEqual({ ok: true, id: 'C20000123abc' });
+    // MRAM's real answer to an accepted send (seen from the VPS, 2026-10-28).
+    expect(readMramReply('SMS SUBMITTED: ID - bw-rdC40009086ae186454b4e8')).toEqual({ ok: true, id: 'bw-rdC40009086ae186454b4e8' });
     expect(readMramReply('SMS SUBMITTED')).toEqual({ ok: true, id: 'SMS SUBMITTED' });
   });
 
