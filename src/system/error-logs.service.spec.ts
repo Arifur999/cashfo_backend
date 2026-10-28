@@ -124,6 +124,13 @@ describe('errorGroupConditions', () => {
       new Date('2026-10-02T00:00:00.000Z'),
     ]);
   });
+
+  it("narrows to a screen's reference and to the customer app, bound", () => {
+    expect(sqlOf({ digest: '2413785441', app: 'customer' })).toEqual({
+      sql: ['"metadata"->>\'digest\' = ?', '"metadata"->>\'app\' = ?'],
+      values: ['2413785441', 'customer'],
+    });
+  });
 });
 
 describe('ErrorLogsService.groups', () => {

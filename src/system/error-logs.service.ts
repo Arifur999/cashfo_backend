@@ -34,6 +34,8 @@ export function errorGroupConditions(query: ErrorGroupsQueryDto, now = new Date(
   if (query.resolved === 'false') conditions.push(Prisma.sql`"resolved" = false`);
   if (query.source) conditions.push(Prisma.sql`"source" = CAST(${query.source} AS "ErrorSource")`);
   if (query.severity) conditions.push(Prisma.sql`"severity" = CAST(${query.severity} AS "Severity")`);
+  if (query.digest) conditions.push(Prisma.sql`"metadata"->>'digest' = ${query.digest}`);
+  if (query.app) conditions.push(Prisma.sql`"metadata"->>'app' = ${query.app}`);
   const createdAt = createdAtFilter({ within: query.within, dateFrom: query.from, dateTo: query.to }, now);
   if (createdAt?.gte) conditions.push(Prisma.sql`"createdAt" >= ${createdAt.gte}`);
   if (createdAt?.lte) conditions.push(Prisma.sql`"createdAt" <= ${createdAt.lte}`);

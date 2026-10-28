@@ -1,4 +1,4 @@
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import {
   ArrayMaxSize,
   ArrayMinSize,
@@ -16,7 +16,8 @@ import {
   ValidateIf,
 } from 'class-validator';
 import { ErrorSource, Severity } from '@prisma/client';
-import { whenSent } from '../../common/dto.js';
+import { trim, whenSent } from '../../common/dto.js';
+import { CUSTOMER_APP } from './report-client-error.dto.js';
 import { TIME_WINDOWS, type TimeWindow } from '../../common/time-window.js';
 
 // System > Errors, grouped: the same message from the same source is one
@@ -36,6 +37,20 @@ export class ErrorGroupsQueryDto {
   @ValidateIf(whenSent)
   @IsEnum(Severity)
   severity?: Severity;
+
+  // The reference an error screen showed (metadata.digest), as the plain
+  // list takes it.
+  @ValidateIf(whenSent)
+  @Transform(trim)
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(64)
+  digest?: string;
+
+  // Only the customer app's reports (metadata.app), as the plain list.
+  @ValidateIf(whenSent)
+  @IsIn([CUSTOMER_APP])
+  app?: typeof CUSTOMER_APP;
 
   // "Last 24 hours" and friends; wins over from/to.
   @ValidateIf(whenSent)
