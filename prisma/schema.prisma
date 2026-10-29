@@ -2218,6 +2218,8 @@ model AssetCategoryOption {
   icon         String?
   color        String
   displayOrder Int      @default(0)
+  // Off: left out of the Purchase and Add asset dropdowns; its assets stay.
+  isActive     Boolean  @default(true)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 

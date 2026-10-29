@@ -89,7 +89,9 @@ describe('EmailVerificationService', () => {
   });
 
   it('verifies with a good link, once', async () => {
-    const tokenRow = { id: 't1', userId: 'u1', ...row };
+    // Good for a while yet against the real clock verify() reads (the shared
+    // row's fixed expiry has passed since it was written).
+    const tokenRow = { id: 't1', userId: 'u1', ...row, expiresAt: new Date(Date.now() + 60_000) };
     const good = setup({ tokenRow });
     expect(await good.service.verify('raw')).toEqual({ verified: true, email: 'nadia@example.com' });
     expect(good.tx.user.update).toHaveBeenCalledWith({ where: { id: 'u1' }, data: { emailVerified: true, emailVerifiedAt: expect.any(Date) } });
