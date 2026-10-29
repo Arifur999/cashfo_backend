@@ -52,6 +52,13 @@ export class ReportsController {
     return this.reportsService.getMonthlyBreakdown(businessId, query);
   }
 
+  // The months with any income or expense (Overview's period picker); not
+  // a report view of its own, so no usage event.
+  @Get('reports/active-months')
+  activeMonths(@Param('businessId') businessId: string) {
+    return this.reportsService.getActiveMonths(businessId);
+  }
+
   @Get('reports/income-vs-savings')
   incomeVsSavings(@Param('businessId') businessId: string, @Req() req: Request, @Query('months') months?: string) {
     this.viewed(req, 'income_vs_savings');

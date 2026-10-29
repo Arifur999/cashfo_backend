@@ -6,7 +6,7 @@ import { PrismaService } from '../prisma/prisma.service.js';
 import { CategoryBreakdownQueryDto } from './dto/category-breakdown-query.dto.js';
 import { GeneralLedgerQueryDto } from './dto/general-ledger-query.dto.js';
 import { MonthlyBreakdownQueryDto } from './dto/monthly-breakdown-query.dto.js';
-import { MAX_REPORT_MONTHS, monthBucketsBetween } from './month-buckets.js';
+import { foldIntoMonths, MAX_REPORT_MONTHS, monthBucketsBetween } from './month-buckets.js';
 
 const ACCOUNT_TYPE_ORDER: AccountType[] = ['ASSET', 'LIABILITY', 'EQUITY', 'INCOME', 'EXPENSE'];
 
@@ -247,6 +247,20 @@ export class ReportsService {
 
   // Financial Reports page's "Income vs Savings" trend chart -- the last
   // `months` calendar months (oldest first), each with that month's total
+  // Income & Expense > Overview's period picker: every calendar month with
+  // a live income or expense in it, newest first, so the picker can grey out
+  // the empty months and list the years that have any. The same "live" rule
+  // as the breakdowns (POSTED, not a reversal). transactionDate is a date
+  // (@db.Date), so one group per day, folded into months here.
+  async getActiveMonths(businessId: string) {
+    const days = await this.prisma.transaction.groupBy({
+      by: ['transactionDate'],
+      where: { businessId, status: 'POSTED', reversalOfId: null, transactionType: { in: ['INCOME', 'EXPENSE'] } },
+      _count: { _all: true },
+    });
+    return foldIntoMonths(days.map((row) => ({ date: row.transactionDate, count: row._count._all })));
+  }
+
   // Income (same categorized-entry trick as above) and total Savings Goal
   // contributions (see SavingsGoalsService.getOverview()'s "savedThisMonth"
   // for the identical per-month aggregate, just repeated across a range
