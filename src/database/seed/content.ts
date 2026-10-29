@@ -113,13 +113,18 @@ const BUILT_IN_TEMPLATES: {
 
 export const BUILT_IN_TEMPLATE_KEYS: readonly string[] = BUILT_IN_TEMPLATES.map((template) => template.key);
 
+// The messages the app sends on its own (SystemMessagesService).
+export const AUTOMATIC_TEMPLATE_KEYS: readonly string[] = ['welcome', 'subscription_expiring', 'payment_successful', 'payment_failed', 'ticket_reply'];
+
 export async function seedNotificationTemplates(prisma: PrismaClient) {
 
   for (const template of BUILT_IN_TEMPLATES) {
     await prisma.notificationTemplate.upsert({
       where: { key: template.key },
       update: {},
-      create: template,
+      // The automatic ones start off: the app keeps its built-in messages
+      // until an admin turns a template on (an SMS costs money).
+      create: { ...template, isActive: !AUTOMATIC_TEMPLATE_KEYS.includes(template.key) },
     });
   }
 }
