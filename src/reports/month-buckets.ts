@@ -37,3 +37,27 @@ export function monthBucketsBetween(dateFrom: string, dateTo: string): MonthBuck
   }
   return buckets;
 }
+
+export interface ActiveMonth {
+  year: number;
+  // 1-12
+  month: number;
+  // Transactions dated in the month.
+  count: number;
+}
+
+// Days with their transaction counts folded into calendar months, newest
+// first. A day is a date-only value read at UTC midnight, so its month needs
+// no time zone.
+export function foldIntoMonths(days: { date: Date; count: number }[]): ActiveMonth[] {
+  const months = new Map<number, ActiveMonth>();
+  for (const { date, count } of days) {
+    const year = date.getUTCFullYear();
+    const month = date.getUTCMonth() + 1;
+    const key = year * 12 + month;
+    const row = months.get(key);
+    if (row) row.count += count;
+    else months.set(key, { year, month, count });
+  }
+  return [...months.entries()].sort((a, b) => b[0] - a[0]).map(([, row]) => row);
+}

@@ -1,4 +1,4 @@
-import { monthBucketsBetween } from './month-buckets.js';
+import { foldIntoMonths, monthBucketsBetween } from './month-buckets.js';
 
 describe('monthBucketsBetween', () => {
   it('clips the first and last month to the range', () => {
@@ -22,5 +22,21 @@ describe('monthBucketsBetween', () => {
     expect(monthBucketsBetween('2026-10-05', '2026-10-04')).toEqual([]);
     expect(monthBucketsBetween('2024-01-01', '2026-02-01')).toEqual([]);
     expect(monthBucketsBetween('2024-03-01', '2026-02-28')).toHaveLength(24);
+  });
+});
+
+describe('foldIntoMonths', () => {
+  const day = (iso: string, count: number) => ({ date: new Date(`${iso}T00:00:00.000Z`), count });
+
+  it('adds up the days of each month, newest month first', () => {
+    expect(foldIntoMonths([day('2026-09-30', 2), day('2026-10-01', 1), day('2025-12-31', 4), day('2026-10-28', 3)])).toEqual([
+      { year: 2026, month: 10, count: 4 },
+      { year: 2026, month: 9, count: 2 },
+      { year: 2025, month: 12, count: 4 },
+    ]);
+  });
+
+  it('answers nothing for no days', () => {
+    expect(foldIntoMonths([])).toEqual([]);
   });
 });
