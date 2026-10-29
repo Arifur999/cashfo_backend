@@ -48,7 +48,7 @@ const setup = ({ claimed = 1, current = 'PENDING', row = pendingRow() as Record<
     }),
   };
   const hooks = { runPaid: vi.fn().mockResolvedValue(undefined) };
-  const notices = { paid: vi.fn().mockResolvedValue(undefined), bell: vi.fn().mockResolvedValue(true) };
+  const notices = { paid: vi.fn().mockResolvedValue(undefined), bell: vi.fn().mockResolvedValue(true), failed: vi.fn().mockResolvedValue(undefined) };
   const settings = { getCached: vi.fn().mockResolvedValue({ billingCheckoutHours: 48 }) };
   const service = new PaymentConfirmationService(prisma as never, subscriptions as never, hooks as never, notices as never, settings as never);
   return { service, tx, subscriptions, hooks, notices };
@@ -149,7 +149,7 @@ describe('PaymentConfirmationService.markFailed', () => {
       data: { status: 'FAILED', failureReason: 'Money never arrived' },
     });
     expect(tx.auditLog.create.mock.calls[0][0].data).toMatchObject({ action: 'PAYMENT_MARKED_FAILED' });
-    expect(notices.bell).toHaveBeenCalledWith('u-nadia', expect.objectContaining({ key: 'payment:pay-1:failed' }));
+    expect(notices.failed).toHaveBeenCalledWith(expect.objectContaining({ id: 'pay-1', userId: 'u-nadia' }), expect.any(String), expect.anything());
   });
 
   it('refuses a payment that is no longer pending', async () => {

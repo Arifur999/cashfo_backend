@@ -164,12 +164,7 @@ export class PaymentConfirmationService {
       }
       return tx.payment.findUniqueOrThrow({ where: { id }, include: { plan: { select: { name: true } } } });
     });
-    if (payment.userId) {
-      await this.notices.bell(payment.userId, {
-        key: `payment:${id}:failed`,
-        data: { event: 'PAYMENT_FAILED', paymentId: id, planName: payment.plan.name, amount: Number(payment.amount).toFixed(2), reason },
-      });
-    }
+    await this.notices.failed(payment, payment.plan.name, reason);
     const { plan: _plan, ...row } = payment;
     return { payment: row };
   }

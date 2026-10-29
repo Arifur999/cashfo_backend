@@ -138,7 +138,7 @@ const fakePrisma = (tickets: Ticket[]) => {
 
 const setup = (tickets: Ticket[]) => {
   const prisma = fakePrisma(tickets);
-  return { service: new TicketsService(prisma as never, {} as never, {} as never), prisma };
+  return { service: new TicketsService(prisma as never, {} as never, {} as never, { send: vi.fn(async () => 'OFF') } as never), prisma };
 };
 const ids = (result: { data: { id: string }[] }) => result.data.map((row) => row.id);
 
@@ -396,7 +396,7 @@ describe('TicketsService.addMessage', () => {
     };
     const mail = { sendSupportReplyEmail: vi.fn(async () => undefined) };
     const config = { get: vi.fn(() => 're_key') };
-    return { service: new TicketsService(prisma as never, mail as never, config as never), prisma, mail };
+    return { service: new TicketsService(prisma as never, mail as never, config as never, { send: vi.fn(async () => 'OFF') } as never), prisma, mail };
   };
 
   it('a reply tells the customer and takes an OPEN ticket IN_PROGRESS, without an audit row', async () => {

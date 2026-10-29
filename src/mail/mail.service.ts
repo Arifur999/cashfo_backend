@@ -87,6 +87,12 @@ export class MailService {
     await this.sendEmail({ to, ...renderSupportReplyEmail(name, subject, reply, link, await this.platformName()) });
   }
 
+  // An automatic message in an admin's own words (Notifications >
+  // Templates), to one person, in the campaign email's layout.
+  async sendTemplatedEmail(to: string, locale: 'en' | 'bn', email: CampaignEmail, attachments?: EmailAttachment[]): Promise<void> {
+    await this.sendEmail({ to, ...renderCampaignEmail(locale, email, await this.platformName()), attachments });
+  }
+
   async sendBillingReceiptEmail(to: string, locale: 'en' | 'bn', receipt: ReceiptEmail, attachments?: EmailAttachment[]): Promise<void> {
     await this.sendEmail({ to, ...renderBillingReceiptEmail(locale, receipt, await this.platformName()), attachments });
   }

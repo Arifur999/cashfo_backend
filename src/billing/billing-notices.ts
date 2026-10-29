@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import type { Prisma } from '@prisma/client';
 import { MailService, type EmailAttachment } from '../mail/mail.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { SystemMessagesService } from '../system-messages/system-messages.service.js';
 import { dateLabel, formatTaka, localeOf } from './billing-text.js';
 import { toPaisa } from './pricing.js';
 
@@ -16,6 +17,13 @@ export interface BillingNotice {
   key: string;
   data: { event: BillingEvent } & Record<string, string | number | null>;
 }
+
+// An amount as a template writes it, before {{currency}}: "1,299" or
+// "1,299.50".
+const amountText = (amount: { toString(): string }) => {
+  const value = Number(amount.toString());
+  return value.toLocaleString('en-IN', { minimumFractionDigits: Number.isInteger(value) ? 0 : 2, maximumFractionDigits: 2 });
+};
 
 // Where an email's button leads in the customer app.
 const BILLING_PATH = '/settings/plans';
@@ -32,6 +40,7 @@ export class BillingNotices {
     private readonly prisma: PrismaService,
     private readonly mail: MailService,
     private readonly config: ConfigService,
+    private readonly systemMessages: SystemMessagesService,
   ) {}
 
   // True when the row is new.
@@ -64,6 +73,23 @@ export class BillingNotices {
       },
     });
     if (!fresh) return false;
+    // The admin's Payment received template, while it is on, takes the
+    // built-in receipt's place (the invoice PDF still goes with it).
+    const own = await this.systemMessages.send('payment_successful', payment.userId, {
+      values: (language) => ({
+        planName,
+        amount: amountText(payment.amount),
+        currency: 'BDT',
+        invoiceNumber,
+        expiryDate: payment.periodEnd ? dateLabel(payment.periodEnd, localeOf(language)) : '',
+      }),
+      link: this.link(),
+      attachments: async () => {
+        const file = attachment ? await attachment() : null;
+        return file ? [file] : [];
+      },
+    });
+    if (own !== 'OFF') return own === 'SENT';
     return this.email(payment.userId, async (user, locale) => {
       const file = attachment ? await attachment() : null;
       await this.mail.sendBillingReceiptEmail(
@@ -86,6 +112,15 @@ export class BillingNotices {
   async plan(userId: string, notice: BillingNotice, email: { kind: 'ENDING' | 'ENDED'; planName: string; trial: boolean; date: Date } | null) {
     const fresh = await this.bell(userId, notice);
     if (!fresh || !email) return;
+    // A plan ending soon: the admin's Plan ending soon template, while it is
+    // on, in place of the built-in email.
+    if (email.kind === 'ENDING') {
+      const own = await this.systemMessages.send('subscription_expiring', userId, {
+        values: (language) => ({ planName: email.planName, expiryDate: dateLabel(email.date, localeOf(language)) }),
+        link: this.link(),
+      });
+      if (own !== 'OFF') return;
+    }
     await this.email(userId, async (user, locale) =>
       this.mail.sendPlanNoticeEmail(user.email, locale, {
         kind: email.kind,
@@ -96,6 +131,22 @@ export class BillingNotices {
         link: this.link(),
       }),
     );
+  }
+
+  // A payment was marked failed: the bell, and the admin's Payment failed
+  // template (an SMS) while it is on. There is no built-in message besides
+  // the bell.
+  async failed(payment: { id: string; userId: string | null; amount: { toString(): string } }, planName: string, reason: string | null) {
+    if (!payment.userId) return;
+    const fresh = await this.bell(payment.userId, {
+      key: `payment:${payment.id}:failed`,
+      data: { event: 'PAYMENT_FAILED', paymentId: payment.id, planName, amount: Number(payment.amount.toString()).toFixed(2), reason },
+    });
+    if (!fresh) return;
+    await this.systemMessages.send('payment_failed', payment.userId, {
+      values: { planName, amount: amountText(payment.amount), currency: 'BDT' },
+      link: this.link(),
+    });
   }
 
   private link() {
