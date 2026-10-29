@@ -10,6 +10,7 @@ import { AssignTicketDto } from './dto/assign-ticket.dto.js';
 import { CreateTicketDto } from './dto/create-ticket.dto.js';
 import { ListTicketsQueryDto, TICKET_STATUS_GROUPS, UNASSIGNED, type TicketStatusFilter } from './dto/list-tickets-query.dto.js';
 import { UpdateTicketDto } from './dto/update-ticket.dto.js';
+import { SystemMessagesService } from '../system-messages/system-messages.service.js';
 
 const RESOLVED_STATUSES: TicketStatus[] = [TicketStatus.RESOLVED, TicketStatus.CLOSED];
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -89,6 +90,7 @@ export class TicketsService {
     private readonly prisma: PrismaService,
     private readonly mailService: MailService,
     private readonly configService: ConfigService,
+    private readonly systemMessages: SystemMessagesService,
   ) {}
 
   // A ticket answered and left waiting on the customer for QUIET_DAYS with
@@ -368,7 +370,11 @@ export class TicketsService {
   private async tellCustomer(ticket: { id: string; subject: string; platformUserId: string }, messageId: string, reply: string) {
     const customer = await this.prisma.user.findFirst({ where: { id: ticket.platformUserId, ...END_USER_WHERE }, select: { id: true, name: true, email: true } });
     if (!customer) return;
-    await pushNotification(this.prisma, customer.id, { key: `support:${messageId}`, type: 'SUPPORT_REPLY', businessId: null, data: { ticketId: ticket.id, subject: ticket.subject } });
+    // The bell row says it in the admin's Support reply template while that
+    // is on, and in the app's own words otherwise.
+    const bell = { key: `support:${messageId}`, type: 'SUPPORT_REPLY' as const, data: { ticketId: ticket.id, subject: ticket.subject } };
+    const own = await this.systemMessages.send('ticket_reply', customer.id, { values: { ticketSubject: ticket.subject }, bell });
+    if (own === 'OFF') await pushNotification(this.prisma, customer.id, { ...bell, businessId: null });
     if (!this.configService.get<string>('RESEND_API_KEY')) return;
     const appUrl = this.configService.get<string>('USER_FRONTEND_URL') ?? 'http://localhost:3000';
     const link = `${appUrl}/settings/help?message=${ticket.id}`;

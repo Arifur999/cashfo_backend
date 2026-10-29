@@ -8,6 +8,7 @@ import { PrismaService } from '../prisma/prisma.service.js';
 import { looksLikeSamePerson } from '../referrals/referral-money.js';
 import type { ReferralSettings } from '../settings/referral-settings.js';
 import { SettingsService } from '../settings/settings.service.js';
+import { SystemMessagesService } from '../system-messages/system-messages.service.js';
 
 export interface ProvisionOptions {
   // Someone else's shareable code from a signup link. Only counts the first
@@ -29,6 +30,7 @@ export class UserProvisioningService {
     private readonly accountsService: AccountsService,
     private readonly settingsService: SettingsService,
     private readonly mailService: MailService,
+    private readonly systemMessages: SystemMessagesService,
   ) {}
 
   // Returns the user's default workspace id, creating it on first use.
@@ -139,13 +141,17 @@ export class UserProvisioningService {
     });
   }
 
-  // Best-effort: a flaky or unconfigured email provider must never fail a
-  // signup -- log and move on.
+  // Best-effort and in the background: a flaky or unconfigured email
+  // provider must never fail or slow a signup -- log and move on. The admin's
+  // Welcome template takes the built-in email's place while it is on.
   private async sendWelcomeEmail(userId: string) {
-    const user = await this.prisma.user.findUnique({ where: { id: userId }, select: { name: true, email: true } });
-    if (!user) return;
-    this.mailService.sendWelcomeEmail(user.email, user.name).catch((err: unknown) => {
-      this.logger.error(`Failed to send welcome email to ${user.email}: ${err instanceof Error ? err.message : String(err)}`);
+    void (async () => {
+      if ((await this.systemMessages.send('welcome', userId)) !== 'OFF') return;
+      const user = await this.prisma.user.findUnique({ where: { id: userId }, select: { name: true, email: true } });
+      if (!user) return;
+      await this.mailService.sendWelcomeEmail(user.email, user.name);
+    })().catch((err: unknown) => {
+      this.logger.error(`Failed to send the welcome email for user ${userId}: ${err instanceof Error ? err.message : String(err)}`);
     });
   }
 }

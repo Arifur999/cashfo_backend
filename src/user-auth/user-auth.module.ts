@@ -16,6 +16,7 @@ import { UserSessionsService } from './user-sessions.service.js';
 import { SecurityAlertsService } from './security-alerts.service.js';
 import { LoginRateLimitFilter } from './filters/login-rate-limit.filter.js';
 import { UserAuthGuard } from './guards/user-auth.guard.js';
+import { SystemMessagesModule } from '../system-messages/system-messages.module.js';
 
 @Module({
   // Sessions, tokens and credentials come from the global AuthModule.
@@ -32,7 +33,7 @@ import { UserAuthGuard } from './guards/user-auth.guard.js';
   // EmailVerificationModule: the signup's verification email (sent from the
   // first device row). OneTimeCodesModule: the emailed code a password reset
   // asks for when the owner turned that on (Settings > Security > Alerts).
-  imports: [AccountsModule, UploadsModule, SettingsModule, MailModule, EmailVerificationModule, OneTimeCodesModule, SmsModule],
+  imports: [AccountsModule, UploadsModule, SettingsModule, MailModule, EmailVerificationModule, OneTimeCodesModule, SmsModule, SystemMessagesModule],
   controllers: [UserAuthController, PhoneController],
   providers: [UserAuthService, PhoneService, UserProfileService, UserSessionsService, UserProvisioningService, SecurityAlertsService, UserAuthGuard, LoginRateLimitFilter],
   // UserAuthService: the unified sign-in (SignInModule) hands end users to it.
