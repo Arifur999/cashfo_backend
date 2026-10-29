@@ -90,14 +90,16 @@ export class QuickEntriesService {
     return posted;
   }
 
-  async createTransfer(businessId: string, dto: CreateTransferDto, userId: string, tx?: Prisma.TransactionClient) {
+  async createTransfer(businessId: string, dto: CreateTransferDto, userId: string, tx?: Prisma.TransactionClient): Promise<PostedEntry> {
     if (dto.fromAccountId === dto.toAccountId) {
       throw new BadRequestException('Cannot transfer to the same account');
     }
+    // A charge is posted with it, in one database transaction.
+    if (dto.charge && !tx) return this.prisma.$transaction((client) => this.createTransfer(businessId, dto, userId, client));
     const fromAccount = await this.requireMoneyAccount(businessId, dto.fromAccountId, 'fromAccountId');
     const toAccount = await this.requireMoneyAccount(businessId, dto.toAccountId, 'toAccountId');
 
-    return this.transactionsService.createTransaction(
+    const posted = await this.transactionsService.createTransaction(
       businessId,
       {
         transactionType: 'TRANSFER',
@@ -111,6 +113,16 @@ export class QuickEntriesService {
       userId,
       tx,
     );
+    if (dto.charge && tx) {
+      await this.transactionsService.postCharge(
+        tx,
+        businessId,
+        posted.id,
+        { amount: dto.charge, moneyAccountId: fromAccount.id, date: dto.date, category: dto.chargeCategory },
+        userId,
+      );
+    }
+    return posted;
   }
 
   // Editing an entry (decision D2): the original is voided with the reason
