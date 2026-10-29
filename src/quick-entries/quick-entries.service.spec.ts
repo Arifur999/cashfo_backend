@@ -16,6 +16,7 @@ const setup = ({ original = { businessId: 'biz-1', transactionType: 'EXPENSE' } 
   const transactions = {
     voidTransaction: vi.fn().mockResolvedValue({ original: { id: 'tx-1', status: 'VOIDED' } }),
     createTransaction: vi.fn().mockResolvedValue({ id: 'tx-2' }),
+    postCharge: vi.fn().mockResolvedValue({ id: 'charge-1' }),
   };
   const service = new QuickEntriesService(prisma as never, transactions as never);
   return { service, tx, transactions };
@@ -60,5 +61,20 @@ describe('QuickEntriesService corrections', () => {
     const { service, transactions } = setup({ original: { businessId: 'biz-1', transactionType: 'TRANSFER' } });
     await service.correctTransfer('biz-1', 'tx-1', { fromAccountId: 'bank', toAccountId: 'cash', amount: 2000, date: '2026-10-17' }, 'user-1');
     expect(transactions.createTransaction.mock.calls[0][1]).toMatchObject({ transactionType: 'TRANSFER' });
+  });
+});
+
+describe('QuickEntriesService transfer charges', () => {
+  it("posts a transfer's charge out of the sending wallet, in the picked category, in one transaction", async () => {
+    const { service, tx, transactions } = setup();
+    await service.createTransfer('biz-1', { fromAccountId: 'bank', toAccountId: 'cash', amount: 5000, date: '2026-10-29', charge: 25, chargeCategory: 'Bank fees' }, 'user-1');
+    expect(transactions.createTransaction.mock.calls[0][3]).toBe(tx);
+    expect(transactions.postCharge).toHaveBeenCalledWith(tx, 'biz-1', 'tx-2', { amount: 25, moneyAccountId: 'bank', date: '2026-10-29', category: 'Bank fees' }, 'user-1');
+  });
+
+  it('posts no charge without one', async () => {
+    const { service, transactions } = setup();
+    await service.createTransfer('biz-1', { fromAccountId: 'bank', toAccountId: 'cash', amount: 5000, date: '2026-10-29' }, 'user-1');
+    expect(transactions.postCharge).not.toHaveBeenCalled();
   });
 });

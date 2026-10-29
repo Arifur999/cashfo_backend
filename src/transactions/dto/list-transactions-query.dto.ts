@@ -73,6 +73,13 @@ export class ListTransactionsQueryDto {
   @IsBoolean()
   excludeCharges?: boolean;
 
+  // Adds each row's balanceAfter: the balance of the wallet the money came
+  // into, just after it (Balance › Transfer's Balance column).
+  @IsOptional()
+  @Transform(({ value }) => (value === 'true' || value === '1' ? true : value === 'false' || value === '0' ? false : value))
+  @IsBoolean()
+  withBalanceAfter?: boolean;
+
   // Adds each row's loanBalanceAfter: the contact's balance just after it.
   @IsOptional()
   @Transform(({ value }) => (value === 'true' || value === '1' ? true : value === 'false' || value === '0' ? false : value))
