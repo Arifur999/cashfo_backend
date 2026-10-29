@@ -84,6 +84,7 @@ export class AssetsService {
           ...(dto.name !== undefined && { name: dto.name }),
           ...(dto.icon !== undefined && { icon: dto.icon }),
           ...(dto.color !== undefined && { color: dto.color }),
+          ...(dto.isActive !== undefined && { isActive: dto.isActive }),
         },
       });
     });
