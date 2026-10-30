@@ -15,6 +15,12 @@ const STANDING_TRANSACTION = { status: 'POSTED', reversalOfId: null } satisfies 
 // nameBn is the account's Bangla name, null where it has none.
 const ENTRY_ACCOUNT_SELECT = { id: true, name: true, nameBn: true, accountType: true, accountSubtype: true } satisfies Prisma.AccountSelect;
 
+// Whether a posting comes at or before another in a running balance: by
+// date, then by when it was made.
+type Moment = { transactionDate: Date; createdAt: Date };
+const atOrBefore = (a: Moment, b: Moment) =>
+  a.transactionDate.getTime() < b.transactionDate.getTime() || (a.transactionDate.getTime() === b.transactionDate.getTime() && a.createdAt.getTime() <= b.createdAt.getTime());
+
 // The category a loan entry's charge is filed under (categories are names).
 export const CHARGE_CATEGORY = 'Bank charge';
 
@@ -406,74 +412,85 @@ export class TransactionsService {
       this.withVoidable(data),
       this.chargesFor(ids),
       filters.withLoanBalance ? this.loanBalancesAfter(businessId, data) : Promise.resolve(new Map<string, string>()),
-      filters.withBalanceAfter ? this.receivingBalancesAfter(data) : Promise.resolve(new Map<string, string>()),
+      filters.withBalanceAfter ? this.walletBalancesAfter(data, filters.accountId) : Promise.resolve(new Map<string, string>()),
     ]);
     const withExtras = rows.map((row) => ({
       ...row,
-      // The charge paid with this entry, if any (voided with it).
-      charge: charges.get(row.id) ?? null,
+      // The charge paid with this entry, if any (voided with it), and the
+      // expense category it is filed under (an Edit keeps it).
+      charge: charges.get(row.id)?.amount ?? null,
+      chargeCategory: charges.get(row.id)?.category ?? null,
       ...(filters.withLoanBalance && { loanBalanceAfter: loanBalances.get(row.id) ?? null }),
       ...(filters.withBalanceAfter && { balanceAfter: receivedBalances.get(row.id) ?? null }),
     }));
     return { data: withExtras, meta: { page, limit, total, totalPages: Math.ceil(total / limit) } };
   }
 
-  // The wallet money came into (a row's DEBIT side) just after each row: its
-  // opening balance plus every entry of a standing transaction on it up to
-  // and including the row, by date and then by when it was made -- the
-  // ledger's running balance. A voided row or a reversal reads the balance
-  // as it stood, since it no longer counts.
-  private async receivingBalancesAfter(
-    rows: { id: string; transactionDate: Date; createdAt: Date; entries: { accountId: string; entryType: EntryType; account: { accountType: AccountType } }[] }[],
+  // A wallet's balance just after each row, as its ledger runs it: the
+  // opening balance plus every entry on it up to and including the row, by
+  // date and then by when it was made, voided originals and reversals
+  // included (they cancel out from the reversal's date on). The wallet is
+  // the one the list is filtered to when the row touches it, so a filtered
+  // history reads one running balance; otherwise the one money came into
+  // (the row's DEBIT side). Only entries up to the newest row are read, in
+  // one walk per wallet.
+  private async walletBalancesAfter(
+    rows: (Moment & { id: string; entries: { accountId: string; entryType: EntryType; account: { accountType: AccountType } }[] })[],
+    accountId?: string,
   ): Promise<Map<string, string>> {
     const target = new Map<string, { accountId: string; accountType: AccountType }>();
     for (const row of rows) {
-      const into = row.entries.find((entry) => entry.entryType === EntryType.DEBIT);
-      if (into) target.set(row.id, { accountId: into.accountId, accountType: into.account.accountType });
+      const side = row.entries.find((entry) => entry.accountId === accountId) ?? row.entries.find((entry) => entry.entryType === EntryType.DEBIT);
+      if (side) target.set(row.id, { accountId: side.accountId, accountType: side.account.accountType });
     }
     const accountIds = [...new Set([...target.values()].map((value) => value.accountId))];
     if (accountIds.length === 0) return new Map();
+    const newest = rows.reduce((latest, row) => (row.transactionDate > latest ? row.transactionDate : latest), rows[0].transactionDate);
     const [accounts, entries] = await Promise.all([
       this.prisma.account.findMany({ where: { id: { in: accountIds } }, select: { id: true, openingBalance: true } }),
       this.prisma.transactionEntry.findMany({
-        where: { accountId: { in: accountIds }, transaction: STANDING_TRANSACTION },
+        where: { accountId: { in: accountIds }, transaction: { transactionDate: { lte: newest } } },
         select: { accountId: true, entryType: true, amount: true, transaction: { select: { transactionDate: true, createdAt: true } } },
       }),
     ]);
     const opening = new Map(accounts.map((account) => [account.id, new Prisma.Decimal(account.openingBalance)]));
-    const atOrBefore = (a: { transactionDate: Date; createdAt: Date }, b: { transactionDate: Date; createdAt: Date }) =>
-      a.transactionDate.getTime() < b.transactionDate.getTime() ||
-      (a.transactionDate.getTime() === b.transactionDate.getTime() && a.createdAt.getTime() <= b.createdAt.getTime());
+    const byMoment = (a: Moment, b: Moment) => a.transactionDate.getTime() - b.transactionDate.getTime() || a.createdAt.getTime() - b.createdAt.getTime();
+
     const balances = new Map<string, string>();
-    for (const row of rows) {
-      const into = target.get(row.id);
-      if (!into) continue;
-      const debitPositive = isDebitPositive(into.accountType);
-      let balance = opening.get(into.accountId) ?? new Prisma.Decimal(0);
-      for (const entry of entries) {
-        if (entry.accountId !== into.accountId || !atOrBefore(entry.transaction, row)) continue;
-        const adds = (entry.entryType === EntryType.DEBIT) === debitPositive;
-        balance = adds ? balance.plus(entry.amount) : balance.minus(entry.amount);
+    for (const id of accountIds) {
+      const accountType = [...target.values()].find((value) => value.accountId === id)!.accountType;
+      const debitPositive = isDebitPositive(accountType);
+      const own = entries.filter((entry) => entry.accountId === id).sort((a, b) => byMoment(a.transaction, b.transaction));
+      const wanted = rows.filter((row) => target.get(row.id)?.accountId === id).sort(byMoment);
+      let balance = opening.get(id) ?? new Prisma.Decimal(0);
+      let next = 0;
+      for (const row of wanted) {
+        while (next < own.length && atOrBefore(own[next].transaction, row)) {
+          const entry = own[next++];
+          balance = (entry.entryType === EntryType.DEBIT) === debitPositive ? balance.plus(entry.amount) : balance.minus(entry.amount);
+        }
+        balances.set(row.id, balance.toFixed(2));
       }
-      balances.set(row.id, balance.toFixed(2));
     }
     return balances;
   }
 
-  // Each entry's charge: what the expenses tied to it add up to.
-  private async chargesFor(ids: string[]): Promise<Map<string, string>> {
+  // Each entry's charge: what the expenses tied to it add up to, and the
+  // expense category they are filed under.
+  private async chargesFor(ids: string[]): Promise<Map<string, { amount: string; category: string | null }>> {
     if (ids.length === 0) return new Map();
     const charges = await this.prisma.transaction.findMany({
       where: { chargeForId: { in: ids }, reversalOfId: null },
-      select: { chargeForId: true, entries: { where: { entryType: EntryType.DEBIT }, select: { amount: true } } },
+      select: { chargeForId: true, entries: { where: { entryType: EntryType.DEBIT }, select: { amount: true, categoryId: true } } },
     });
-    const sums = new Map<string, Prisma.Decimal>();
+    const sums = new Map<string, { sum: Prisma.Decimal; category: string | null }>();
     for (const charge of charges) {
       if (!charge.chargeForId) continue;
       const amount = charge.entries.reduce((sum, entry) => sum.plus(entry.amount), new Prisma.Decimal(0));
-      sums.set(charge.chargeForId, (sums.get(charge.chargeForId) ?? new Prisma.Decimal(0)).plus(amount));
+      const was = sums.get(charge.chargeForId);
+      sums.set(charge.chargeForId, { sum: (was?.sum ?? new Prisma.Decimal(0)).plus(amount), category: was?.category ?? charge.entries[0]?.categoryId ?? null });
     }
-    return new Map([...sums].map(([id, sum]) => [id, sum.toFixed(2)]));
+    return new Map([...sums].map(([id, { sum, category }]) => [id, { amount: sum.toFixed(2), category }]));
   }
 
   // A loan contact's balance just after each row: the opening balance plus
@@ -506,9 +523,6 @@ export class TransactionsService {
       }),
     ]);
     const opening = new Map(contacts.map((contact) => [contact.id, new Prisma.Decimal(contact.openingBalance)]));
-    const atOrBefore = (a: { transactionDate: Date; createdAt: Date }, b: { transactionDate: Date; createdAt: Date }) =>
-      a.transactionDate.getTime() < b.transactionDate.getTime() ||
-      (a.transactionDate.getTime() === b.transactionDate.getTime() && a.createdAt.getTime() <= b.createdAt.getTime());
 
     const balances = new Map<string, string>();
     for (const row of rows) {
