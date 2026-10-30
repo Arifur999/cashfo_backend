@@ -1,6 +1,6 @@
 import { GroupSplit } from '@prisma/client';
-import { ArrayMaxSize, IsArray, IsEnum, IsIn, IsNotEmpty, IsOptional, IsString, IsUUID, ValidateIf } from 'class-validator';
-import { BUDGET_CATEGORY_COLORS, BUDGET_CATEGORY_ICONS } from '../../budgets/budget-category-visuals.js';
+import { ArrayMaxSize, IsArray, IsBoolean, IsEnum, IsIn, IsNotEmpty, IsOptional, IsString, IsUUID, ValidateIf } from 'class-validator';
+import { BUDGET_CATEGORY_ICONS, GROUP_CATEGORY_COLORS } from '../../budgets/budget-category-visuals.js';
 import { whenSent } from '../../common/dto.js';
 
 export class CreateGroupExpenseCategoryDto {
@@ -12,7 +12,7 @@ export class CreateGroupExpenseCategoryDto {
   @IsIn(BUDGET_CATEGORY_ICONS)
   icon?: string | null;
 
-  @IsIn(BUDGET_CATEGORY_COLORS)
+  @IsIn(GROUP_CATEGORY_COLORS)
   color: string;
 
   // How a new expense in it is shared, to start with.
@@ -27,4 +27,9 @@ export class CreateGroupExpenseCategoryDto {
   @ArrayMaxSize(200)
   @IsUUID('all', { each: true })
   defaultMemberIds?: string[];
+
+  // Hidden: not offered for new expenses; old records keep it.
+  @ValidateIf(whenSent)
+  @IsBoolean()
+  hidden?: boolean;
 }
