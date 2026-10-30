@@ -1,6 +1,6 @@
 import { Transform } from 'class-transformer';
-import { IsDateString, IsNotEmpty, IsOptional, IsString, MaxLength } from 'class-validator';
-import { IsMoney, trim } from '../../common/dto.js';
+import { IsDateString, IsNotEmpty, IsOptional, IsString, MaxLength, ValidateIf } from 'class-validator';
+import { IsMoney, trim, whenSent } from '../../common/dto.js';
 
 export class CreateTransferDto {
   @IsString()
@@ -17,15 +17,16 @@ export class CreateTransferDto {
   // A bank or service charge paid on the transfer, out of the sending
   // wallet: an expense of its own tied to it (chargeForId), voided and
   // corrected with it.
-  @IsOptional()
+  @ValidateIf(whenSent)
   @IsMoney()
   charge?: number;
 
   // The expense category the charge is filed under (a budget category's
   // name); "Bank charge" when left out.
-  @IsOptional()
+  @ValidateIf(whenSent)
   @Transform(trim)
   @IsString()
+  @IsNotEmpty()
   @MaxLength(100)
   chargeCategory?: string;
 
