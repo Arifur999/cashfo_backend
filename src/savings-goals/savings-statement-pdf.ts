@@ -84,6 +84,9 @@ export function renderStatementPdf(input: StatementPdfInput): Buffer {
   const right = page.width - MARGIN;
   const width = right - MARGIN;
   let y = MARGIN;
+  // The statement runs from the goal's first day, or from an earlier entry
+  // (money moved in before it was recorded, a back-dated deposit).
+  const firstDay = [input.goal.startDate, ...input.rows.map((row) => row.date.toISOString().slice(0, 10))].sort()[0];
 
   // Header: the platform, the title and the person; the statement's facts
   // on the right.
@@ -94,7 +97,7 @@ export function renderStatementPdf(input: StatementPdfInput): Buffer {
   page.text(MARGIN, y + 46, person, { size: 9.5, color: BODY });
   const facts: [string, string][] = [
     ['Statement date', dayLabel(input.today)],
-    ['Period', `${dayLabel(input.goal.startDate)} - ${dayLabel(input.today)}`],
+    ['Period', `${dayLabel(firstDay)} - ${dayLabel(input.today)}`],
     ['Entries', String(input.rows.length)],
   ];
   facts.forEach(([label, value], index) => {
@@ -136,7 +139,7 @@ export function renderStatementPdf(input: StatementPdfInput): Buffer {
   y += 56;
 
   // The movements.
-  const cols = { n: MARGIN + 4, date: MARGIN + 26, details: MARGIN + 96, from: MARGIN + 330, to: MARGIN + 450, inR: right - 170, outR: right - 90, balR: right - 4 };
+  const cols = { n: MARGIN + 4, date: MARGIN + 26, details: MARGIN + 96, from: MARGIN + 270, to: MARGIN + 410, inR: right - 150, outR: right - 75, balR: right - 4 };
   const head = () => {
     page.text(MARGIN, y, 'Transactions', { font: 'bold', size: 11, color: INK });
     y += 14;
@@ -162,7 +165,7 @@ export function renderStatementPdf(input: StatementPdfInput): Buffer {
     head();
   };
   head();
-  page.text(cols.date, y, dayLabel(input.goal.startDate), { size: 9, color: BODY });
+  page.text(cols.date, y, dayLabel(firstDay), { size: 9, color: BODY });
   page.text(cols.details, y, 'Goal started', { size: 9, color: BODY });
   page.text(cols.balR, y, takaLabel(0), { font: 'bold', size: 9, color: INK, align: 'right' });
   y += 6;
@@ -175,7 +178,7 @@ export function renderStatementPdf(input: StatementPdfInput): Buffer {
     page.text(cols.date, y, dayLabel(row.date), { size: 9, color: INK });
     page.text(cols.details, y, fit(text.details, 9, cols.from - cols.details - 10), { size: 9, color: INK });
     page.text(cols.from, y, fit(text.from, 9, cols.to - cols.from - 10), { size: 9, color: INK });
-    page.text(cols.to, y, fit(text.to, 9, cols.inR - 80 - cols.to), { size: 9, color: INK });
+    page.text(cols.to, y, fit(text.to, 9, cols.inR - 70 - cols.to), { size: 9, color: INK });
     if (row.moneyIn) page.text(cols.inR, y, takaLabel(row.moneyIn), { font: 'bold', size: 9, color: IN, align: 'right' });
     if (row.moneyOut) page.text(cols.outR, y, takaLabel(row.moneyOut), { font: 'bold', size: 9, color: OUT, align: 'right' });
     page.text(cols.balR, y, takaLabel(row.balance), { font: 'bold', size: 9, color: INK, align: 'right' });
