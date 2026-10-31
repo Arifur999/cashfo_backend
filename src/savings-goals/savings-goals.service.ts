@@ -1,7 +1,8 @@
+import { randomUUID } from 'node:crypto';
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { Account, Prisma, SavingsGoal, SavingsGoalStatus } from '@prisma/client';
-import { MONEY_ACCOUNT_SUBTYPES } from '../accounts/accounts.service.js';
-import { dhakaMonthRange } from '../common/dhaka.js';
+import { MONEY_ACCOUNT_SUBTYPES, SAVINGS_OPENING_ACCOUNT_SUBTYPE } from '../accounts/accounts.service.js';
+import { dhakaDateKey, dhakaDateOnly, dhakaMonthRange } from '../common/dhaka.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { TransactionsService } from '../transactions/transactions.service.js';
 import { AddContributionDto } from './dto/add-contribution.dto.js';
@@ -9,7 +10,44 @@ import { CreateSavingsGoalDto } from './dto/create-savings-goal.dto.js';
 import { CreateSavingsTransferDto } from './dto/create-savings-transfer.dto.js';
 import { UpdateSavingsGoalDto } from './dto/update-savings-goal.dto.js';
 import { UpdateSavingsGoalStatusDto } from './dto/update-savings-goal-status.dto.js';
+import { UpdateSavingsPlanDto } from './dto/update-savings-plan.dto.js';
 import { WithdrawSavingsGoalDto } from './dto/withdraw-savings-goal.dto.js';
+import { WithdrawToBalanceDto } from './dto/withdraw-to-balance.dto.js';
+import { goalHoldings, splitLargestFirst, type HoldingEntry, type Holdings, type WalletPart } from './savings-holdings.js';
+import { planPace } from './savings-plan.js';
+
+const ZERO = new Prisma.Decimal(0);
+
+// The entry fields every read works from.
+const ENTRY_SELECT = {
+  id: true,
+  savingsGoalId: true,
+  type: true,
+  amount: true,
+  date: true,
+  createdAt: true,
+  moneyAccountId: true,
+  savingsAccountId: true,
+  relatedGoalId: true,
+  transactionId: true,
+  groupId: true,
+  notes: true,
+} satisfies Prisma.SavingsGoalEntrySelect;
+
+type EntryRow = Prisma.SavingsGoalEntryGetPayload<{ select: typeof ENTRY_SELECT }>;
+
+// A workspace's goal entries, read once per request, with what they add up
+// to: each goal's money per savings wallet and the names of the accounts
+// they name.
+interface Ledger {
+  entries: EntryRow[];
+  holdings: Map<string, Holdings>;
+  accountNames: Map<string, string>;
+}
+
+const decimal = (value: Prisma.Decimal.Value) => new Prisma.Decimal(value);
+const sum = (rows: { amount: Prisma.Decimal.Value }[]) => rows.reduce((total, row) => total.plus(row.amount), ZERO);
+const dayOf = (date: Date) => date.toISOString().slice(0, 10);
 
 @Injectable()
 export class SavingsGoalsService {
@@ -19,11 +57,11 @@ export class SavingsGoalsService {
   ) {}
 
   async list(businessId: string, status?: SavingsGoalStatus) {
-    const goals = await this.prisma.savingsGoal.findMany({
-      where: { businessId, ...(status && { status }) },
-      orderBy: { createdAt: 'asc' },
-    });
-    return Promise.all(goals.map((g) => this.toSummary(g)));
+    const [goals, ledger] = await Promise.all([
+      this.prisma.savingsGoal.findMany({ where: { businessId, ...(status && { status }) }, orderBy: { createdAt: 'asc' } }),
+      this.ledger(businessId),
+    ]);
+    return Promise.all(goals.map((goal) => this.toSummary(goal, ledger)));
   }
 
   // Savings Overview card: totals across every goal regardless of status
@@ -49,7 +87,7 @@ export class SavingsGoalsService {
 
     const savedThisMonthAgg = await this.prisma.savingsGoalEntry.aggregate({
       _sum: { amount: true },
-      where: { businessId, type: 'CONTRIBUTION', date: { gte: monthStart, lt: monthEnd } },
+      where: { businessId, type: 'CONTRIBUTION', moneyAccountId: { not: null }, date: { gte: monthStart, lt: monthEnd } },
     });
     const savedThisMonth = savedThisMonthAgg._sum.amount ?? new Prisma.Decimal(0);
 
@@ -82,7 +120,7 @@ export class SavingsGoalsService {
     };
   }
 
-  // Savings Overview page (/savings-goals/overview) -- same shape as
+  // Savings accounts' money summary -- same shape as
   // AccountBalanceService.getWalletsOverview() (Balance's own Overview
   // page), except scoped to accountSubtype "savings": every real Savings
   // Wallet the user funds goals from/into (see requireSavingsAccount()).
@@ -98,9 +136,7 @@ export class SavingsGoalsService {
   // isSystemAccount ternary below) so it doesn't read as just another
   // wallet the user forgot they created. "Inactive" means
   // AccountStatus.ARCHIVED (a real archived Savings Wallet), not a goal's
-  // own status -- this table is about where the money physically sits,
-  // not per-goal progress (that's getOverview()/the Dashboard page, a
-  // completely separate figure).
+  // own status.
   async getAccountOverview(businessId: string) {
     const allWallets = await this.prisma.account.findMany({
       where: { businessId, accountType: 'ASSET', accountSubtype: 'savings' },
@@ -138,6 +174,7 @@ export class SavingsGoalsService {
       return {
         id: wallet.id,
         name: wallet.isSystemAccount ? `${wallet.name} (Legacy Pool)` : wallet.name,
+        accountNumber: wallet.accountNumber,
         status: wallet.status,
         openingBalance: wallet.openingBalance.toFixed(2),
         totalIn: (inByWallet.get(wallet.id) ?? new Prisma.Decimal(0)).toFixed(2),
@@ -155,76 +192,300 @@ export class SavingsGoalsService {
     };
   }
 
-  // Savings Transfer page's history table -- every TRANSFER_OUT entry
-  // business-wide, each already paired 1:1 with a TRANSFER_IN on the other
-  // goal (see transfer()), so this alone is enough to reconstruct every
-  // "Goal A -> Goal B" row without also fetching the TRANSFER_IN half.
+  // Which goals each savings wallet's money belongs to: for the Savings
+  // accounts page's cards and their By goal tab. A goal counts in a wallet
+  // while it holds money there; how many deposits made it, and which goals
+  // moved money in, describe each line.
+  async listWalletGoals(businessId: string) {
+    const [goals, ledger] = await Promise.all([this.prisma.savingsGoal.findMany({ where: { businessId }, select: { id: true, name: true, status: true } }), this.ledger(businessId)]);
+    const goalById = new Map(goals.map((goal) => [goal.id, goal]));
+    const byWallet = new Map<string, { goalId: string; goalName: string; status: SavingsGoalStatus; amount: Prisma.Decimal; deposits: number; movedInFrom: string[] }[]>();
+
+    for (const [goalId, holdings] of ledger.holdings) {
+      const goal = goalById.get(goalId);
+      if (!goal) continue;
+      for (const [walletId, amount] of holdings) {
+        if (!walletId || amount.lessThanOrEqualTo(0)) continue;
+        const mine = ledger.entries.filter((e) => e.savingsGoalId === goalId && e.savingsAccountId === walletId);
+        const movedInFrom = [
+          ...new Set(
+            mine
+              .filter((e) => e.type === 'TRANSFER_IN' && e.relatedGoalId)
+              .map((e) => goalById.get(e.relatedGoalId as string)?.name)
+              .filter((name): name is string => !!name),
+          ),
+        ];
+        const row = { goalId, goalName: goal.name, status: goal.status, amount, deposits: mine.filter((e) => e.type === 'CONTRIBUTION').length, movedInFrom };
+        byWallet.set(walletId, [...(byWallet.get(walletId) ?? []), row]);
+      }
+    }
+
+    return [...byWallet.entries()].map(([accountId, rows]) => ({
+      accountId,
+      goals: rows.sort((a, b) => b.amount.comparedTo(a.amount)).map((row) => ({ ...row, amount: row.amount.toFixed(2) })),
+    }));
+  }
+
+  // One savings wallet's goal history, newest first: money added for a goal
+  // (and from where), moves between goals that changed which goal its money
+  // counts toward, and withdrawals out of it.
+  async listWalletHistory(businessId: string, accountId: string) {
+    await this.requireSavingsAccount(businessId, accountId);
+    const [goals, ledger] = await Promise.all([this.prisma.savingsGoal.findMany({ where: { businessId }, select: { id: true, name: true } }), this.ledger(businessId)]);
+    const goalName = new Map(goals.map((goal) => [goal.id, goal.name]));
+    const parts = this.entryParts(ledger.entries);
+
+    const rows: {
+      id: string;
+      date: Date;
+      kind: 'ALREADY_SAVED' | 'ADDED' | 'MOVED' | 'WITHDRAWN';
+      goalName: string;
+      otherGoalName: string | null;
+      accountName: string | null;
+      amount: string;
+      notes: string | null;
+    }[] = [];
+    const seenGroups = new Set<string>();
+    for (const entry of ledger.entries) {
+      const here = (parts.get(entry.id) ?? []).filter((part) => part.walletId === accountId);
+      if (here.length === 0 || entry.type === 'TRANSFER_IN') continue;
+      const amount = sum(here);
+      const name = goalName.get(entry.savingsGoalId) ?? '';
+      if (entry.type === 'CONTRIBUTION') {
+        rows.push({
+          id: entry.id,
+          date: entry.date,
+          kind: entry.moneyAccountId ? 'ADDED' : 'ALREADY_SAVED',
+          goalName: name,
+          otherGoalName: null,
+          accountName: entry.moneyAccountId ? (ledger.accountNames.get(entry.moneyAccountId) ?? null) : null,
+          amount: amount.toFixed(2),
+          notes: entry.notes,
+        });
+      } else {
+        // A move or a withdrawal is listed once, though it may be several
+        // entries (one per wallet): this wallet's part of it.
+        const key = `${entry.groupId ?? entry.id}|${entry.type}`;
+        if (seenGroups.has(key)) {
+          const row = rows.find((r) => r.id === key);
+          if (row) row.amount = decimal(row.amount).plus(amount).toFixed(2);
+          continue;
+        }
+        seenGroups.add(key);
+        rows.push({
+          id: key,
+          date: entry.date,
+          kind: entry.type === 'TRANSFER_OUT' ? 'MOVED' : 'WITHDRAWN',
+          goalName: name,
+          otherGoalName: entry.relatedGoalId ? (goalName.get(entry.relatedGoalId) ?? null) : null,
+          accountName: entry.moneyAccountId ? (ledger.accountNames.get(entry.moneyAccountId) ?? null) : null,
+          amount: amount.toFixed(2),
+          notes: entry.notes,
+        });
+      }
+    }
+    return rows.sort((a, b) => b.date.getTime() - a.date.getTime());
+  }
+
+  // Savings Transfer page's history: one row per move. A move that took
+  // money from several savings wallets is several TRANSFER_OUT/TRANSFER_IN
+  // pairs sharing a groupId, added up here; only a move with a groupId can
+  // be undone (one so old it never got paired has none).
   async listTransfers(businessId: string) {
     const outEntries = await this.prisma.savingsGoalEntry.findMany({
       where: { businessId, type: 'TRANSFER_OUT' },
-      orderBy: { date: 'desc' },
+      orderBy: [{ date: 'desc' }, { createdAt: 'desc' }],
     });
     const goalIds = [...new Set(outEntries.flatMap((e) => [e.savingsGoalId, e.relatedGoalId].filter((v): v is string => !!v)))];
     const goals = goalIds.length ? await this.prisma.savingsGoal.findMany({ where: { id: { in: goalIds } } }) : [];
     const nameById = new Map(goals.map((g) => [g.id, g.name]));
 
-    return outEntries.map((e) => ({
-      id: e.id,
-      date: e.date,
-      amount: e.amount.toFixed(2),
-      fromGoalId: e.savingsGoalId,
-      fromGoalName: nameById.get(e.savingsGoalId) ?? '(deleted goal)',
-      toGoalId: e.relatedGoalId,
-      toGoalName: e.relatedGoalId ? (nameById.get(e.relatedGoalId) ?? '(deleted goal)') : '(deleted goal)',
-      notes: e.notes,
+    const rows = new Map<string, { id: string; groupId: string | null; date: Date; amount: Prisma.Decimal; fromGoalId: string; toGoalId: string | null; notes: string | null }>();
+    for (const e of outEntries) {
+      const key = e.groupId ?? e.id;
+      const row = rows.get(key);
+      if (row) row.amount = row.amount.plus(e.amount);
+      else rows.set(key, { id: key, groupId: e.groupId, date: e.date, amount: decimal(e.amount), fromGoalId: e.savingsGoalId, toGoalId: e.relatedGoalId, notes: e.notes });
+    }
+
+    return [...rows.values()].map((row) => ({
+      id: row.id,
+      date: row.date,
+      amount: row.amount.toFixed(2),
+      fromGoalId: row.fromGoalId,
+      fromGoalName: nameById.get(row.fromGoalId) ?? '(deleted goal)',
+      toGoalId: row.toGoalId,
+      toGoalName: row.toGoalId ? (nameById.get(row.toGoalId) ?? '(deleted goal)') : '(deleted goal)',
+      notes: row.notes,
+      canUndo: row.groupId !== null,
     }));
   }
 
   async getOne(businessId: string, id: string) {
     const goal = await this.requireGoal(businessId, id);
-    const entries = await this.prisma.savingsGoalEntry.findMany({ where: { savingsGoalId: id }, orderBy: { date: 'desc' } });
+    const ledger = await this.ledger(businessId);
+    const entries = ledger.entries.filter((e) => e.savingsGoalId === id).sort((a, b) => b.date.getTime() - a.date.getTime() || b.createdAt.getTime() - a.createdAt.getTime());
 
-    const accountIds = [...new Set([...entries.map((e) => e.moneyAccountId), ...entries.map((e) => e.savingsAccountId)].filter((v): v is string => !!v))];
     const relatedGoalIds = [...new Set(entries.map((e) => e.relatedGoalId).filter((v): v is string => !!v))];
-    const [accounts, relatedGoals] = await Promise.all([
-      accountIds.length ? this.prisma.account.findMany({ where: { id: { in: accountIds } } }) : Promise.resolve([]),
-      relatedGoalIds.length ? this.prisma.savingsGoal.findMany({ where: { id: { in: relatedGoalIds } } }) : Promise.resolve([]),
-    ]);
-    const accountNameById = new Map(accounts.map((a) => [a.id, a.name]));
+    const relatedGoals = relatedGoalIds.length ? await this.prisma.savingsGoal.findMany({ where: { id: { in: relatedGoalIds } } }) : [];
     const goalNameById = new Map(relatedGoals.map((g) => [g.id, g.name]));
 
     return {
-      ...(await this.toSummary(goal)),
+      ...(await this.toSummary(goal, ledger)),
       entries: entries.map((e) => ({
         id: e.id,
         type: e.type,
         amount: e.amount.toFixed(2),
         date: e.date,
-        moneyAccountName: e.moneyAccountId ? (accountNameById.get(e.moneyAccountId) ?? null) : null,
-        savingsAccountName: e.savingsAccountId ? (accountNameById.get(e.savingsAccountId) ?? null) : null,
+        moneyAccountName: e.moneyAccountId ? (ledger.accountNames.get(e.moneyAccountId) ?? null) : null,
+        savingsAccountName: e.savingsAccountId ? (ledger.accountNames.get(e.savingsAccountId) ?? null) : null,
         relatedGoalName: e.relatedGoalId ? (goalNameById.get(e.relatedGoalId) ?? null) : null,
+        groupId: e.groupId,
         notes: e.notes,
       })),
     };
   }
 
-  async create(businessId: string, dto: CreateSavingsGoalDto) {
-    return this.prisma.savingsGoal.create({
-      data: {
+  // A goal's full statement, oldest first: every movement of its money with
+  // where it came from and went, a running balance, the totals, where the
+  // money came from altogether and which savings wallets hold it now. A
+  // move or withdrawal across several wallets is one row.
+  async getStatement(businessId: string, id: string) {
+    const goal = await this.requireGoal(businessId, id);
+    const ledger = await this.ledger(businessId);
+    const summary = await this.toSummary(goal, ledger);
+    const otherGoals = await this.prisma.savingsGoal.findMany({ where: { businessId }, select: { id: true, name: true } });
+    const goalName = new Map(otherGoals.map((g) => [g.id, g.name]));
+    const accountName = (accountId: string | null) => (accountId ? (ledger.accountNames.get(accountId) ?? null) : null);
+
+    const entries = ledger.entries.filter((e) => e.savingsGoalId === id);
+    const groups: EntryRow[][] = [];
+    const byGroup = new Map<string, EntryRow[]>();
+    for (const entry of entries) {
+      if (!entry.groupId || entry.type === 'CONTRIBUTION') {
+        groups.push([entry]);
+        continue;
+      }
+      const key = `${entry.groupId}|${entry.type}`;
+      const group = byGroup.get(key);
+      if (group) group.push(entry);
+      else {
+        const fresh = [entry];
+        byGroup.set(key, fresh);
+        groups.push(fresh);
+      }
+    }
+    const parts = this.entryParts(ledger.entries);
+    const wallets = (group: EntryRow[]) => [...new Set(group.flatMap((e) => (parts.get(e.id) ?? []).map((p) => accountName(p.walletId) ?? '').filter(Boolean)))];
+
+    let balance = ZERO;
+    let moneyIn = ZERO;
+    let moneyOut = ZERO;
+    const sources = new Map<string, { kind: 'ACCOUNT' | 'ALREADY_SAVED' | 'GOAL'; name: string | null; amount: Prisma.Decimal }>();
+    const addSource = (kind: 'ACCOUNT' | 'ALREADY_SAVED' | 'GOAL', name: string | null, amount: Prisma.Decimal) => {
+      const key = `${kind}|${name ?? ''}`;
+      const source = sources.get(key);
+      if (source) source.amount = source.amount.plus(amount);
+      else sources.set(key, { kind, name, amount });
+    };
+
+    const rows = groups
+      .sort((a, b) => a[0].date.getTime() - b[0].date.getTime() || a[0].createdAt.getTime() - b[0].createdAt.getTime())
+      .map((group) => {
+        const first = group[0];
+        const amount = sum(group);
+        const incoming = first.type === 'CONTRIBUTION' || first.type === 'TRANSFER_IN';
+        balance = incoming ? balance.plus(amount) : balance.minus(amount);
+        if (incoming) moneyIn = moneyIn.plus(amount);
+        else moneyOut = moneyOut.plus(amount);
+        const other = first.relatedGoalId ? (goalName.get(first.relatedGoalId) ?? null) : null;
+        if (first.type === 'CONTRIBUTION') addSource(first.moneyAccountId ? 'ACCOUNT' : 'ALREADY_SAVED', accountName(first.moneyAccountId), amount);
+        if (first.type === 'TRANSFER_IN') addSource('GOAL', other, amount);
+        return {
+          date: first.date,
+          kind: first.type === 'CONTRIBUTION' ? (first.moneyAccountId ? 'ADDED' : 'ALREADY_SAVED') : first.type === 'TRANSFER_IN' ? 'MOVED_IN' : first.type === 'TRANSFER_OUT' ? 'MOVED_OUT' : 'WITHDRAWN',
+          // Where the money came from and went: accounts, savings wallets
+          // or the other goal, by name, as the kind says.
+          from: first.type === 'CONTRIBUTION' ? accountName(first.moneyAccountId) : first.type === 'TRANSFER_IN' ? other : wallets(group).join(', ') || null,
+          to: first.type === 'CONTRIBUTION' ? wallets(group).join(', ') || null : first.type === 'TRANSFER_OUT' ? other : first.type === 'WITHDRAWAL' ? accountName(first.moneyAccountId) : wallets(group).join(', ') || null,
+          notes: first.notes,
+          moneyIn: incoming ? amount.toFixed(2) : null,
+          moneyOut: incoming ? null : amount.toFixed(2),
+          balance: balance.toFixed(2),
+        };
+      });
+
+    const now = [...(ledger.holdings.get(id) ?? new Map<string, Prisma.Decimal>())]
+      .filter(([, amount]) => amount.greaterThan(0))
+      .sort((a, b) => b[1].comparedTo(a[1]))
+      .map(([walletId, amount]) => ({ accountId: walletId || null, name: accountName(walletId), amount: amount.toFixed(2) }));
+
+    return {
+      goal: summary,
+      today: dhakaDateKey(new Date()),
+      rows,
+      totals: { opening: '0.00', moneyIn: moneyIn.toFixed(2), moneyOut: moneyOut.toFixed(2), balance: balance.toFixed(2) },
+      sources: [...sources.values()].map((source) => ({ ...source, amount: source.amount.toFixed(2) })),
+      now,
+    };
+  }
+
+  async create(businessId: string, dto: CreateSavingsGoalDto, userId: string) {
+    const startAmount = decimal(dto.startAmount ?? 0);
+    if (startAmount.greaterThan(dto.targetAmount)) {
+      throw new BadRequestException("Already saved can't be more than the target.");
+    }
+    const today = dhakaDateOnly(new Date());
+    const reached = startAmount.greaterThanOrEqualTo(dto.targetAmount);
+    const data = {
+      businessId,
+      name: dto.name,
+      targetAmount: dto.targetAmount,
+      targetDate: new Date(dto.targetDate),
+      durationMonths: dto.durationMonths,
+      reminderDate: dto.reminderDate ? new Date(dto.reminderDate) : undefined,
+      reminderChannel: dto.reminderDate ? (dto.reminderChannel ?? 'EMAIL') : dto.reminderChannel,
+      description: dto.description,
+      startAmount,
+      ...(reached && { status: 'COMPLETED' as const, reachedAt: today }),
+    };
+    if (startAmount.isZero()) return this.prisma.savingsGoal.create({ data });
+
+    // The money already saved is recorded as the goal's first contribution,
+    // into the savings wallet that holds it: a real posting, so the wallet's
+    // balance shows it, against the workspace's hidden "saved before"
+    // equity account (no cash account paid it in).
+    const accountId = dto.startAccountId as string;
+    return this.transactionsService.withLocks([`account:${accountId}`], async (tx) => {
+      const wallet = await this.requireSavingsAccount(businessId, accountId, tx);
+      if (wallet.status !== 'ACTIVE') throw new BadRequestException('Pick a savings wallet that is not archived.');
+      const goal = await tx.savingsGoal.create({ data });
+      const opening = await this.requireOrCreateOpeningAccount(businessId, tx);
+      const transaction = await this.transactionsService.createTransaction(
         businessId,
-        name: dto.name,
-        targetAmount: dto.targetAmount,
-        targetDate: new Date(dto.targetDate),
-        durationMonths: dto.durationMonths,
-        reminderDate: dto.reminderDate ? new Date(dto.reminderDate) : undefined,
-        reminderChannel: dto.reminderChannel,
-        description: dto.description,
-      },
+        {
+          transactionType: 'JOURNAL',
+          transactionDate: dayOf(today),
+          description: `Already saved: ${goal.name}`,
+          entries: [
+            { accountId: wallet.id, entryType: 'DEBIT', amount: startAmount.toNumber() },
+            { accountId: opening.id, entryType: 'CREDIT', amount: startAmount.toNumber() },
+          ],
+        },
+        userId,
+        tx,
+      );
+      await tx.savingsGoalEntry.create({
+        data: { savingsGoalId: goal.id, businessId, type: 'CONTRIBUTION', amount: startAmount, date: today, savingsAccountId: wallet.id, transactionId: transaction.id },
+      });
+      return goal;
     });
   }
 
   async update(businessId: string, id: string, dto: UpdateSavingsGoalDto) {
-    await this.requireGoal(businessId, id);
+    const existing = await this.requireGoal(businessId, id);
+    // A new reminder day gets its own email, also after an earlier one went.
+    const newReminder = dto.reminderDate !== undefined && (dto.reminderDate ? new Date(dto.reminderDate).getTime() : null) !== (existing.reminderDate?.getTime() ?? null);
     const updated = await this.prisma.savingsGoal.update({
       where: { id },
       data: {
@@ -235,6 +496,7 @@ export class SavingsGoalsService {
         ...(dto.reminderDate !== undefined && { reminderDate: dto.reminderDate ? new Date(dto.reminderDate) : null }),
         ...(dto.reminderChannel !== undefined && { reminderChannel: dto.reminderChannel }),
         ...(dto.description !== undefined && { description: dto.description }),
+        ...(newReminder && { reminderSentFor: null }),
       },
     });
     // A new target can finish the goal or give a finished one more to save.
@@ -243,14 +505,36 @@ export class SavingsGoalsService {
   }
 
   async updateStatus(businessId: string, id: string, dto: UpdateSavingsGoalStatusDto) {
-    await this.requireGoal(businessId, id);
-    return this.prisma.savingsGoal.update({ where: { id }, data: { status: dto.status } });
+    const goal = await this.requireGoal(businessId, id);
+    // Resuming starts a fresh plan from today and what is saved now: the
+    // paused months don't count against it.
+    const resuming = goal.status === 'PAUSED' && dto.status === 'ACTIVE';
+    return this.prisma.savingsGoal.update({
+      where: { id },
+      data: { status: dto.status, ...(resuming && (await this.freshPlan(goal.id))) },
+    });
+  }
+
+  // Catch up on a goal behind its plan (see UpdateSavingsPlanDto).
+  async updatePlan(businessId: string, id: string, dto: UpdateSavingsPlanDto) {
+    const goal = await this.requireGoal(businessId, id);
+    if (goal.status !== 'ACTIVE') throw new BadRequestException('Only an active goal has a plan to catch up on.');
+    const plan = await this.freshPlan(goal.id);
+    if (dto.mode === 'RESET') {
+      return this.prisma.savingsGoal.update({ where: { id }, data: { ...plan, monthlyReminder: true } });
+    }
+    const targetDate = new Date(dto.targetDate as string);
+    if (dayOf(targetDate) <= dhakaDateKey(new Date())) throw new BadRequestException('Pick an end date after today.');
+    return this.prisma.savingsGoal.update({
+      where: { id },
+      data: { ...plan, targetDate, durationMonths: Math.max(1, Math.min(1200, monthsBetween(dhakaDateKey(goal.createdAt), dayOf(targetDate)))) },
+    });
   }
 
   // Hard-delete only when nothing has ever been contributed/transferred --
   // same "protect records with real activity" rule as
-  // ContactsService.archive(). There's no withdrawal flow yet, so a funded
-  // goal can only be paused, not deleted, until one exists.
+  // ContactsService.archive(). A goal with history is paused, withdrawn or
+  // closed instead, so its record stays.
   async delete(businessId: string, id: string) {
     await this.requireGoal(businessId, id);
     const entryCount = await this.prisma.savingsGoalEntry.count({ where: { savingsGoalId: id } });
@@ -308,7 +592,7 @@ export class SavingsGoalsService {
         },
       });
     });
-    await this.maybeMarkCompleted(await this.requireGoal(businessId, goalId));
+    await this.maybeMarkCompleted(await this.requireGoal(businessId, goalId), undefined, entry.date);
     return entry;
   }
 
@@ -320,29 +604,34 @@ export class SavingsGoalsService {
   // belong. Never touches an already-COMPLETED or WITHDRAWN goal (WITHDRAWN
   // in particular must never be silently overwritten back to COMPLETED just
   // because computeCurrentAmount() would read as 0 vs. a since-lowered
-  // target, or any other edge case -- withdraw() is a one-way transition).
+  // target, or any other edge case -- a withdrawal is a one-way transition).
   // Returns the goal with its corrected status (unchanged if nothing
   // needed fixing) so callers always compute against the true current
   // state, not a stale one -- toSummary() calls this on every read (not
   // just right after a contribution/transfer) specifically to self-heal
-  // any goal that was already over target before this existed.
-  private async maybeMarkCompleted(goal: SavingsGoal, currentAmount?: Prisma.Decimal): Promise<SavingsGoal> {
+  // any goal that was already over target before this existed. The day it
+  // was reached is the money's day when known, else today.
+  private async maybeMarkCompleted(goal: SavingsGoal, currentAmount?: Prisma.Decimal, reachedOn?: Date): Promise<SavingsGoal> {
     if (goal.status === 'COMPLETED' || goal.status === 'WITHDRAWN') return goal;
     const amount = currentAmount ?? (await this.computeCurrentAmount(goal.id));
     if (amount.greaterThanOrEqualTo(goal.targetAmount)) {
       // Conditional: a withdrawal that committed after `goal` was read
       // must never be turned back into COMPLETED.
-      await this.prisma.savingsGoal.updateMany({ where: { id: goal.id, status: { in: ['ACTIVE', 'PAUSED'] } }, data: { status: 'COMPLETED' } });
+      await this.prisma.savingsGoal.updateMany({
+        where: { id: goal.id, status: { in: ['ACTIVE', 'PAUSED'] } },
+        data: { status: 'COMPLETED', reachedAt: reachedOn ?? dhakaDateOnly(new Date()), monthlyReminder: false },
+      });
       return this.prisma.savingsGoal.findUniqueOrThrow({ where: { id: goal.id } });
     }
     return goal;
   }
 
-  // Internal reallocation between two goals -- the cash never leaves the
-  // pooled Savings account, so no real Transaction is created, just a
-  // matched TRANSFER_OUT/TRANSFER_IN pair. Both goals are locked (the same
-  // keys withdraw() and addContribution() take), so two transfers out of one
-  // goal can't both pass the balance check on the same money.
+  // Internal reallocation between two goals -- the cash stays in its
+  // savings wallets, so no real Transaction is created, just a matched
+  // TRANSFER_OUT/TRANSFER_IN pair per wallet the money sits in (largest
+  // holding first), sharing one groupId. Both goals are locked (the same
+  // keys a withdrawal and addContribution() take), so two transfers out of
+  // one goal can't both pass the balance check on the same money.
   async transfer(businessId: string, dto: CreateSavingsTransferDto) {
     if (dto.fromGoalId === dto.toGoalId) {
       throw new BadRequestException('Cannot transfer a goal to itself');
@@ -356,50 +645,159 @@ export class SavingsGoalsService {
       }
 
       const fromCurrent = await this.computeCurrentAmount(fromGoal.id, tx);
-      if (fromCurrent.lessThan(dto.amount)) {
-        throw new BadRequestException(`"${fromGoal.name}" only has ${fromCurrent.toFixed(2)} saved -- cannot transfer ${dto.amount.toFixed(2)}`);
+      const amount = decimal(dto.amount);
+      if (fromCurrent.lessThan(amount)) {
+        throw new BadRequestException(`"${fromGoal.name}" only has ${fromCurrent.toFixed(2)} saved -- cannot transfer ${amount.toFixed(2)}`);
       }
 
+      const ledger = await this.ledger(businessId, tx);
+      const parts = this.splitOrRest(ledger.holdings.get(fromGoal.id), amount);
+      const groupId = randomUUID();
       const date = new Date(dto.date);
-      const result = [
-        await tx.savingsGoalEntry.create({
-          data: { savingsGoalId: fromGoal.id, businessId, type: 'TRANSFER_OUT', amount: dto.amount, date, relatedGoalId: toGoal.id, notes: dto.notes },
-        }),
-        await tx.savingsGoalEntry.create({
-          data: { savingsGoalId: toGoal.id, businessId, type: 'TRANSFER_IN', amount: dto.amount, date, relatedGoalId: fromGoal.id, notes: dto.notes },
-        }),
-      ];
+      const result = [];
+      for (const part of parts) {
+        const savingsAccountId = part.walletId || null;
+        result.push(
+          await tx.savingsGoalEntry.create({
+            data: { savingsGoalId: fromGoal.id, businessId, type: 'TRANSFER_OUT', amount: part.amount, date, relatedGoalId: toGoal.id, savingsAccountId, groupId, notes: dto.notes },
+          }),
+          await tx.savingsGoalEntry.create({
+            data: { savingsGoalId: toGoal.id, businessId, type: 'TRANSFER_IN', amount: part.amount, date, relatedGoalId: fromGoal.id, savingsAccountId, groupId, notes: dto.notes },
+          }),
+        );
+      }
       return { result, toGoal };
     });
     // The receiving side can reach its target; the giving side, if it was
     // finished, has something to save again.
-    await this.maybeMarkCompleted(toGoal);
-    await this.maybeReopen(await this.requireGoal(businessId, dto.fromGoalId));
+    await this.maybeMarkCompleted(toGoal, undefined, new Date(dto.date));
+    await this.maybeReopen(await this.requireGoal(businessId, dto.fromGoalId), true);
     return result;
   }
 
+  // Takes a move back: the money counts toward the goal it came from again.
+  // Refused once the receiving goal has spent it (moved it on, withdrawn it).
+  async undoTransfer(businessId: string, groupId: string) {
+    const entries = await this.prisma.savingsGoalEntry.findMany({ where: { businessId, groupId, type: { in: ['TRANSFER_OUT', 'TRANSFER_IN'] } } });
+    const out = entries.find((e) => e.type === 'TRANSFER_OUT');
+    const into = entries.find((e) => e.type === 'TRANSFER_IN');
+    if (!out || !into) throw new NotFoundException('Move not found');
+    const amount = sum(entries.filter((e) => e.type === 'TRANSFER_IN'));
+
+    await this.transactionsService.withLocks([`savings-goal:${out.savingsGoalId}`, `savings-goal:${into.savingsGoalId}`], async (tx) => {
+      const toGoal = await this.requireGoal(businessId, into.savingsGoalId, tx);
+      if (toGoal.status === 'WITHDRAWN') throw new BadRequestException(`"${toGoal.name}" has been withdrawn, so this move can't be undone.`);
+      const held = await this.computeCurrentAmount(toGoal.id, tx);
+      if (held.lessThan(amount)) throw new BadRequestException(`"${toGoal.name}" no longer has this money, so the move can't be undone.`);
+      await tx.savingsGoalEntry.deleteMany({ where: { businessId, groupId } });
+    });
+
+    await this.maybeMarkCompleted(await this.requireGoal(businessId, out.savingsGoalId), undefined, out.date);
+    await this.maybeReopen(await this.requireGoal(businessId, into.savingsGoalId), true);
+    return { groupId };
+  }
+
   // A COMPLETED goal back under its target -- its target raised, or money
-  // moved to another goal -- is ACTIVE again, so it shows where saving
+  // moved or withdrawn -- is ACTIVE again, so it shows where saving
   // continues instead of staying "Completed" below 100%. Only after those
-  // two changes, never on a read: a goal the customer marked complete by
-  // hand stays so. Conditional, so a withdrawal that committed meanwhile is
-  // never turned back.
-  private async maybeReopen(goal: SavingsGoal): Promise<SavingsGoal> {
+  // changes, never on a read: a goal the customer marked complete by hand
+  // stays so. Conditional, so a withdrawal that committed meanwhile is
+  // never turned back. When money left it (not a new target), its plan
+  // starts afresh from today.
+  private async maybeReopen(goal: SavingsGoal, freshPlan = false): Promise<SavingsGoal> {
     if (goal.status !== 'COMPLETED') return goal;
     const amount = await this.computeCurrentAmount(goal.id);
     if (amount.greaterThanOrEqualTo(goal.targetAmount)) return goal;
-    await this.prisma.savingsGoal.updateMany({ where: { id: goal.id, status: 'COMPLETED' }, data: { status: 'ACTIVE' } });
+    await this.prisma.savingsGoal.updateMany({
+      where: { id: goal.id, status: 'COMPLETED' },
+      data: { status: 'ACTIVE', reachedAt: null, ...(freshPlan && { planStartDate: dhakaDateOnly(new Date()), planStartAmount: amount }) },
+    });
     return this.prisma.savingsGoal.findUniqueOrThrow({ where: { id: goal.id } });
   }
 
-  // "Cash out" a completed (or any) goal -- takes its ENTIRE current saved
-  // amount out of a real Savings Wallet and records it as a real Expense,
-  // via the same double-entry Transaction engine addContribution() uses
-  // (mirrored: money leaves the Savings Wallet instead of landing in it).
-  // Marks the goal WITHDRAWN so its Dashboard card stops showing a
-  // misleading 100%-saved progress bar for money that's actually been
-  // spent. No partial withdrawal yet -- see WithdrawSavingsGoalDto's
-  // comment.
+  // Money out of a goal to a main balance account, any amount up to what is
+  // saved. It leaves the savings wallets holding the goal's money, largest
+  // first, in one Transfer posting; each wallet's part is its own
+  // WITHDRAWAL entry, all sharing one groupId. Taking everything closes the
+  // goal (Withdrawn, with reachedAt kept when it had reached its target);
+  // taking part of a Completed goal opens it again with a fresh plan.
+  async withdrawToBalance(businessId: string, goalId: string, dto: WithdrawToBalanceDto, userId: string) {
+    const toAccount = await this.requireMoneyAccount(businessId, dto.toAccountId);
+    // The wallets it may come out of, locked with the goal; the split is
+    // worked out again under the lock.
+    const before = await this.ledger(businessId);
+    const walletIds = [...(before.holdings.get(goalId)?.keys() ?? [])].filter(Boolean);
+    const amount = decimal(dto.amount);
+
+    const entries = await this.transactionsService.withLocks([`savings-goal:${goalId}`, ...walletIds.map((walletId) => `account:${walletId}`)], async (tx) => {
+      const goal = await this.requireGoal(businessId, goalId, tx);
+      if (goal.status === 'WITHDRAWN') throw new BadRequestException('This goal has already been withdrawn.');
+      const current = await this.computeCurrentAmount(goal.id, tx);
+      if (current.lessThanOrEqualTo(0)) throw new BadRequestException('This goal has no saved balance to withdraw.');
+      if (amount.greaterThan(current)) throw new BadRequestException(`"${goal.name}" only has ${current.toFixed(2)} saved -- cannot withdraw ${amount.toFixed(2)}`);
+
+      const ledger = await this.ledger(businessId, tx);
+      const parts = this.splitOrRest(ledger.holdings.get(goal.id), amount);
+      if (parts.some((part) => !part.walletId)) throw new BadRequestException("Some of this goal's money isn't in a savings wallet the app knows. Move it to another goal first.");
+      if (parts.some((part) => !walletIds.includes(part.walletId))) throw new BadRequestException('The savings changed while this was saving. Try again.');
+      for (const part of parts) {
+        const wallet = await this.requireSavingsAccount(businessId, part.walletId, tx);
+        if (decimal(wallet.currentBalance).lessThan(part.amount)) {
+          throw new BadRequestException(`"${wallet.name}" only has ${decimal(wallet.currentBalance).toFixed(2)} -- cannot withdraw ${part.amount.toFixed(2)} from it.`);
+        }
+      }
+
+      const transaction = await this.transactionsService.createTransaction(
+        businessId,
+        {
+          transactionType: 'TRANSFER',
+          transactionDate: dto.date,
+          description: dto.notes ? `Savings withdrawal: ${goal.name} -- ${dto.notes}` : `Savings withdrawal: ${goal.name}`,
+          entries: [
+            { accountId: toAccount.id, entryType: 'DEBIT', amount: amount.toNumber() },
+            ...parts.map((part) => ({ accountId: part.walletId, entryType: 'CREDIT' as const, amount: part.amount.toNumber() })),
+          ],
+        },
+        userId,
+        tx,
+      );
+
+      const groupId = randomUUID();
+      const created = [];
+      for (const part of parts) {
+        created.push(
+          await tx.savingsGoalEntry.create({
+            data: {
+              savingsGoalId: goalId,
+              businessId,
+              type: 'WITHDRAWAL',
+              amount: part.amount,
+              date: new Date(dto.date),
+              savingsAccountId: part.walletId,
+              moneyAccountId: toAccount.id,
+              transactionId: transaction.id,
+              groupId,
+              notes: dto.notes,
+            },
+          }),
+        );
+      }
+
+      const left = current.minus(amount);
+      if (left.isZero()) {
+        await tx.savingsGoal.update({ where: { id: goalId }, data: { status: 'WITHDRAWN', monthlyReminder: false, ...(goal.status !== 'COMPLETED' && { reachedAt: null }) } });
+      } else if (goal.status === 'COMPLETED') {
+        await tx.savingsGoal.update({ where: { id: goalId }, data: { status: 'ACTIVE', reachedAt: null, planStartDate: dhakaDateOnly(new Date()), planStartAmount: left } });
+      }
+      return created;
+    });
+    return entries;
+  }
+
+  // The older "cash out" -- takes a goal's ENTIRE current saved amount out
+  // of one Savings Wallet and records it as a real Expense. Kept for the
+  // app versions that still send it; the app now withdraws to a main
+  // balance account (withdrawToBalance()). Marks the goal WITHDRAWN.
   // Runs under the goal's (and the wallet's) lock, in one database
   // transaction: a second click waits for the first withdrawal to commit,
   // then sees WITHDRAWN and stops -- the savings are paid out once.
@@ -449,95 +847,109 @@ export class SavingsGoalsService {
           notes: dto.notes,
         },
       });
-      await tx.savingsGoal.update({ where: { id: goalId }, data: { status: 'WITHDRAWN' } });
+      await tx.savingsGoal.update({ where: { id: goalId }, data: { status: 'WITHDRAWN', monthlyReminder: false, ...(goal.status !== 'COMPLETED' && { reachedAt: null }) } });
       return entry;
     });
   }
 
-  private async toSummary(goal: SavingsGoal) {
-    const currentAmount = await this.computeCurrentAmount(goal.id);
+  // Every entry of a workspace, its goals' holdings, and the account names
+  // they need -- one read, so a list of goals costs the same as one.
+  private async ledger(businessId: string, client: Prisma.TransactionClient = this.prisma): Promise<Ledger> {
+    const entries = await client.savingsGoalEntry.findMany({ where: { businessId }, select: ENTRY_SELECT });
+    const accountIds = [...new Set(entries.flatMap((e) => [e.moneyAccountId, e.savingsAccountId]).filter((v): v is string => !!v))];
+    const accounts = accountIds.length ? await client.account.findMany({ where: { id: { in: accountIds } }, select: { id: true, name: true } }) : [];
+    return { entries, holdings: goalHoldings(entries as HoldingEntry[]), accountNames: new Map(accounts.map((a) => [a.id, a.name])) };
+  }
+
+  // Which wallets each entry's money was in: its own wallet, or for an old
+  // move or withdrawal with none, the parts the replay gave it.
+  private entryParts(entries: EntryRow[]): Map<string, WalletPart[]> {
+    const parts = new Map<string, WalletPart[]>();
+    goalHoldings(entries as HoldingEntry[], parts);
+    return parts;
+  }
+
+  // `amount` split over a goal's holdings largest-first; whatever they don't
+  // cover (a goal whose wallets aren't all known) is a part with no wallet.
+  private splitOrRest(holdings: Holdings | undefined, amount: Prisma.Decimal): WalletPart[] {
+    const parts = splitLargestFirst(holdings ?? new Map(), amount);
+    const covered = sum(parts);
+    return covered.lessThan(amount) ? [...parts, { walletId: '', amount: amount.minus(covered) }] : parts;
+  }
+
+  // A fresh plan line from today and what the goal holds now.
+  private async freshPlan(goalId: string) {
+    return { planStartDate: dhakaDateOnly(new Date()), planStartAmount: await this.computeCurrentAmount(goalId) };
+  }
+
+  private async toSummary(goal: SavingsGoal, ledger: Ledger) {
+    const mine = ledger.entries.filter((e) => e.savingsGoalId === goal.id);
+    const currentAmount = mine.reduce((total, e) => (e.type === 'TRANSFER_OUT' || e.type === 'WITHDRAWAL' ? total.minus(e.amount) : total.plus(e.amount)), ZERO);
     const target = new Prisma.Decimal(goal.targetAmount);
     // Self-healing, not just triggered on a fresh contribution/transfer --
     // catches a goal that was ALREADY fully funded before this check
     // existed (or any other way it slipped through) every time the list is
     // read, not only going forward. `goal` below is intentionally
     // reassigned to the corrected row so every downstream computation
-    // (paceStatus, trend, the returned status itself) agrees with it.
+    // (pace, trend, the returned status itself) agrees with it.
     goal = await this.maybeMarkCompleted(goal, currentAmount);
-    // Only ever non-zero once withdraw() has run (it always cashes out the
-    // goal's ENTIRE saved amount at once) -- shown on the Dashboard card so
-    // a WITHDRAWN goal's card still says how much was actually taken out,
-    // since currentAmount itself is 0 again by then.
-    const [withdrawnAgg, trend] = await Promise.all([
-      this.prisma.savingsGoalEntry.aggregate({ where: { savingsGoalId: goal.id, type: 'WITHDRAWAL' }, _sum: { amount: true } }),
-      this.computeTrend(goal),
-    ]);
-    const withdrawnAmount = new Prisma.Decimal(withdrawnAgg._sum.amount ?? 0);
+
+    const withdrawals = mine.filter((e) => e.type === 'WITHDRAWAL').sort((a, b) => b.date.getTime() - a.date.getTime());
+    const withdrawnAmount = sum(withdrawals);
+    const { start: thisMonthStart, end: thisMonthEnd } = dhakaMonthRange();
+    const { start: lastMonthStart } = dhakaMonthRange(-1);
+    // Money added from an account; what was already saved when the goal was
+    // made isn't saving done that month.
+    const added = (from: Date, to: Date) => sum(mine.filter((e) => e.type === 'CONTRIBUTION' && e.moneyAccountId !== null && e.date >= from && e.date < to));
+    const addedThisMonth = added(thisMonthStart, thisMonthEnd);
     const progressPercent = target.isZero() ? 0 : Math.min(100, Math.round(currentAmount.dividedBy(target).times(100).toNumber()));
+
+    const today = dhakaDateKey(new Date());
+    const planStartDate = goal.planStartDate ? dayOf(goal.planStartDate) : dhakaDateKey(goal.createdAt);
+    const planStartAmount = decimal(goal.planStartAmount ?? goal.startAmount);
+    const pace =
+      goal.status === 'ACTIVE'
+        ? planPace({ target: target.toNumber(), saved: currentAmount.toNumber(), planStart: planStartDate, planStartAmount: planStartAmount.toNumber(), end: dayOf(goal.targetDate), today })
+        : null;
+
+    const holdings = [...(ledger.holdings.get(goal.id) ?? new Map<string, Prisma.Decimal>())]
+      .filter(([, amount]) => amount.greaterThan(0))
+      .sort((a, b) => b[1].comparedTo(a[1]))
+      .map(([walletId, amount]) => ({ accountId: walletId || null, name: walletId ? (ledger.accountNames.get(walletId) ?? null) : null, amount: amount.toFixed(2) }));
+    const last = withdrawals[0];
+
     return {
       ...goal,
       targetAmount: target.toFixed(2),
+      startAmount: decimal(goal.startAmount).toFixed(2),
       currentAmount: currentAmount.toFixed(2),
       withdrawnAmount: withdrawnAmount.toFixed(2),
       progressPercent,
       monthlyTarget: target.dividedBy(goal.durationMonths).toFixed(2),
-      paceStatus: this.computePaceStatus(goal, progressPercent),
-      trend,
+      // The day it began (Dhaka) and its plan line's start.
+      startDate: dhakaDateKey(goal.createdAt),
+      planStartDate,
+      planStartAmount: planStartAmount.toFixed(2),
+      pace: pace && { expected: pace.expected.toFixed(2), difference: pace.difference.toFixed(2), state: pace.state },
+      // For the app versions that read the older field.
+      paceStatus: pace ? (pace.state === 'BEHIND' ? ('BEHIND' as const) : ('ON_TRACK' as const)) : null,
+      trend: goal.status === 'ACTIVE' ? this.trendOf(addedThisMonth, added(lastMonthStart, thisMonthStart)) : null,
+      addedThisMonth: addedThisMonth.toFixed(2),
+      entryCount: mine.length,
+      holdings,
+      lastWithdrawal: last ? { date: last.date, accountName: last.moneyAccountId ? (ledger.accountNames.get(last.moneyAccountId) ?? null) : null } : null,
     };
   }
 
-  // Time-aware "are you saving fast enough" signal for the Dashboard card --
-  // ON_TRACK/BEHIND/WARNING only ever computed for an ACTIVE goal (a Paused/
-  // Completed/Withdrawn goal isn't "supposed to" be gaining ground right
-  // now, so the comparison is meaningless for those). Compares actual
-  // progressPercent against where a perfectly even monthly pace WOULD have
-  // it by now (elapsed months / durationMonths), using the exact same
-  // targetAmount/durationMonths pacing this card's own "Monthly Savings"
-  // figure is built from -- never a separate day-count ratio that could
-  // disagree with it. A gap of 5 points either way is noise (rounding,
-  // paying a contribution a few days late); past 25 points behind is a real
-  // problem, not just "a little slow" -- deliberately no "ahead of pace"
-  // penalty exists, since saving faster than planned is never a problem.
-  private computePaceStatus(goal: SavingsGoal, progressPercent: number): 'ON_TRACK' | 'BEHIND' | 'WARNING' | null {
-    if (goal.status !== 'ACTIVE') return null;
-    if (progressPercent >= 100) return 'ON_TRACK';
-
-    const elapsedMonths = (Date.now() - goal.createdAt.getTime()) / (1000 * 60 * 60 * 24 * 30.44);
-    if (elapsedMonths <= 0 || goal.durationMonths <= 0) return 'ON_TRACK';
-
-    const expectedPercent = Math.min(100, (elapsedMonths / goal.durationMonths) * 100);
-    const gap = progressPercent - expectedPercent;
-    if (gap >= -5) return 'ON_TRACK';
-    if (gap >= -25) return 'BEHIND';
-    return 'WARNING';
-  }
-
   // "Is the contribution habit itself improving, or trailing off" -- this
-  // month's total CONTRIBUTION amount vs last month's, independent of
-  // paceStatus (a goal can be behind pace overall but still trending up
-  // month over month, which is worth showing separately). A >10% swing
-  // either way counts as a real trend; smaller than that reads as STABLE
-  // rather than flip-flopping on noise. No prior month to compare against
-  // (a brand-new goal) reads as INCREASING the moment anything is
-  // contributed, rather than a misleading DECREASING/STABLE with no basis.
-  private async computeTrend(goal: SavingsGoal): Promise<'INCREASING' | 'DECREASING' | 'STABLE' | null> {
-    if (goal.status !== 'ACTIVE') return null;
-
-    const { start: thisMonthStart } = dhakaMonthRange();
-    const { start: lastMonthStart } = dhakaMonthRange(-1);
-    const [thisMonthAgg, lastMonthAgg] = await Promise.all([
-      this.prisma.savingsGoalEntry.aggregate({
-        where: { savingsGoalId: goal.id, type: 'CONTRIBUTION', date: { gte: thisMonthStart } },
-        _sum: { amount: true },
-      }),
-      this.prisma.savingsGoalEntry.aggregate({
-        where: { savingsGoalId: goal.id, type: 'CONTRIBUTION', date: { gte: lastMonthStart, lt: thisMonthStart } },
-        _sum: { amount: true },
-      }),
-    ]);
-    const thisMonth = new Prisma.Decimal(thisMonthAgg._sum.amount ?? 0);
-    const lastMonth = new Prisma.Decimal(lastMonthAgg._sum.amount ?? 0);
-
+  // month's total CONTRIBUTION amount vs last month's, independent of the
+  // pace (a goal can be behind its plan overall but still trending up month
+  // over month, which is worth showing separately). A >10% swing either way
+  // counts as a real trend; smaller than that reads as STABLE rather than
+  // flip-flopping on noise. No prior month to compare against (a brand-new
+  // goal) reads as INCREASING the moment anything is contributed, rather
+  // than a misleading DECREASING/STABLE with no basis.
+  private trendOf(thisMonth: Prisma.Decimal, lastMonth: Prisma.Decimal): 'INCREASING' | 'DECREASING' | 'STABLE' {
     if (lastMonth.isZero()) return thisMonth.isZero() ? 'STABLE' : 'INCREASING';
     const change = thisMonth.minus(lastMonth).dividedBy(lastMonth);
     if (change.greaterThan(0.1)) return 'INCREASING';
@@ -559,6 +971,25 @@ export class SavingsGoalsService {
     const wholeDecimal = new Prisma.Decimal(whole);
     if (wholeDecimal.isZero()) return 0;
     return Math.min(999, Math.round(new Prisma.Decimal(part).dividedBy(wholeDecimal).times(100).toNumber()));
+  }
+
+  // The hidden equity account "Already saved" postings are made against:
+  // money the goal held before it was recorded came from no cash account.
+  private async requireOrCreateOpeningAccount(businessId: string, client: Prisma.TransactionClient): Promise<Account> {
+    const existing = await client.account.findFirst({ where: { businessId, accountSubtype: SAVINGS_OPENING_ACCOUNT_SUBTYPE, isSystemAccount: true } });
+    if (existing) return existing;
+    return client.account.create({
+      data: {
+        businessId,
+        name: 'Savings Brought In (Internal)',
+        nameBn: 'আগের সঞ্চয় (অভ্যন্তরীণ)',
+        accountType: 'EQUITY',
+        accountSubtype: SAVINGS_OPENING_ACCOUNT_SUBTYPE,
+        isSystemAccount: true,
+        openingBalance: 0,
+        currentBalance: 0,
+      },
+    });
   }
 
   private async requireSavingsAccount(businessId: string, accountId: string, client: Prisma.TransactionClient = this.prisma): Promise<Account> {
@@ -601,4 +1032,10 @@ export class SavingsGoalsService {
     }
     return goal;
   }
+}
+
+// Whole calendar months from one day to another ('YYYY-MM-DD').
+function monthsBetween(from: string, to: string): number {
+  const months = (Number(to.slice(0, 4)) - Number(from.slice(0, 4))) * 12 + (Number(to.slice(5, 7)) - Number(from.slice(5, 7)));
+  return Number(to.slice(8, 10)) < Number(from.slice(8, 10)) ? months - 1 : months;
 }
