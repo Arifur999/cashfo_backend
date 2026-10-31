@@ -85,7 +85,8 @@ const order = (a: HoldingEntry, b: HoldingEntry) =>
   a.date.getTime() - b.date.getTime() || a.createdAt.getTime() - b.createdAt.getTime() || outFirst(a) - outFirst(b) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 
 // Every goal's holdings, from all of a workspace's entries (any order).
-export function goalHoldings(entries: readonly HoldingEntry[]): Map<string, Holdings> {
+// `parts`, when given, gets which wallets each entry's money was in.
+export function goalHoldings(entries: readonly HoldingEntry[], parts?: Map<string, WalletPart[]>): Map<string, Holdings> {
   const byGoal = new Map<string, Holdings>();
   const of = (goalId: string) => {
     let holdings = byGoal.get(goalId);
@@ -98,31 +99,36 @@ export function goalHoldings(entries: readonly HoldingEntry[]): Map<string, Hold
   for (const entry of [...entries].sort(order)) {
     const holdings = of(entry.savingsGoalId);
     const amount = new Prisma.Decimal(entry.amount);
+    const record = (taken: WalletPart[]) => parts?.set(entry.id, taken);
     switch (entry.type) {
       case 'CONTRIBUTION':
         add(holdings, entry.savingsAccountId ?? '', amount);
+        record([{ walletId: entry.savingsAccountId ?? '', amount }]);
         break;
       case 'WITHDRAWAL':
-        take(holdings, entry.savingsAccountId, amount);
+        record(take(holdings, entry.savingsAccountId, amount));
         break;
       case 'TRANSFER_OUT': {
-        const parts = take(holdings, entry.savingsAccountId, amount);
-        if (entry.savingsAccountId === null && entry.groupId) moved.set(entry.groupId, parts);
+        const taken = take(holdings, entry.savingsAccountId, amount);
+        record(taken);
+        if (entry.savingsAccountId === null && entry.groupId) moved.set(entry.groupId, taken);
         break;
       }
       case 'TRANSFER_IN': {
         if (entry.savingsAccountId !== null) {
           add(holdings, entry.savingsAccountId, amount);
+          record([{ walletId: entry.savingsAccountId, amount }]);
           break;
         }
-        const parts = entry.groupId ? moved.get(entry.groupId) : undefined;
-        let placed = ZERO;
-        for (const part of parts ?? []) {
-          add(holdings, part.walletId, part.amount);
-          placed = placed.plus(part.amount);
-        }
+        const placed: WalletPart[] = [...((entry.groupId ? moved.get(entry.groupId) : undefined) ?? [])];
+        for (const part of placed) add(holdings, part.walletId, part.amount);
         // Whatever the other half couldn't name a wallet for.
-        if (placed.lessThan(amount)) add(holdings, '', amount.minus(placed));
+        const rest = amount.minus(placed.reduce((total, part) => total.plus(part.amount), ZERO));
+        if (rest.greaterThan(0)) {
+          add(holdings, '', rest);
+          placed.push({ walletId: '', amount: rest });
+        }
+        record(placed);
         break;
       }
     }
