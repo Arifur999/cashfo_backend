@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, ParseEnumPipe, Patch, Post, Query } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Header, Param, ParseEnumPipe, Patch, Post, Query, StreamableFile } from '@nestjs/common';
 import { MemberRole, SavingsGoalStatus } from '@prisma/client';
 import { AddContributionDto } from './dto/add-contribution.dto.js';
 import { CreateSavingsGoalDto } from './dto/create-savings-goal.dto.js';
@@ -93,6 +93,13 @@ export class SavingsGoalsController {
   @Get(':id/statement')
   getStatement(@Param('businessId') businessId: string, @Param('id') id: string) {
     return this.savingsGoalsService.getStatement(businessId, id);
+  }
+
+  @Get(':id/statement.pdf')
+  @Header('Cache-Control', 'private, no-store')
+  async statementPdf(@Param('businessId') businessId: string, @Param('id') id: string, @CurrentUser() user: RequestUser) {
+    const pdf = await this.savingsGoalsService.statementPdf(businessId, id, user.id);
+    return new StreamableFile(pdf.data, { type: 'application/pdf', disposition: `attachment; filename="${pdf.fileName}"` });
   }
 
   @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)

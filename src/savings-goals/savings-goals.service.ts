@@ -3,6 +3,7 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 import { Account, Prisma, SavingsGoal, SavingsGoalStatus } from '@prisma/client';
 import { MONEY_ACCOUNT_SUBTYPES, SAVINGS_OPENING_ACCOUNT_SUBTYPE } from '../accounts/accounts.service.js';
 import { dhakaDateKey, dhakaDateOnly, dhakaMonthRange } from '../common/dhaka.js';
+import { MailService } from '../mail/mail.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { TransactionsService } from '../transactions/transactions.service.js';
 import { AddContributionDto } from './dto/add-contribution.dto.js';
@@ -15,6 +16,7 @@ import { WithdrawSavingsGoalDto } from './dto/withdraw-savings-goal.dto.js';
 import { WithdrawToBalanceDto } from './dto/withdraw-to-balance.dto.js';
 import { goalHoldings, splitLargestFirst, type HoldingEntry, type Holdings, type WalletPart } from './savings-holdings.js';
 import { planPace } from './savings-plan.js';
+import { renderStatementPdf, statementFileName, type StatementRowKind } from './savings-statement-pdf.js';
 
 const ZERO = new Prisma.Decimal(0);
 
@@ -54,6 +56,7 @@ export class SavingsGoalsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly transactionsService: TransactionsService,
+    private readonly mail: MailService,
   ) {}
 
   async list(businessId: string, status?: SavingsGoalStatus) {
@@ -403,7 +406,7 @@ export class SavingsGoalsService {
         if (first.type === 'TRANSFER_IN') addSource('GOAL', other, amount);
         return {
           date: first.date,
-          kind: first.type === 'CONTRIBUTION' ? (first.moneyAccountId ? 'ADDED' : 'ALREADY_SAVED') : first.type === 'TRANSFER_IN' ? 'MOVED_IN' : first.type === 'TRANSFER_OUT' ? 'MOVED_OUT' : 'WITHDRAWN',
+          kind: (first.type === 'CONTRIBUTION' ? (first.moneyAccountId ? 'ADDED' : 'ALREADY_SAVED') : first.type === 'TRANSFER_IN' ? 'MOVED_IN' : first.type === 'TRANSFER_OUT' ? 'MOVED_OUT' : 'WITHDRAWN') as StatementRowKind,
           // Where the money came from and went: accounts, savings wallets
           // or the other goal, by name, as the kind says.
           from: first.type === 'CONTRIBUTION' ? accountName(first.moneyAccountId) : first.type === 'TRANSFER_IN' ? other : wallets(group).join(', ') || null,
@@ -428,6 +431,28 @@ export class SavingsGoalsService {
       sources: [...sources.values()].map((source) => ({ ...source, amount: source.amount.toFixed(2) })),
       now,
     };
+  }
+
+  // The statement as a PDF to download, headed with the signed-in person.
+  async statementPdf(businessId: string, id: string, userId: string): Promise<{ fileName: string; data: Buffer }> {
+    const [statement, person, platformName] = await Promise.all([
+      this.getStatement(businessId, id),
+      this.prisma.user.findUnique({ where: { id: userId }, select: { name: true, email: true } }),
+      this.mail.platformName(),
+    ]);
+    const { goal } = statement;
+    const status = goal.status === 'ACTIVE' && goal.pace ? goal.pace.state : goal.status === 'WITHDRAWN' && goal.reachedAt ? 'ACHIEVED' : goal.status;
+    const data = renderStatementPdf({
+      platformName,
+      person: { name: person?.name ?? '', email: person?.email ?? '' },
+      goal: { name: goal.name, targetAmount: goal.targetAmount, targetDate: goal.targetDate, startDate: goal.startDate, status },
+      today: statement.today,
+      rows: statement.rows,
+      totals: statement.totals,
+      sources: statement.sources,
+      now: statement.now,
+    });
+    return { fileName: statementFileName(goal.name, statement.today), data };
   }
 
   async create(businessId: string, dto: CreateSavingsGoalDto, userId: string) {

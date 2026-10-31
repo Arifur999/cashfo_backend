@@ -33,7 +33,7 @@ const setup = (status: string, targetAmount: number, entries: Entry[]) => {
       ),
     },
   };
-  return { service: new SavingsGoalsService(prisma as never, {} as never), goal };
+  return { service: new SavingsGoalsService(prisma as never, {} as never, {} as never), goal };
 };
 
 const update = (dto: Partial<UpdateSavingsGoalDto>) => dto as UpdateSavingsGoalDto;
