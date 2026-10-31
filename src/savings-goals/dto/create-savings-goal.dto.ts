@@ -1,7 +1,7 @@
 import { SavingsReminderChannel } from '@prisma/client';
 import { Type } from 'class-transformer';
-import { IsDateString, IsEnum, IsInt, IsNotEmpty, IsOptional, IsPositive, IsString, Max } from 'class-validator';
-import { IsMoney } from '../../common/dto.js';
+import { IsDateString, IsEnum, IsInt, IsNotEmpty, IsOptional, IsPositive, IsString, Max, ValidateIf } from 'class-validator';
+import { IsMoney, whenSent } from '../../common/dto.js';
 
 export class CreateSavingsGoalDto {
   @IsString()
@@ -31,4 +31,15 @@ export class CreateSavingsGoalDto {
   @IsOptional()
   @IsString()
   description?: string;
+
+  // Money already saved for this goal before it was made, and the savings
+  // wallet that holds it: recorded as the goal's first contribution.
+  @ValidateIf(whenSent)
+  @IsMoney()
+  startAmount?: number;
+
+  @ValidateIf((dto: CreateSavingsGoalDto) => (dto.startAmount ?? 0) > 0)
+  @IsString()
+  @IsNotEmpty()
+  startAccountId?: string;
 }

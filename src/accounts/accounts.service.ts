@@ -18,13 +18,16 @@ export const MONEY_ACCOUNT_SUBTYPES = ['cash', 'bank', 'mfs'];
 // cost account and the referral payout income account.
 export const FIXED_ASSETS_ACCOUNT_SUBTYPE = 'fixed-assets';
 export const REFERRAL_BONUS_INCOME_SUBTYPE = 'referral-bonus';
+// The hidden equity account a savings goal's "Already saved" money is
+// posted against (it came from no cash account).
+export const SAVINGS_OPENING_ACCOUNT_SUBTYPE = 'savings-opening';
 
 // Subtypes the app looks accounts up by and posts through on its own: the
 // seeded Accounts Receivable/Payable (Dena-Pawna, Loan Management) and the
 // two above. Only the system creates them; a user-made account with one of
 // these subtypes would be picked up in their place, and changing or
 // removing the real one breaks every feature that posts through it.
-export const RESERVED_ACCOUNT_SUBTYPES = ['receivable', 'payable', FIXED_ASSETS_ACCOUNT_SUBTYPE, REFERRAL_BONUS_INCOME_SUBTYPE];
+export const RESERVED_ACCOUNT_SUBTYPES = ['receivable', 'payable', FIXED_ASSETS_ACCOUNT_SUBTYPE, REFERRAL_BONUS_INCOME_SUBTYPE, SAVINGS_OPENING_ACCOUNT_SUBTYPE];
 
 const isReservedSystemAccount = (account: { isSystemAccount: boolean; accountSubtype: string | null }) =>
   account.isSystemAccount && !!account.accountSubtype && RESERVED_ACCOUNT_SUBTYPES.includes(account.accountSubtype);
