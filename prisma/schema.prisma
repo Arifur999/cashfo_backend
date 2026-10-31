@@ -2071,6 +2071,24 @@ model SavingsGoal {
   reminderChannel SavingsReminderChannel?
   description     String?
   status          SavingsGoalStatus       @default(ACTIVE)
+  // What was already saved when the goal was made (its first contribution,
+  // with no source account), where its plan line starts on createdAt.
+  startAmount     Decimal                 @default(0) @db.Decimal(14, 2)
+  // The plan line runs from planStartAmount on planStartDate to the target
+  // on targetDate. Null: from startAmount on createdAt. Catch up and Resume
+  // start a fresh line from that day and what was saved then.
+  planStartDate   DateTime?
+  planStartAmount Decimal?                @db.Decimal(14, 2)
+  // The day the goal reached its target; kept through a full withdrawal, so
+  // a withdrawn goal with one was Achieved, and one without was closed early.
+  reachedAt       DateTime?
+  // Catch up's "save the needed amount a month from now" sends a reminder
+  // email on the 1st of each month while the goal is active.
+  monthlyReminder Boolean                 @default(false)
+  // The reminderDate an email already went out for, and the month ("2026-11")
+  // of the last monthly reminder, so neither is sent twice.
+  reminderSentFor        DateTime?
+  monthlyReminderSentFor String?
   createdAt       DateTime                @default(now())
   updatedAt       DateTime                @updatedAt
   entries         SavingsGoalEntry[]
@@ -2099,18 +2117,17 @@ enum SavingsEntryType {
   // double-entry Transaction (transactionId set, moneyAccountId set).
   CONTRIBUTION
   // Internal reallocation between two goals (Savings Transfer) -- no real
-  // Transaction, since the cash never leaves the pooled Savings account.
-  // Always created in a TRANSFER_OUT/TRANSFER_IN pair (relatedGoalId points
-  // at the other side).
+  // Transaction, since the cash stays in the same Savings Wallet. Always
+  // created in a TRANSFER_OUT/TRANSFER_IN pair (relatedGoalId points at the
+  // other side, savingsAccountId at the wallet whose money changes goal;
+  // older pairs have none, see savings-holdings.ts).
   TRANSFER_OUT
   TRANSFER_IN
-  // Real money moved OUT of a Savings Wallet and recorded as a real Expense
-  // -- backed by a real double-entry Transaction (transactionId set,
-  // savingsAccountId set to which wallet it left from), same as
-  // CONTRIBUTION but reversed. Always withdraws a goal's ENTIRE current
-  // saved amount at once (no partial withdrawal yet) -- see
-  // SavingsGoalsService.withdraw(), which also flips the goal's status to
-  // WITHDRAWN.
+  // Real money moved OUT of a Savings Wallet -- backed by a real double-entry
+  // Transaction (transactionId set, savingsAccountId set to which wallet it
+  // left from). Today it goes to a main balance account (moneyAccountId),
+  // any amount up to what is saved; older ones were the whole amount,
+  // spent as an Expense. Taking everything out marks the goal WITHDRAWN.
   WITHDRAWAL
 }
 
@@ -2137,11 +2154,17 @@ model SavingsGoalEntry {
   savingsAccountId String?
   relatedGoalId    String?
   transactionId    String?
+  // One move between goals, or one withdrawal, can take money from several
+  // savings wallets: each part is its own entry (a TRANSFER_OUT/TRANSFER_IN
+  // pair per wallet), and they share this id, so the move lists and undoes
+  // as one.
+  groupId          String?
   notes            String?
   createdAt        DateTime         @default(now())
 
   @@index([savingsGoalId])
   @@index([businessId])
+  @@index([groupId])
 }
 
 // =====================================================================
