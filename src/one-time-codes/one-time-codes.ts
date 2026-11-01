@@ -1,11 +1,16 @@
 import { createHash, randomInt, timingSafeEqual } from 'node:crypto';
 
 // A code lasts ten minutes, takes five wrong tries, and can be sent five
-// times (a minute apart).
+// times (a minute apart; half a minute for the vault's unlock code, which
+// the person waits on with the page open).
 export const CODE_TTL_MS = 10 * 60 * 1000;
 export const MAX_ATTEMPTS = 5;
 export const MAX_SENDS = 5;
 export const RESEND_AFTER_MS = 60 * 1000;
+const RESEND_AFTER_MS_FOR: Partial<Record<string, number>> = { VAULT_UNLOCK: 30 * 1000 };
+
+// The wait between two sends of a code for `purpose`.
+export const resendGapMs = (purpose: string): number => RESEND_AFTER_MS_FOR[purpose] ?? RESEND_AFTER_MS;
 
 // Why a code can't be used (or sent again).
 export type CodeProblem = 'CODE_USED' | 'CODE_EXPIRED' | 'TOO_MANY_ATTEMPTS' | 'TOO_MANY_SENDS' | 'RESEND_TOO_SOON';
@@ -48,13 +53,13 @@ export function verifyProblem(row: CodeState, now: Date): CodeProblem | null {
 }
 
 // Why the code can't be sent again at `now`, or null when it can.
-export function resendProblem(row: CodeState, now: Date): CodeProblem | null {
+export function resendProblem(row: CodeState, now: Date, gapMs = RESEND_AFTER_MS): CodeProblem | null {
   if (row.consumedAt) return 'CODE_USED';
   if (row.attempts >= MAX_ATTEMPTS) return 'TOO_MANY_ATTEMPTS';
   if (row.sends >= MAX_SENDS) return 'TOO_MANY_SENDS';
-  if (now.getTime() - row.lastSentAt.getTime() < RESEND_AFTER_MS) return 'RESEND_TOO_SOON';
+  if (now.getTime() - row.lastSentAt.getTime() < gapMs) return 'RESEND_TOO_SOON';
   return null;
 }
 
 // Seconds until the code may be sent again (0 = now).
-export const resendAfterSec = (lastSentAt: Date, now: Date): number => Math.max(0, Math.ceil((lastSentAt.getTime() + RESEND_AFTER_MS - now.getTime()) / 1000));
+export const resendAfterSec = (lastSentAt: Date, now: Date, gapMs = RESEND_AFTER_MS): number => Math.max(0, Math.ceil((lastSentAt.getTime() + gapMs - now.getTime()) / 1000));

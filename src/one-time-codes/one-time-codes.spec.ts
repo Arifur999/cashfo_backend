@@ -1,5 +1,5 @@
 import { HttpException } from '@nestjs/common';
-import { codeMatches, generateCode, hashCode, resendAfterSec, resendProblem, verifyProblem, type CodeState } from './one-time-codes.js';
+import { codeMatches, generateCode, hashCode, resendAfterSec, resendGapMs, resendProblem, verifyProblem, type CodeState } from './one-time-codes.js';
 import { OneTimeCodesService } from './one-time-codes.service.js';
 
 const NOW = new Date('2026-10-01T05:20:00.000Z');
@@ -33,6 +33,15 @@ describe('one-time code rules', () => {
     expect(resendAfterSec(NOW, new Date(NOW.getTime() + 18_000))).toBe(42);
     expect(resendProblem(state(), new Date(NOW.getTime() + 60_000))).toBeNull();
     expect(resendProblem(state({ sends: 5 }), new Date(NOW.getTime() + 60_000))).toBe('TOO_MANY_SENDS');
+  });
+
+  it("sends the vault's unlock code again after half a minute", () => {
+    const gap = resendGapMs('VAULT_UNLOCK');
+    expect(gap).toBe(30_000);
+    expect(resendGapMs('PAYOUT_REQUEST')).toBe(60_000);
+    expect(resendProblem(state(), new Date(NOW.getTime() + 29_000), gap)).toBe('RESEND_TOO_SOON');
+    expect(resendProblem(state(), new Date(NOW.getTime() + 30_000), gap)).toBeNull();
+    expect(resendAfterSec(NOW, new Date(NOW.getTime() + 18_000), gap)).toBe(12);
   });
 });
 

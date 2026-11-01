@@ -12,6 +12,7 @@ import {
   MAX_ATTEMPTS,
   MAX_SENDS,
   resendAfterSec,
+  resendGapMs,
   resendProblem,
   verifyProblem,
   type CodeProblem,
@@ -78,17 +79,17 @@ export class OneTimeCodesService {
   ) {}
 
   // A fresh code for `purpose`, replacing any unused one. smsTo sends it to
-  // that phone by SMS (proving the number); otherwise it goes the way pick()
-  // chooses. 503 EMAIL_NOT_CONFIGURED / SMS_NOT_CONFIGURED when nothing can
-  // send it.
+  // that phone by SMS (proving the number), emailOnly to the account's
+  // email; otherwise it goes the way pick() chooses. 503
+  // EMAIL_NOT_CONFIGURED / SMS_NOT_CONFIGURED when nothing can send it.
   async issue(
     person: CodeRecipient,
     purpose: OneTimeCodePurpose,
     payload: Prisma.InputJsonObject,
     action: OtpMessage['action'],
-    options: { smsTo?: string } = {},
+    options: { smsTo?: string; emailOnly?: boolean } = {},
   ): Promise<Challenge> {
-    const route = options.smsTo ? this.senders.smsTo(options.smsTo) : this.senders.pick(person);
+    const route = options.smsTo ? this.senders.smsTo(options.smsTo) : options.emailOnly ? this.senders.emailTo(person.email) : this.senders.pick(person);
     if (!route) {
       throw new ServiceUnavailableException({
         statusCode: 503,
@@ -123,13 +124,14 @@ export class OneTimeCodesService {
     return this.challengeOf(row, now);
   }
 
-  // The same challenge with a new code, a minute after the last send, at
-  // most five sends. The ten minutes start again; the tries don't.
+  // The same challenge with a new code, a minute after the last send (see
+  // resendGapMs), at most five sends. The ten minutes start again; the tries don't.
   async resend(person: CodeRecipient, id: string, purpose: OneTimeCodePurpose, action: OtpMessage['action']): Promise<Challenge> {
     const row = await this.find(person.id, id, purpose);
     const now = new Date();
-    const problem = resendProblem(row, now);
-    if (problem) throw refuse(problem, problem === 'RESEND_TOO_SOON' ? { retryAfterSec: resendAfterSec(row.lastSentAt, now) } : {});
+    const gapMs = resendGapMs(row.purpose);
+    const problem = resendProblem(row, now, gapMs);
+    if (problem) throw refuse(problem, problem === 'RESEND_TOO_SOON' ? { retryAfterSec: resendAfterSec(row.lastSentAt, now, gapMs) } : {});
     const sender = this.senders.forChannel(row.channel);
     if (!sender) throw this.notSent();
     const code = generateCode();
@@ -138,7 +140,7 @@ export class OneTimeCodesService {
       data: { codeHash: hashCode(code, id), sends: { increment: 1 }, lastSentAt: now, expiresAt: new Date(now.getTime() + CODE_TTL_MS) },
     });
     // Another resend got in first.
-    if (count === 0) throw refuse('RESEND_TOO_SOON', { retryAfterSec: 60 });
+    if (count === 0) throw refuse('RESEND_TOO_SOON', { retryAfterSec: gapMs / 1000 });
     try {
       await sender.send(row.destination, code, this.message(person, action));
     } catch {
@@ -194,7 +196,7 @@ export class OneTimeCodesService {
       challengeId: row.id,
       channel: row.channel,
       sentTo: row.channel === 'SMS' ? maskPhone(row.destination) : maskEmail(row.destination),
-      resendAfterSec: resendAfterSec(row.lastSentAt, now),
+      resendAfterSec: resendAfterSec(row.lastSentAt, now, resendGapMs(row.purpose)),
       expiresAt: row.expiresAt,
       attemptsLeft: Math.max(0, MAX_ATTEMPTS - row.attempts),
       sendsLeft: Math.max(0, MAX_SENDS - row.sends),
