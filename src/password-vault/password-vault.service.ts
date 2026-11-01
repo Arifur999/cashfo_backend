@@ -114,7 +114,9 @@ export class PasswordVaultService {
 
   // Sets the first vault password, or changes it. Changing needs the
   // current vault password as well as the account password: the vault is
-  // meant to stay shut even when the account password leaks.
+  // meant to stay shut even when the account password leaks. The first one
+  // opens the new, empty vault straight away (nothing in it yet for the
+  // emailed code to guard); a change locks it, as earlier unlocks end.
   async setVaultPassword(userId: string, dto: SetVaultPasswordDto) {
     const user = await this.prisma.user.findUniqueOrThrow({ where: { id: userId } });
     await this.requireAccountPassword(userId, dto.currentPassword);
@@ -127,7 +129,8 @@ export class PasswordVaultService {
     await this.checkNewVaultPassword(userId, user.name, dto.vaultPassword);
     const vaultPasswordHash = await bcrypt.hash(dto.vaultPassword, 10);
     await this.prisma.user.update({ where: { id: userId }, data: { vaultPasswordHash } });
-    return { success: true };
+    if (user.vaultPasswordHash) return { success: true };
+    return { success: true, ...this.vaultToken(userId, vaultPasswordHash, user.vaultLockMinutes) };
   }
 
   // "Forgot vault password?", step one: proves it's the owner (the account
@@ -284,8 +287,15 @@ export class PasswordVaultService {
       throw new BadRequestException({ statusCode: 400, error: 'Bad Request', message: 'This code was already used. Start again to get a new one.', reason: 'CODE_USED' });
     }
 
+    return this.vaultToken(userId, person.vaultPasswordHash, person.vaultLockMinutes);
+  }
+
+  // An open vault: a token for the person's lock time (capped by
+  // VAULT_TOKEN_EXPIRES_IN), tied to this vault password.
+  private vaultToken(userId: string, vaultPasswordHash: string, lockMinutes: number | null) {
     const now = new Date();
-    const seconds = effectiveLockSeconds(person.vaultLockMinutes, this.serverLockSeconds());
+    const seconds = effectiveLockSeconds(lockMinutes, this.serverLockSeconds());
+    const ver = vaultPasswordFingerprint(vaultPasswordHash);
     const vaultToken = this.jwtService.sign({ sub: userId, scope: 'vault', ver }, { secret: this.configService.get<string>('VAULT_TOKEN_SECRET'), expiresIn: seconds });
     // expiresIn stays a span string ("600s") for clients that parse it.
     return { vaultToken, expiresIn: `${seconds}s`, expiresInSec: seconds, expiresAt: new Date(now.getTime() + seconds * 1000) };

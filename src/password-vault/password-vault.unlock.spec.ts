@@ -71,6 +71,21 @@ describe('PasswordVaultService two-step unlock', () => {
     expect(jwt.sign).not.toHaveBeenCalled();
   });
 
+  it('opens a brand-new vault on its first password, but not after a change', async () => {
+    const { service, jwt } = setup();
+    const prisma = (service as unknown as { prisma: { user: { findUniqueOrThrow: ReturnType<typeof vi.fn> } } }).prisma;
+    const credentials = { verify: vi.fn().mockImplementation((_id: string, password: string) => Promise.resolve(password === 'login pass 1')), has: vi.fn().mockResolvedValue(true) };
+    Object.assign(service, { credentials });
+
+    prisma.user.findUniqueOrThrow.mockResolvedValueOnce({ name: 'Khaled Mahmud', vaultPasswordHash: null, vaultLockMinutes: null });
+    await expect(service.setVaultPassword('u1', { currentPassword: 'login pass 1', vaultPassword: 'green kite river 77' })).resolves.toMatchObject({ success: true, vaultToken: 'vault-token' });
+
+    jwt.sign.mockClear();
+    prisma.user.findUniqueOrThrow.mockResolvedValueOnce({ name: 'Khaled Mahmud', vaultPasswordHash: HASH, vaultLockMinutes: null });
+    await expect(service.setVaultPassword('u1', { currentPassword: 'login pass 1', currentVaultPassword: 'mango tree 42', vaultPassword: 'green kite river 77' })).resolves.toEqual({ success: true });
+    expect(jwt.sign).not.toHaveBeenCalled();
+  });
+
   it('refuses a code already used', async () => {
     const { service, codes, jwt } = setup();
     codes.verify.mockResolvedValue({ id: 'c1', payload: { sessionId: 's1', ver: vaultPasswordFingerprint(HASH) } });
