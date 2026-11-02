@@ -253,10 +253,14 @@ export class ZakatService {
     const have = totalOf('CASH') + totalOf('SAVINGS') + totalOf('GOLD') + totalOf('INVESTMENTS');
     const owed = totalOf('OWED_TO_YOU');
     const owe = totalOf('YOU_OWE');
-    const net = have + owed - owe;
+    const paid = payments.reduce((sum, payment) => sum + toPaisa(payment.amount), 0);
+    // Zakat given this year left a counted wallet, so it is counted back:
+    // giving it must not shrink the zakat it was part of.
+    const countedWallets = new Set([...steps.get('CASH')!, ...steps.get('SAVINGS')!].filter((line) => line.counted).map((line) => line.id));
+    const givenBack = payments.filter((payment) => countedWallets.has(payment.accountId)).reduce((sum, payment) => sum + toPaisa(payment.amount), 0);
+    const net = have + givenBack + owed - owe;
     const nisab = nisabPaisa(profile.basis, gold22, silver22);
     const zakat = zakatPaisa(net, nisab);
-    const paid = payments.reduce((sum, payment) => sum + toPaisa(payment.amount), 0);
     const left = Math.max(0, zakat - paid);
     const daysLeft = Math.max(0, daysBetween(today, due.date));
     const parts = monthlyParts(left, daysLeft);
@@ -296,6 +300,7 @@ export class ZakatService {
       })),
       totals: {
         have: money(have),
+        givenBack: money(givenBack),
         owed: money(owed),
         owe: money(owe),
         net: money(net),
@@ -409,6 +414,8 @@ export class ZakatService {
     if (dto.paidOn > today) throw new BadRequestException('The date cannot be in the future');
     const profile = await this.profile(businessId);
     const due = dueDateFor(profile.dateMode, profile.customDate, today).date;
+    // A zakat year is at most a solar year; earlier giving was an earlier year's.
+    if (daysBetween(dto.paidOn, due) > 366) throw new BadRequestException('That date belongs to an earlier zakat year');
     const amountPaisa = Math.round(dto.amount * 100);
 
     await this.prisma.$transaction(async (tx) => {
@@ -420,7 +427,7 @@ export class ZakatService {
       await tx.$executeRaw`SELECT id FROM "Account" WHERE id = ${account.id} FOR UPDATE`;
       const fresh = await tx.account.findUniqueOrThrow({ where: { id: account.id }, select: { currentBalance: true } });
       if (toPaisa(fresh.currentBalance) < amountPaisa) {
-        throw new BadRequestException(`${account.name} has only ৳ ${money(toPaisa(fresh.currentBalance))}. Pick another wallet or give less.`);
+        throw new BadRequestException("This wallet doesn't have that much. Pick another wallet or give less.");
       }
       const expenseAccountId = await this.expenseAccountId(tx, businessId);
       await this.ensureZakatCategory(tx, businessId);
