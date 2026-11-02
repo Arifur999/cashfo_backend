@@ -16,11 +16,25 @@ const bkash = {
   deletedAt: null,
 };
 
-type Line = { id: string; status: string; amount: string; availableAt: Date; createdAt: Date };
+type Line = {
+  id: string;
+  status: string;
+  amount: string;
+  availableAt: Date;
+  createdAt: Date;
+  kind: string;
+  paidAmount: string;
+  payment: null;
+  referral: { referredUser: { name: string } };
+};
 const line = (id: string, amount: string, status = 'AVAILABLE', day = 20): Line => ({
   id,
   status,
   amount,
+  kind: 'FIRST',
+  paidAmount: '1719.00',
+  payment: null,
+  referral: { referredUser: { name: 'Nusrat Jahan' } },
   availableAt: new Date(`2026-09-${day}T00:00:00Z`),
   createdAt: new Date(`2026-09-${String(day - 7).padStart(2, '0')}T00:00:00Z`),
 });
@@ -44,9 +58,8 @@ const setup = ({
       findUniqueOrThrow: vi.fn().mockResolvedValue({ id: 'u-1', name: 'Khaled Mahmud', email: 'khaled@gmail.com', phone: null, preferredLanguage: 'EN' }),
     },
     referralCommission: {
-      findMany: vi.fn((args: { where: { id?: { in: string[] }; status?: string; payoutId?: unknown } }) => {
+      findMany: vi.fn((args: { where: { id?: { in: string[] }; status?: string } }) => {
         const where = args.where;
-        if (where.payoutId) return Promise.resolve([]);
         return Promise.resolve(lines.filter((l) => (!where.id || where.id.in.includes(l.id)) && (!where.status || l.status === where.status)));
       }),
       updateMany: vi.fn((args: { where: { id?: { in: string[] } } }) => Promise.resolve({ count: args.where.id?.in.length ?? 0 })),
@@ -174,6 +187,8 @@ describe('WithdrawalsService.confirm', () => {
       expectedBy: '2026-10-06',
       canCancel: true,
     });
+    expect(created[0].lineIds).toEqual(['c-1', 'c-2']);
+    expect(view?.lines.map((l) => l.id)).toEqual(['c-1', 'c-2']);
   });
 
   it('makes nothing for a code already used (a double submit)', async () => {
@@ -216,6 +231,7 @@ describe('WithdrawalsService.cancel', () => {
       fee: '0',
       methodSnapshot: bkash,
       createdAt: new Date(),
+      lineIds: ['c-1', 'c-2'],
     });
     await service.cancel('u-1', 'wd-1');
     expect(db.referralCommission.updateMany).toHaveBeenCalledWith({

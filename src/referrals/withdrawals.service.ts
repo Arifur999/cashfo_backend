@@ -85,6 +85,7 @@ export class WithdrawalsService {
           userId,
           amount,
           requestedAmount: amount,
+          lineIds: payload.commissionIds,
           fee: new Prisma.Decimal(settings.withdrawalFee),
           methodId: payload.methodId,
           methodSnapshot: checked.method as unknown as Prisma.InputJsonObject,
@@ -213,10 +214,10 @@ export class WithdrawalsService {
     };
   }
 
-  // Requests as the member sees them, with their lines and the wallet the
-  // income goes to.
+  // Requests as the member sees them, with the lines each was made of (as
+  // they stand now) and the wallet the income goes to.
   async present(client: Client, rows: PayoutRequest[], settings: ReferralSettings) {
-    const ids = rows.map((r) => r.id);
+    const ids = [...new Set(rows.flatMap((r) => r.lineIds))];
     const accountIds = [...new Set(rows.map((r) => r.incomeAccountId).filter((id): id is string => Boolean(id)))];
     const [accounts, lines] = await Promise.all([
       accountIds.length
@@ -224,7 +225,7 @@ export class WithdrawalsService {
         : [],
       ids.length
         ? client.referralCommission.findMany({
-            where: { payoutId: { in: ids } },
+            where: { id: { in: ids } },
             orderBy: [{ availableAt: 'asc' }, { id: 'asc' }],
             select: COMMISSION_LINE_SELECT,
           })
@@ -236,7 +237,7 @@ export class WithdrawalsService {
         row,
         settings,
         row.incomeAccountId ? (accountById.get(row.incomeAccountId) ?? null) : null,
-        lines.filter((line) => line.payoutId === row.id),
+        lines.filter((line) => row.lineIds.includes(line.id)),
       ),
     );
   }

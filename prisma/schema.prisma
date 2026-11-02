@@ -2422,6 +2422,9 @@ model PayoutRequest {
   amount              Decimal              @db.Decimal(14, 2)
   // The lines' total when it was asked for; null on pre-v9 requests.
   requestedAmount     Decimal?             @db.Decimal(14, 2)
+  // The commission lines it was made of, kept after a reject or cancel
+  // gives them back (each line's payoutId says where it is now).
+  lineIds             String[]             @default([])
   fee                 Decimal              @default(0) @db.Decimal(14, 2)
   methodId            String?
   method              PayoutMethod?        @relation(fields: [methodId], references: [id], onDelete: SetNull)

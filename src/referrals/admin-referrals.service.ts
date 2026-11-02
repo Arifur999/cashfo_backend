@@ -521,11 +521,11 @@ export class AdminReferralsService {
   // What each request's row needs beyond itself: its lines, the checks,
   // and whether it is the member's first request.
   private async contexts(rows: (PayoutRequest & { user: { name: string; phone: string | null } })[]) {
-    const ids = rows.map((r) => r.id);
+    const ids = [...new Set(rows.flatMap((r) => r.lineIds))];
     const userIds = [...new Set(rows.map((r) => r.userId))];
     const [lines, payers, firsts, settings] = await Promise.all([
       ids.length
-        ? this.prisma.referralCommission.findMany({ where: { payoutId: { in: ids } }, select: LINE_SELECT, orderBy: [{ availableAt: 'asc' }, { id: 'asc' }] })
+        ? this.prisma.referralCommission.findMany({ where: { id: { in: ids } }, select: LINE_SELECT, orderBy: [{ availableAt: 'asc' }, { id: 'asc' }] })
         : [],
       // The numbers every friend of these members paid from.
       userIds.length
@@ -541,7 +541,7 @@ export class AdminReferralsService {
     const now = new Date();
     const out = new Map<string, { lines: DeskLine[]; checks: ReturnType<typeof payoutChecks>; friends: number; isFirst: boolean }>();
     for (const row of rows) {
-      const mine = lines.filter((line) => line.payoutId === row.id);
+      const mine = lines.filter((line) => row.lineIds.includes(line.id));
       out.set(row.id, {
         lines: mine,
         checks: payoutChecks({

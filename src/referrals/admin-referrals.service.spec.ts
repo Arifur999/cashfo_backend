@@ -19,6 +19,7 @@ const payout = (over: Record<string, unknown> = {}) => ({
   userId: 'u-nasrin',
   amount: '2160.00',
   requestedAmount: '2160.00',
+  lineIds: ['c-1', 'c-2', 'c-3', 'c-4'],
   fee: '0.00',
   methodId: 'm-1',
   methodSnapshot: snapshot,
