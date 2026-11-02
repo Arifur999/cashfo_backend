@@ -3,14 +3,14 @@ import { Prisma } from '@prisma/client';
 import { AnnouncementsService } from '../announcements/announcements.service.js';
 import { BudgetsService } from '../budgets/budgets.service.js';
 import { WorkspaceUnlockService } from '../business-access/workspace-unlock.service.js';
-import { dhakaDateOnly, dhakaToday } from '../common/dhaka.js';
+import { dhakaDateKey, dhakaDateOnly, dhakaToday } from '../common/dhaka.js';
 import { MailService } from '../mail/mail.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { ReceivablesPayablesService } from '../receivables-payables/receivables-payables.service.js';
 import { SavingsGoalsService } from '../savings-goals/savings-goals.service.js';
 import type { RequestUser } from '../user-auth/interfaces/request-user.interface.js';
 import { UpdateReminderPreferencesDto } from './dto/update-reminder-preferences.dto.js';
-import { announcementReminders, budgetReminders, categoryNamesBn, loanReminders, savingsReminders, type ReminderDraft } from './reminders.js';
+import { announcementReminders, budgetReminders, categoryNamesBn, loanReminders, savingsReminders, zakatReminders, type ReminderDraft } from './reminders.js';
 
 // The checks run when the feed is read, at most this often per user.
 const CHECK_EVERY_MS = 30 * 60 * 1000;
@@ -152,6 +152,26 @@ export class UserNotificationsService {
         const goals = await this.savingsGoalsService.list(workspace.id, 'ACTIVE');
         drafts.push(...savingsReminders(workspace.id, month, dhakaDateOnly(now), goals));
       }
+    }
+
+    // The zakat date coming, where zakat was worked out and some is left.
+    const zakat = await this.prisma.zakatProfile.findMany({
+      where: { businessId: { in: ownWorkspaces.map((w) => w.id) }, lastZakat: { gt: 0 }, lastDueDate: { not: null } },
+      select: { businessId: true, lastZakat: true, lastDueDate: true },
+    });
+    if (zakat.length > 0) {
+      const paid = await this.prisma.zakatPayment.groupBy({
+        by: ['businessId', 'dueDate'],
+        where: { businessId: { in: zakat.map((z) => z.businessId) } },
+        _sum: { amount: true },
+      });
+      const paidOf = (businessId: string, dueDate: string) => Number(paid.find((p) => p.businessId === businessId && p.dueDate === dueDate)?._sum.amount ?? 0);
+      drafts.push(
+        ...zakatReminders(
+          dhakaDateKey(now),
+          zakat.map((z) => ({ businessId: z.businessId, dueDate: z.lastDueDate!, zakat: Number(z.lastZakat), paid: paidOf(z.businessId, z.lastDueDate!) })),
+        ),
+      );
     }
 
     // Announcements for everyone, or for a plan one of their workspaces is on.

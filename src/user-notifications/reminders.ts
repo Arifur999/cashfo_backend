@@ -144,6 +144,38 @@ export function savingsReminders(businessId: string, month: string, today: Date,
   return drafts;
 }
 
+export interface ZakatLine {
+  businessId: string;
+  // The zakat last worked out on the page, for the due date it was for.
+  dueDate: string;
+  zakat: number;
+  paid: number;
+}
+
+// Days before the zakat date the bell says so.
+export const ZAKAT_REMIND_DAYS = [30, 3] as const;
+
+// "Your zakat is due in 30 days": once each, while some zakat is left to
+// give. The nearer reminder wins when both are due (a first visit 2 days
+// before the date gets only the 3-day one).
+export function zakatReminders(today: string, lines: ZakatLine[]): ReminderDraft[] {
+  const drafts: ReminderDraft[] = [];
+  for (const line of lines) {
+    const left = line.zakat - line.paid;
+    if (left <= 0) continue;
+    const days = Math.round((Date.parse(`${line.dueDate}T00:00:00Z`) - Date.parse(`${today}T00:00:00Z`)) / 86_400_000);
+    const at = [...ZAKAT_REMIND_DAYS].reverse().find((limit) => days >= 0 && days <= limit);
+    if (at === undefined) continue;
+    drafts.push({
+      key: `zakat:${line.businessId}:${line.dueDate}:${at}`,
+      type: 'ZAKAT',
+      businessId: line.businessId,
+      data: { dueDate: line.dueDate, days, left: left.toFixed(2), zakat: line.zakat.toFixed(2) },
+    });
+  }
+  return drafts;
+}
+
 // An announcement the customer can see, in both languages.
 export function announcementReminders(rows: AnnouncementLine[]): ReminderDraft[] {
   return rows.map((row) => ({

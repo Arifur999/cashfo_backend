@@ -15,6 +15,7 @@ const setup = ({
       findUniqueOrThrow: vi.fn().mockResolvedValue(switches),
     },
     business: { findMany: vi.fn().mockResolvedValue(workspaces) },
+    zakatProfile: { findMany: vi.fn().mockResolvedValue([]) },
     defaultCategory: {
       findMany: vi.fn().mockResolvedValue([
         { name: 'Shopping', nameBn: 'কেনাকাটা' },

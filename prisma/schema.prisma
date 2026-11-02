@@ -2916,6 +2916,8 @@ enum UserNotificationType {
   CAMPAIGN
   // A feature request the customer voted for changed status.
   IDEA
+  // The zakat date is 30 or 3 days away and some zakat is left to give.
+  ZAKAT
 }
 
 // A browser or phone that gets web push notifications for one customer
