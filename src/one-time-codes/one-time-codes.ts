@@ -1,3 +1,4 @@
+import type { OneTimeCodePurpose } from '@prisma/client';
 import { createHash, randomInt, timingSafeEqual } from 'node:crypto';
 
 // A code lasts ten minutes, takes five wrong tries, and can be sent five
@@ -7,10 +8,10 @@ export const CODE_TTL_MS = 10 * 60 * 1000;
 export const MAX_ATTEMPTS = 5;
 export const MAX_SENDS = 5;
 export const RESEND_AFTER_MS = 60 * 1000;
-const RESEND_AFTER_MS_FOR: Partial<Record<string, number>> = { VAULT_UNLOCK: 30 * 1000 };
+const RESEND_AFTER_MS_FOR: Partial<Record<OneTimeCodePurpose, number>> = { VAULT_UNLOCK: 30 * 1000 };
 
 // The wait between two sends of a code for `purpose`.
-export const resendGapMs = (purpose: string): number => RESEND_AFTER_MS_FOR[purpose] ?? RESEND_AFTER_MS;
+export const resendGapMs = (purpose: OneTimeCodePurpose): number => RESEND_AFTER_MS_FOR[purpose] ?? RESEND_AFTER_MS;
 
 // Why a code can't be used (or sent again).
 export type CodeProblem = 'CODE_USED' | 'CODE_EXPIRED' | 'TOO_MANY_ATTEMPTS' | 'TOO_MANY_SENDS' | 'RESEND_TOO_SOON';
