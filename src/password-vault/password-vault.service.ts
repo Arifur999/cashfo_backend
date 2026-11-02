@@ -11,7 +11,7 @@ import type { RequestUser } from '../user-auth/interfaces/request-user.interface
 import { CreateVaultEntryDto } from './dto/create-vault-entry.dto.js';
 import { ResetVaultDto, StartVaultResetDto } from './dto/reset-vault.dto.js';
 import { SetVaultPasswordDto } from './dto/set-vault-password.dto.js';
-import { UnlockVaultDto } from './dto/unlock-vault.dto.js';
+import { UnlockVaultDto, VerifyVaultUnlockDto } from './dto/unlock-vault.dto.js';
 import { UpdateVaultEntryDto } from './dto/update-vault-entry.dto.js';
 import { UpdateVaultSettingsDto } from './dto/vault-settings.dto.js';
 import { securityCheckup, type Checkup } from './vault-checkup.js';
@@ -26,8 +26,19 @@ interface ResetPayload {
   sessionId: string;
 }
 
-// The email's "Enter this code to ..." line.
+// What the unlock code confirms: the sign-in that typed the vault password,
+// and that password (a change or reset in between voids the code).
+interface UnlockPayload {
+  sessionId: string;
+  ver: string;
+}
+
+// The email's "Enter this code to ..." lines.
 const RESET_ACTION = { en: 'reset your vault password', bn: 'ভল্টের পাসওয়ার্ড রিসেট' };
+const UNLOCK_ACTION = { en: 'open your Password Manager', bn: 'পাসওয়ার্ড ম্যানেজার খোলা' };
+
+const staleChallenge = () =>
+  new BadRequestException({ statusCode: 400, error: 'Bad Request', message: 'This code was sent to another sign-in. Start again.', reason: 'CHALLENGE_NOT_FOUND' });
 
 const weakPassword = (reason: VaultPasswordProblem) => new BadRequestException({ statusCode: 400, error: 'Bad Request', message: VAULT_PASSWORD_MESSAGES[reason], reason });
 
@@ -103,7 +114,9 @@ export class PasswordVaultService {
 
   // Sets the first vault password, or changes it. Changing needs the
   // current vault password as well as the account password: the vault is
-  // meant to stay shut even when the account password leaks.
+  // meant to stay shut even when the account password leaks. The first one
+  // opens the new, empty vault straight away (nothing in it yet for the
+  // emailed code to guard); a change locks it, as earlier unlocks end.
   async setVaultPassword(userId: string, dto: SetVaultPasswordDto) {
     const user = await this.prisma.user.findUniqueOrThrow({ where: { id: userId } });
     await this.requireAccountPassword(userId, dto.currentPassword);
@@ -116,7 +129,8 @@ export class PasswordVaultService {
     await this.checkNewVaultPassword(userId, user.name, dto.vaultPassword);
     const vaultPasswordHash = await bcrypt.hash(dto.vaultPassword, 10);
     await this.prisma.user.update({ where: { id: userId }, data: { vaultPasswordHash } });
-    return { success: true };
+    if (user.vaultPasswordHash) return { success: true };
+    return { success: true, ...this.vaultToken(userId, vaultPasswordHash, user.vaultLockMinutes) };
   }
 
   // "Forgot vault password?", step one: proves it's the owner (the account
@@ -149,9 +163,7 @@ export class PasswordVaultService {
     await this.checkNewVaultPassword(userId, person.name, dto.vaultPassword);
     const code = await this.codes.verify(userId, dto.challengeId, 'VAULT_RESET', dto.code);
     const payload = code.payload as unknown as ResetPayload | null;
-    if (payload?.sessionId !== user.sessionId) {
-      throw new BadRequestException({ statusCode: 400, error: 'Bad Request', message: 'This code was sent to another sign-in. Start again.', reason: 'CHALLENGE_NOT_FOUND' });
-    }
+    if (payload?.sessionId !== user.sessionId) throw staleChallenge();
     const vaultPasswordHash = await bcrypt.hash(dto.vaultPassword, 10);
     await this.prisma.$transaction(async (tx) => {
       if (!(await this.codes.consume(tx, code.id))) {
@@ -214,22 +226,25 @@ export class PasswordVaultService {
     throw new BadRequestException('Your account password is incorrect');
   }
 
-  // Wrong tries are counted per person (vault-unlock-limit.ts): ten in ten
-  // minutes, then a wait even for the right password. An unlock lasts the
-  // person's lock time, capped by VAULT_TOKEN_EXPIRES_IN.
-  async unlock(userId: string, dto: UnlockVaultDto) {
+  // Unlocking is two steps. This is the first: the vault password. Wrong
+  // tries are counted per person (vault-unlock-limit.ts): ten in ten
+  // minutes, then a wait even for the right password. The right one sends a
+  // six-digit code to the account's email (never by SMS: the vault asks for
+  // one every time it opens), and verifyUnlock() opens the vault with it.
+  async unlock(user: RequestUser, dto: UnlockVaultDto) {
+    const userId = user.id;
     const now = new Date();
-    const user = await this.prisma.user.findUniqueOrThrow({
+    const person = await this.prisma.user.findUniqueOrThrow({
       where: { id: userId },
-      select: { vaultPasswordHash: true, vaultLockMinutes: true, vaultUnlockFailures: true, vaultUnlockFailedAt: true },
+      select: { name: true, email: true, phone: true, preferredLanguage: true, vaultPasswordHash: true, vaultUnlockFailures: true, vaultUnlockFailedAt: true },
     });
-    if (!user.vaultPasswordHash) {
+    if (!person.vaultPasswordHash) {
       throw new BadRequestException('Set up a vault password first');
     }
-    const before = unlockState(user, now);
+    const before = unlockState(person, now);
     if (before.lockedOut) throw lockedOut(before.retryAfterSec);
 
-    const matches = await bcrypt.compare(dto.vaultPassword, user.vaultPasswordHash);
+    const matches = await bcrypt.compare(dto.vaultPassword, person.vaultPasswordHash);
     if (!matches) {
       const after = await this.recordFailedUnlock(userId, now);
       if (after.lockedOut) throw lockedOut(after.retryAfterSec);
@@ -238,15 +253,50 @@ export class PasswordVaultService {
         HttpStatus.UNAUTHORIZED,
       );
     }
-    if (user.vaultUnlockFailures !== 0 || user.vaultUnlockFailedAt) {
+    if (person.vaultUnlockFailures !== 0 || person.vaultUnlockFailedAt) {
       await this.prisma.user.update({ where: { id: userId }, data: { vaultUnlockFailures: 0, vaultUnlockFailedAt: null } });
     }
 
-    const seconds = effectiveLockSeconds(user.vaultLockMinutes, this.serverLockSeconds());
-    const vaultToken = this.jwtService.sign(
-      { sub: userId, scope: 'vault', ver: vaultPasswordFingerprint(user.vaultPasswordHash) },
-      { secret: this.configService.get<string>('VAULT_TOKEN_SECRET'), expiresIn: seconds },
-    );
+    const payload: UnlockPayload = { sessionId: user.sessionId, ver: vaultPasswordFingerprint(person.vaultPasswordHash) };
+    const challenge = await this.codes.issue({ id: userId, ...person }, 'VAULT_UNLOCK', { ...payload }, UNLOCK_ACTION, { emailOnly: true });
+    return { codeRequired: true as const, ...challenge };
+  }
+
+  // A new unlock code (the old one stops working), half a minute after the
+  // last.
+  async resendUnlockCode(user: RequestUser, challengeId: string) {
+    const person = await this.prisma.user.findUniqueOrThrow({ where: { id: user.id }, select: { id: true, name: true, email: true, phone: true, preferredLanguage: true } });
+    return this.codes.resend(person, challengeId, 'VAULT_UNLOCK', UNLOCK_ACTION);
+  }
+
+  // The second step: the emailed code opens the vault, for this sign-in and
+  // only while the vault password is the one typed in step one. Five wrong
+  // codes and it's back to step one. An unlock lasts the person's lock
+  // time, capped by VAULT_TOKEN_EXPIRES_IN.
+  async verifyUnlock(user: RequestUser, dto: VerifyVaultUnlockDto) {
+    const userId = user.id;
+    const person = await this.prisma.user.findUniqueOrThrow({ where: { id: userId }, select: { vaultPasswordHash: true, vaultLockMinutes: true } });
+    if (!person.vaultPasswordHash) {
+      throw new BadRequestException('Set up a vault password first');
+    }
+    const code = await this.codes.verify(userId, dto.challengeId, 'VAULT_UNLOCK', dto.code);
+    const payload = code.payload as unknown as UnlockPayload | null;
+    const ver = vaultPasswordFingerprint(person.vaultPasswordHash);
+    if (payload?.sessionId !== user.sessionId || payload.ver !== ver) throw staleChallenge();
+    if (!(await this.codes.consume(this.prisma, code.id))) {
+      throw new BadRequestException({ statusCode: 400, error: 'Bad Request', message: 'This code was already used. Start again to get a new one.', reason: 'CODE_USED' });
+    }
+
+    return this.vaultToken(userId, person.vaultPasswordHash, person.vaultLockMinutes);
+  }
+
+  // An open vault: a token for the person's lock time (capped by
+  // VAULT_TOKEN_EXPIRES_IN), tied to this vault password.
+  private vaultToken(userId: string, vaultPasswordHash: string, lockMinutes: number | null) {
+    const now = new Date();
+    const seconds = effectiveLockSeconds(lockMinutes, this.serverLockSeconds());
+    const ver = vaultPasswordFingerprint(vaultPasswordHash);
+    const vaultToken = this.jwtService.sign({ sub: userId, scope: 'vault', ver }, { secret: this.configService.get<string>('VAULT_TOKEN_SECRET'), expiresIn: seconds });
     // expiresIn stays a span string ("600s") for clients that parse it.
     return { vaultToken, expiresIn: `${seconds}s`, expiresInSec: seconds, expiresAt: new Date(now.getTime() + seconds * 1000) };
   }

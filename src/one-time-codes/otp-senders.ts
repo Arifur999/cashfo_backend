@@ -119,6 +119,13 @@ export class OtpSenders {
     return this.sms.isConfigured() ? { sender: this.sms, destination: phone } : null;
   }
 
+  // A code that goes by email whatever else is set up (one asked for often,
+  // like the vault's unlock code, where a text message would cost each time).
+  emailTo(email: string): { sender: OtpSender; destination: string } | null {
+    if (this.email.isConfigured()) return { sender: this.email, destination: email };
+    return this.devLog.isConfigured() ? { sender: this.devLog, destination: email } : null;
+  }
+
   // The sender for a code already sent on `channel` (a resend goes the same way).
   forChannel(channel: OneTimeCodeChannel): OtpSender | null {
     if (channel === 'SMS') return this.sms.isConfigured() ? this.sms : null;

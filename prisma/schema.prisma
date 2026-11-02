@@ -2450,6 +2450,8 @@ enum OneTimeCodePurpose {
   PHONE_VERIFY
   // "Forgot password" by a verified phone: the code is the proof.
   PHONE_PASSWORD_RESET
+  // The Password Manager's second unlock step, after the vault password.
+  VAULT_UNLOCK
 }
 
 enum OneTimeCodeChannel {

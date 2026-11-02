@@ -6,7 +6,7 @@ import type { RequestUser } from '../user-auth/interfaces/request-user.interface
 import { CreateVaultEntryDto } from './dto/create-vault-entry.dto.js';
 import { ResetVaultDto, StartVaultResetDto } from './dto/reset-vault.dto.js';
 import { SetVaultPasswordDto } from './dto/set-vault-password.dto.js';
-import { UnlockVaultDto } from './dto/unlock-vault.dto.js';
+import { UnlockVaultDto, VerifyVaultUnlockDto } from './dto/unlock-vault.dto.js';
 import { UpdateVaultEntryDto } from './dto/update-vault-entry.dto.js';
 import { UpdateVaultSettingsDto } from './dto/vault-settings.dto.js';
 import { VaultAccessGuard } from './guards/vault-access.guard.js';
@@ -72,10 +72,28 @@ export class PasswordVaultController {
   // per caller, set above it so an honest person sees the service's
   // message, not a bare 429 -- unlocking is a normal, repeated action
   // through a working session (open the page, step away, come back...).
+  // Step one of two: the right vault password emails a code (and answers
+  // the challenge, not a vault token).
   @Throttle({ default: { limit: 20, ttl: 10 * 60 * 1000 } })
   @Post('unlock')
   unlock(@CurrentUser() user: RequestUser, @Body() dto: UnlockVaultDto) {
-    return this.passwordVaultService.unlock(user.id, dto);
+    return this.passwordVaultService.unlock(user, dto);
+  }
+
+  @Throttle(CODE_THROTTLE)
+  @Post('unlock/:challengeId/resend')
+  @HttpCode(200)
+  resendUnlockCode(@CurrentUser() user: RequestUser, @Param('challengeId') challengeId: string) {
+    return this.passwordVaultService.resendUnlockCode(user, challengeId);
+  }
+
+  // Step two: the code opens the vault. Each code takes five tries; this
+  // only stops a caller asking for new ones over and over.
+  @Throttle({ default: { limit: 20, ttl: 10 * 60 * 1000 } })
+  @Post('unlock/verify')
+  @HttpCode(200)
+  verifyUnlock(@CurrentUser() user: RequestUser, @Body() dto: VerifyVaultUnlockDto) {
+    return this.passwordVaultService.verifyUnlock(user, dto);
   }
 
   @UseGuards(VaultAccessGuard)

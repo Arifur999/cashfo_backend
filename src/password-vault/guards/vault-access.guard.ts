@@ -14,7 +14,8 @@ interface VaultTokenPayload {
 
 // Guards every /api/vault/entries* route on top of UserAuthGuard (which must
 // run first and attach request.user) -- proves the caller unlocked the vault
-// recently via POST /api/vault/unlock, not just that they're logged in. The
+// recently (the vault password, then the emailed code: POST
+// /api/vault/unlock and /unlock/verify), not just that they're logged in. The
 // token is short-lived (VAULT_TOKEN_EXPIRES_IN) and signed with its own
 // secret so a stolen main access token alone can never reach vault entries.
 @Injectable()
