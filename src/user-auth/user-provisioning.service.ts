@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Prisma, WorkspaceType } from '@prisma/client';
-import { randomBytes } from 'crypto';
+import { ensureReferralCode } from '../common/referral-code.js';
 import { AccountsService } from '../accounts/accounts.service.js';
 import { dhakaMonthStart, dhakaToday } from '../common/dhaka.js';
 import { MailService } from '../mail/mail.service.js';
@@ -52,7 +52,7 @@ export class UserProvisioningService {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${userId}))`;
       if (await tx.business.findFirst({ where: { ownerId: userId, isDefault: true }, select: { id: true } })) return null;
 
-      await this.assignReferralCode(tx, userId);
+      await ensureReferralCode(tx, userId);
       if (options.referralCode && referralRules) {
         await this.recordReferral(tx, userId, options.referralCode, referralRules);
       }
@@ -86,23 +86,6 @@ export class UserProvisioningService {
   private async findDefaultBusinessId(userId: string): Promise<string | null> {
     const business = await this.prisma.business.findFirst({ where: { ownerId: userId, isDefault: true }, select: { id: true } });
     return business?.id ?? null;
-  }
-
-  // The user's own shareable code -- same short-code algorithm as
-  // ReferralsService.generateUniqueReferralCode(), duplicated rather than
-  // imported to avoid a UserAuthModule <-> ReferralsModule cycle (see that
-  // method's comment).
-  private async assignReferralCode(tx: Prisma.TransactionClient, userId: string) {
-    const user = await tx.user.findUniqueOrThrow({ where: { id: userId }, select: { referralCode: true } });
-    if (user.referralCode) return;
-
-    for (let attempt = 0; attempt < 5; attempt++) {
-      const candidate = randomBytes(5).toString('hex').toUpperCase().slice(0, 8);
-      if (!(await tx.user.findUnique({ where: { referralCode: candidate } }))) {
-        await tx.user.update({ where: { id: userId }, data: { referralCode: candidate } });
-        return;
-      }
-    }
   }
 
   // The friend JOINED with someone's code; the referrer earns when the

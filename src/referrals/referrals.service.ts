@@ -1,10 +1,10 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { BillingCycle, Prisma } from '@prisma/client';
-import { randomBytes } from 'node:crypto';
 import { isPaidStatus } from '../billing/periods.js';
 import { fromPaisa, referralDiscountPaisa, toPaisa } from '../billing/pricing.js';
 import { SubscriptionsService } from '../billing/subscriptions.service.js';
 import { dhakaDateKey } from '../common/dhaka.js';
+import { ensureReferralCode } from '../common/referral-code.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { SettingsService } from '../settings/settings.service.js';
 import { TransactionsService } from '../transactions/transactions.service.js';
@@ -30,29 +30,12 @@ export class ReferralsService {
     private readonly notices: ReferralNotices,
   ) {}
 
-  // Called from UserAuthService.register() too (to backfill a brand-new
-  // user's code inside its own registration transaction) -- kept here as
-  // the single source of truth for the generation algorithm. Short,
-  // URL-friendly, uppercase alphanumeric; retries on the astronomically
-  // rare collision.
-  async generateUniqueReferralCode(client: Prisma.TransactionClient | PrismaService = this.prisma): Promise<string> {
-    for (let attempt = 0; attempt < 5; attempt++) {
-      const code = randomBytes(5).toString('hex').toUpperCase().slice(0, 8);
-      const existing = await client.user.findUnique({ where: { referralCode: code } });
-      if (!existing) return code;
-    }
-    throw new Error('Could not generate a unique referral code');
-  }
-
   // The member's Referral Program page: their code, whether they can earn,
   // the program's numbers, the balance and every friend. The older fields
   // (totalEarned ... recentReferrals) keep their meaning for older apps.
   async getReferralInfo(userId: string) {
-    let user = await this.prisma.user.findUniqueOrThrow({ where: { id: userId } });
-    if (!user.referralCode) {
-      const referralCode = await this.generateUniqueReferralCode();
-      user = await this.prisma.user.update({ where: { id: userId }, data: { referralCode } });
-    }
+    await ensureReferralCode(this.prisma, userId);
+    const user = await this.prisma.user.findUniqueOrThrow({ where: { id: userId } });
 
     const now = new Date();
     await this.commissions.matureDue(now, userId);
