@@ -1,60 +1,66 @@
-import { Prisma, type Account, type ReferralKind, type ReferralStatus } from '@prisma/client';
+import { Prisma, type Account, type CommissionStatus } from '@prisma/client';
 import { MONEY_ACCOUNT_SUBTYPES, REFERRAL_BONUS_INCOME_SUBTYPE } from '../accounts/accounts.service.js';
 import { toPaisa } from '../billing/pricing.js';
 import type { PrismaService } from '../prisma/prisma.service.js';
-import { OPEN_PAYOUT_STATUSES, referralBalances, type Balances, type CommissionEntry, type PayoutEntry } from './referral-money.js';
 
 type Client = PrismaService | Prisma.TransactionClient;
 
-export interface LedgerRow {
-  id: string;
-  kind: ReferralKind;
-  status: ReferralStatus;
-  rewardAmount: Prisma.Decimal;
-  commissionAmount: Prisma.Decimal | null;
-  paidOutAmount: Prisma.Decimal;
-  availableAt: Date | null;
-  createdAt: Date;
+// A member's referral money by where it is, in paisa.
+export interface Balances {
+  // Ready to withdraw.
+  availablePaisa: number;
+  // Inside the refund window, and when the next of it is ready.
+  onHoldPaisa: number;
+  onHoldNextAt: Date | null;
+  // In requests not paid yet.
+  inWithdrawalPaisa: number;
+  // Held back by an admin for a second look.
+  underCheckPaisa: number;
+  paidOutPaisa: number;
+  // Taken back because the friend was refunded.
+  reversedPaisa: number;
+  // Everything earned and not taken back.
+  lifetimePaisa: number;
 }
 
-export const LEDGER_SELECT = {
-  id: true,
-  kind: true,
-  status: true,
-  rewardAmount: true,
-  commissionAmount: true,
-  paidOutAmount: true,
-  availableAt: true,
-  createdAt: true,
-} as const satisfies Prisma.ReferralSelect;
+export function balancesOf(sums: { status: CommissionStatus; paisa: number }[], onHoldNextAt: Date | null): Balances {
+  const of = (status: CommissionStatus) => sums.filter((s) => s.status === status).reduce((total, s) => total + s.paisa, 0);
+  const available = of('AVAILABLE');
+  const onHold = of('ON_HOLD');
+  const inWithdrawal = of('IN_WITHDRAWAL');
+  const underCheck = of('UNDER_CHECK');
+  const paidOut = of('PAID_OUT');
+  return {
+    availablePaisa: available,
+    onHoldPaisa: onHold,
+    onHoldNextAt,
+    inWithdrawalPaisa: inWithdrawal,
+    underCheckPaisa: underCheck,
+    paidOutPaisa: paidOut,
+    reversedPaisa: of('REVERSED'),
+    lifetimePaisa: available + onHold + inWithdrawal + underCheck + paidOut,
+  };
+}
 
-// A referral as money: the commission (or an old row's flat reward) and
-// how much of it is paid out.
-export const toEntry = (row: LedgerRow): CommissionEntry => ({
-  id: row.id,
-  status: row.status,
-  commissionPaisa: toPaisa(row.commissionAmount ?? (row.kind === 'SIGNUP_BONUS' ? row.rewardAmount : 0)),
-  paidOutPaisa: toPaisa(row.paidOutAmount),
-  availableAt: row.availableAt,
-  createdAt: row.createdAt,
-});
-
-// One member's commissions, open requests and balance. Inside a lock
-// (withLocks(['referrals:<userId>'])) when the result decides a payment.
-export async function memberLedger(
-  client: Client,
-  userId: string,
-): Promise<{ rows: LedgerRow[]; entries: CommissionEntry[]; openPayouts: PayoutEntry[]; balances: Balances }> {
-  const [rows, payouts] = await Promise.all([
-    client.referral.findMany({ where: { referrerId: userId }, select: LEDGER_SELECT }),
-    client.payoutRequest.findMany({
-      where: { userId, status: { in: [...OPEN_PAYOUT_STATUSES] } },
-      select: { id: true, number: true, status: true, amount: true, createdAt: true },
-    }),
+export async function referralBalances(client: Client, userId: string): Promise<Balances> {
+  const [groups, next] = await Promise.all([
+    client.referralCommission.groupBy({ by: ['status'], where: { referrerId: userId }, _sum: { amount: true } }),
+    client.referralCommission.findFirst({ where: { referrerId: userId, status: 'ON_HOLD' }, orderBy: { availableAt: 'asc' }, select: { availableAt: true } }),
   ]);
-  const entries = rows.map(toEntry);
-  const openPayouts = payouts.map((p) => ({ id: p.id, number: p.number, status: p.status, amountPaisa: toPaisa(p.amount), createdAt: p.createdAt }));
-  return { rows, entries, openPayouts, balances: referralBalances(entries, openPayouts) };
+  return balancesOf(
+    groups.map((g) => ({ status: g.status, paisa: toPaisa(g._sum.amount ?? 0) })),
+    next?.availableAt ?? null,
+  );
+}
+
+// The lines of the given requests that are still in them go back to
+// AVAILABLE: a request cancelled, rejected, or closed with the account.
+// Lines an admin held back (UNDER_CHECK) stay held.
+export function releaseLines(tx: Prisma.TransactionClient, payoutIds: string[]) {
+  return tx.referralCommission.updateMany({
+    where: { payoutId: { in: payoutIds }, status: 'IN_WITHDRAWAL' },
+    data: { status: 'AVAILABLE', payoutId: null },
+  });
 }
 
 // "Add it as income when it's paid": a workspace the member owns or keeps

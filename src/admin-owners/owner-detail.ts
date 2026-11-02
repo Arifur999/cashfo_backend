@@ -2,7 +2,7 @@ import { BillingCycle, type Prisma, type PrismaClient } from '@prisma/client';
 import { MONEY_ACCOUNT_SUBTYPES } from '../accounts/accounts.service.js';
 import { planLimits } from '../billing/usage.js';
 import { placeOfIp } from '../common/ip-country.js';
-import { memberLedger } from '../referrals/referral-ledger.js';
+import { referralBalances } from '../referrals/referral-ledger.js';
 
 type Client = PrismaClient | Prisma.TransactionClient;
 
@@ -58,8 +58,8 @@ export async function ownerExtras(
     }),
     prisma.transaction.count({ where: { businessId: { in: workspaceIds }, createdAt: { gte: since }, status: 'POSTED', reversalOfId: null } }),
     prisma.transaction.groupBy({ by: ['businessId'], where: { businessId: { in: workspaceIds }, status: 'POSTED', reversalOfId: null }, _count: true }),
-    prisma.referral.findMany({ where: { referrerId: userId }, select: { paymentId: true, status: true } }),
-    memberLedger(prisma, userId),
+    prisma.referral.findMany({ where: { referrerId: userId }, select: { _count: { select: { commissions: { where: { kind: { not: 'BONUS' } } } } } } }),
+    referralBalances(prisma, userId),
     prisma.payment.aggregate({ where: { userId, status: { in: ['SUCCESS', 'REFUNDED'] } }, _sum: { amount: true }, _count: true }),
     prisma.payment.findFirst({
       where: { userId, status: { in: ['SUCCESS', 'REFUNDED'] }, couponId: { not: null } },
@@ -113,9 +113,9 @@ export async function ownerExtras(
       walletKinds: { cash: walletCount('cash'), bank: walletCount('bank'), mfs: walletCount('mfs'), savings: walletCount('savings') },
       transactionsLast30d: txLast30d,
       referralFriends: referrals.length,
-      // Friends whose first payment went through (a commission or a missed one).
-      referralBought: referrals.filter((referral) => referral.paymentId !== null).length,
-      referralEarned: paisa(ledger.balances.totalEarnedPaisa),
+      // Friends who have paid (a commission line, earned or missed).
+      referralBought: referrals.filter((referral) => referral._count.commissions > 0).length,
+      referralEarned: paisa(ledger.lifetimePaisa),
     },
     // No extra-workspace pricing exists yet, so monthlyFee is null: an
     // extra workspace is shown as "outside the plan" and costs nothing.

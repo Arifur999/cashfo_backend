@@ -1,5 +1,6 @@
 import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { OwnerImpersonationService } from './owner-impersonation.service.js';
+import { SupportAccessService } from '../support-access/support-access.service.js';
 
 const setup = ({
   owner = { id: 'user-1', status: 'ACTIVE' } as { id: string; status: string } | null,
@@ -14,7 +15,8 @@ const setup = ({
   };
   const sessions = { create: vi.fn().mockResolvedValue('session-9'), revoke: vi.fn() };
   const tokens = { issue: vi.fn().mockReturnValue({ accessToken: 'access', refreshToken: 'refresh' }) };
-  const supportAccess = { consume: vi.fn().mockResolvedValue(consent) };
+  // The real consent check, over a stubbed code lookup.
+  const supportAccess = Object.assign(new SupportAccessService(prisma as never, {} as never), { consume: vi.fn().mockResolvedValue(consent) });
   const service = new OwnerImpersonationService(prisma as never, sessions as never, tokens as never, supportAccess as never);
   return { service, prisma, sessions, tokens, supportAccess };
 };

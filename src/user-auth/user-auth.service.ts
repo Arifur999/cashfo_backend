@@ -17,7 +17,7 @@ import { ChangePasswordDto } from './dto/change-password.dto.js';
 import { LoginDto } from './dto/login.dto.js';
 import { RegisterDto } from './dto/register.dto.js';
 import { SecurityAlertsService } from './security-alerts.service.js';
-import { UserProvisioningService } from './user-provisioning.service.js';
+import { UserProvisioningService, type ProvisionOptions } from './user-provisioning.service.js';
 import { UserSessionsService } from './user-sessions.service.js';
 
 const INVALID_RESET_LINK = 'This reset link is invalid or has expired. Please request a new one.';
@@ -82,7 +82,7 @@ export class UserAuthService {
       throw new ConflictException('An account with this email already exists');
     }
 
-    const defaultBusinessId = await this.provisioning.ensureDefaultWorkspace(signedIn.userId, { referralCode: dto.referralCode });
+    const defaultBusinessId = await this.provisioning.ensureDefaultWorkspace(signedIn.userId, { referralCode: dto.referralCode, referralSource: dto.referralSource });
     const user = await this.prisma.user.findUniqueOrThrow({ where: { id: signedIn.userId } });
     return this.signedInResponse(user, signedIn.sessionId, client, defaultBusinessId);
   }
@@ -134,7 +134,7 @@ export class UserAuthService {
   // cookie in the browser. The frontend forwards that cookie here and gets
   // the usual token pair, bound to that same session. An admin's session is
   // refused, not ended, so the frontend can exchange it on the admin side.
-  async exchangeSession(cookieHeader: string | undefined, client: ClientInfo, referralCode?: string, trustedDevices?: string | string[]) {
+  async exchangeSession(cookieHeader: string | undefined, client: ClientInfo, referral?: ProvisionOptions, trustedDevices?: string | string[]) {
     const signedIn = await this.sessions.fromCookie(cookieHeader);
     if (!signedIn) {
       throw new UnauthorizedException('No signed-in session to exchange');
@@ -156,13 +156,13 @@ export class UserAuthService {
     if (pending) return pending;
     // A first Google sign-in is also the signup: finishing it creates the
     // workspace and records the referral the invite link carried.
-    return this.finishSignIn(user, signedIn.sessionId, client, referralCode);
+    return this.finishSignIn(user, signedIn.sessionId, client, referral);
   }
 
   // Shared by every completed sign-in (password, Google, the second step):
   // stamps it, writes the login history, makes sure the account has its
   // workspace, and issues the tokens.
-  async finishSignIn(user: User, sessionId: string, client: ClientInfo, referralCode?: string) {
+  async finishSignIn(user: User, sessionId: string, client: ClientInfo, referral?: ProvisionOptions) {
     // A sign-in inside the 30 days after "Delete my account" restores the
     // account; one after them purges it and is refused.
     const { restored } = await this.deletion.restoreOnSignIn(user);
@@ -173,7 +173,7 @@ export class UserAuthService {
       }),
     ]);
     // Also completes an account created elsewhere that has no workspace yet.
-    const defaultBusinessId = await this.provisioning.ensureDefaultWorkspace(user.id, referralCode ? { referralCode } : undefined);
+    const defaultBusinessId = await this.provisioning.ensureDefaultWorkspace(user.id, referral);
     return this.signedInResponse(user, sessionId, client, defaultBusinessId, restored);
   }
 

@@ -84,7 +84,7 @@ export class UserAuthController {
   @Throttle({ default: { limit: 10, ttl: 60 * 1000 } })
   @Post('session/exchange')
   exchangeSession(@Req() req: Request, @Body() dto: SessionExchangeDto) {
-    return this.userAuthService.exchangeSession(req.headers.cookie, this.resolveClientInfo(req), dto.referralCode, req.headers['x-trusted-device']);
+    return this.userAuthService.exchangeSession(req.headers.cookie, this.resolveClientInfo(req), dto, req.headers['x-trusted-device']);
   }
 
   @Post('refresh')
@@ -175,6 +175,24 @@ export class UserAuthController {
   @Delete('avatar')
   removeAvatar(@CurrentUser() user: RequestUser) {
     return this.userProfileService.updateAvatar(user.id, null);
+  }
+
+  // The cover over the profile: the same image rules as the photo.
+  @UseGuards(UserAuthGuard)
+  @Post('cover')
+  @UseInterceptors(FileInterceptor('file', userAvatarMulterOptions))
+  async uploadCover(@CurrentUser() user: RequestUser, @UploadedFile() file: Express.Multer.File) {
+    if (!file) {
+      throw new BadRequestException('No file was uploaded');
+    }
+    const coverUrl = await this.imgbbService.uploadImage(file.buffer, file.originalname);
+    return this.userProfileService.updateCover(user.id, coverUrl);
+  }
+
+  @UseGuards(UserAuthGuard)
+  @Delete('cover')
+  removeCover(@CurrentUser() user: RequestUser) {
+    return this.userProfileService.updateCover(user.id, null);
   }
 
   // Checks the current password, so it gets the login's brute-force budget

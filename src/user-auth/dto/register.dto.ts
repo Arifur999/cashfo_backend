@@ -1,7 +1,7 @@
 import { LanguagePreference } from '@prisma/client';
 import { Transform } from 'class-transformer';
-import { IsEmail, IsEnum, IsNotEmpty, IsOptional, IsString, Matches, MaxLength, MinLength } from 'class-validator';
-import { normalizeEmail } from '../../common/dto.js';
+import { IsEmail, IsEnum, IsNotEmpty, IsOptional, IsString, Matches, MaxLength, MinLength, ValidateIf } from 'class-validator';
+import { normalizeEmail, whenSent } from '../../common/dto.js';
 
 // Permissive international phone check -- optional leading "+", digits,
 // spaces, and hyphens, 6-20 characters total. Not restricted to Bangladeshi
@@ -44,4 +44,10 @@ export class RegisterDto {
   @IsOptional()
   @IsString()
   referralCode?: string;
+
+  // The invite link's tag (&src=facebook): which of the referrer's links
+  // the sign-up came through. An unknown tag is ignored.
+  @ValidateIf(whenSent)
+  @Matches(/^[a-z0-9]{2,20}$/)
+  referralSource?: string;
 }

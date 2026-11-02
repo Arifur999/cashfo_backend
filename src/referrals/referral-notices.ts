@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { Prisma } from '@prisma/client';
-import { formatTaka, localeOf } from '../billing/billing-text.js';
+import { dateLabel, formatTaka, localeOf } from '../billing/billing-text.js';
 import { toPaisa } from '../billing/pricing.js';
 import { MailService } from '../mail/mail.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
@@ -20,6 +20,10 @@ export type ReferralEvent =
   | 'COMMISSION_AVAILABLE'
   // The friend was refunded inside the window, or an admin cancelled it.
   | 'COMMISSION_CANCELLED'
+  // An admin held a line back from a withdrawal for a second look, or let
+  // it go back to the balance.
+  | 'COMMISSION_UNDER_CHECK'
+  | 'COMMISSION_RELEASED'
   // Sent to an invited friend who hasn't bought yet ("Send a reminder").
   | 'INVITE_REMINDER';
 
@@ -28,13 +32,15 @@ export type PayoutEvent = 'PAYOUT_APPROVED' | 'PAYOUT_PAID' | 'PAYOUT_REJECTED';
 export type NoticeData = Record<string, string | number | null>;
 
 // Where the member's emails lead in the customer app.
-const WITHDRAWALS_PATH = '/referrals?tab=withdrawals';
+const EARNINGS_PATH = '/referrals/earnings';
+const WITHDRAWALS_PATH = '/referrals/withdrawals';
 
 export const money = (value: { toString(): string } | number): string => (toPaisa(value) / 100).toFixed(2);
 
-// The member's bell for the Referral Program, and the payout emails. The
+// The member's bell for the Referral Program, and the referral emails. The
 // bell row is the record (its key keeps it to one); an email goes only
-// with a new row, best-effort, and only when email is set up.
+// with a new row, best-effort, when email is set up and the member hasn't
+// turned that email off (Referrals > Profile & payouts).
 @Injectable()
 export class ReferralNotices {
   private readonly logger = new Logger(ReferralNotices.name);
@@ -60,6 +66,30 @@ export class ReferralNotices {
     return count > 0;
   }
 
+  // A friend's payment earned a commission: the bell row (in the payment's
+  // transaction), then the email once it has committed.
+  async commissionEarned(
+    referrerId: string,
+    commission: { id: string; amount: { toString(): string }; availableAt: Date; renewal: boolean },
+    friendName: string,
+    data: NoticeData,
+    tx: Prisma.TransactionClient,
+  ): Promise<() => Promise<void>> {
+    const fresh = await this.bell(referrerId, 'REFERRAL', `commission:${commission.id}:pending`, { event: 'COMMISSION_PENDING', ...data }, tx);
+    if (!fresh) return async () => {};
+    return () =>
+      this.email(referrerId, 'earned', (user, locale) =>
+        this.mail.sendCommissionEarnedEmail(user.email, locale, {
+          name: user.name,
+          friendName,
+          amount: formatTaka(toPaisa(commission.amount), locale),
+          readyOn: dateLabel(commission.availableAt, locale),
+          renewal: commission.renewal,
+          link: this.link(EARNINGS_PATH),
+        }),
+      );
+  }
+
   async payoutApproved(payout: PayoutForNotice) {
     await this.bell(payout.userId, 'PAYOUT', `payout:${payout.id}:approved`, {
       event: 'PAYOUT_APPROVED',
@@ -69,7 +99,6 @@ export class ReferralNotices {
       methodType: payout.method.type,
     });
   }
-
   async payoutPaid(payout: PayoutForNotice & { paidAmount: { toString(): string }; trxId: string; paidAt: Date }, incomeWallet: string | null) {
     const fresh = await this.bell(payout.userId, 'PAYOUT', `payout:${payout.id}:paid`, {
       event: 'PAYOUT_PAID',
@@ -83,7 +112,7 @@ export class ReferralNotices {
       incomeWallet,
     });
     if (!fresh) return;
-    await this.email(payout.userId, (user, locale) =>
+    await this.email(payout.userId, 'payouts', (user, locale) =>
       this.mail.sendPayoutNoticeEmail(user.email, locale, {
         kind: 'PAID',
         name: user.name,
@@ -93,7 +122,7 @@ export class ReferralNotices {
         trxId: payout.trxId,
         reason: null,
         incomeWallet,
-        link: this.link(),
+        link: this.link(WITHDRAWALS_PATH),
       }),
     );
   }
@@ -108,7 +137,7 @@ export class ReferralNotices {
       reason: payout.rejectReason,
     });
     if (!fresh) return;
-    await this.email(payout.userId, (user, locale) =>
+    await this.email(payout.userId, 'payouts', (user, locale) =>
       this.mail.sendPayoutNoticeEmail(user.email, locale, {
         kind: 'REJECTED',
         name: user.name,
@@ -118,23 +147,26 @@ export class ReferralNotices {
         trxId: null,
         reason: payout.rejectReason,
         incomeWallet: null,
-        link: this.link(),
+        link: this.link(WITHDRAWALS_PATH),
       }),
     );
   }
 
-  private link() {
-    return `${this.config.get<string>('USER_FRONTEND_URL') ?? 'http://localhost:3000'}${WITHDRAWALS_PATH}`;
+  private link(path: string) {
+    return `${this.config.get<string>('USER_FRONTEND_URL') ?? 'http://localhost:3000'}${path}`;
   }
 
-  private async email(userId: string, send: (user: { name: string; email: string }, locale: 'en' | 'bn') => Promise<void>) {
+  private async email(userId: string, kind: 'earned' | 'payouts', send: (user: { name: string; email: string }, locale: 'en' | 'bn') => Promise<void>) {
     if (!this.mail.configured) return;
     try {
-      const user = await this.prisma.user.findUnique({ where: { id: userId }, select: { name: true, email: true, preferredLanguage: true } });
-      if (!user) return;
+      const user = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { name: true, email: true, preferredLanguage: true, referralEmailEarned: true, referralEmailPayouts: true },
+      });
+      if (!user || !(kind === 'earned' ? user.referralEmailEarned : user.referralEmailPayouts)) return;
       await send(user, localeOf(user.preferredLanguage));
     } catch (error) {
-      this.logger.warn(`Payout email for user ${userId} failed: ${error instanceof Error ? error.message : String(error)}`);
+      this.logger.warn(`Referral email for user ${userId} failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 }

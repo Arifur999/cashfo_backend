@@ -202,18 +202,18 @@ enum PaymentPurpose {
 // --- Prompt 4: Payments (payments, invoices, refunds). ---
 
 model Payment {
-  id                 String           @id @default(uuid())
+  id                 String              @id @default(uuid())
   // Legacy sandbox payments (POST /admin/dev/simulate-payment) only; a
   // customer's payment sets userId instead.
   platformUserId     String?
   userId             String?
-  user               User?            @relation(fields: [userId], references: [id], onDelete: SetNull)
-  purpose            PaymentPurpose   @default(NEW)
+  user               User?               @relation(fields: [userId], references: [id], onDelete: SetNull)
+  purpose            PaymentPurpose      @default(NEW)
   planId             String
-  plan               SubscriptionPlan @relation(fields: [planId], references: [id])
-  amount             Decimal          @db.Decimal(10, 2)
-  currency           String           @default("BDT")
-  discountApplied    Decimal?         @db.Decimal(10, 2)
+  plan               SubscriptionPlan    @relation(fields: [planId], references: [id])
+  amount             Decimal             @db.Decimal(10, 2)
+  currency           String              @default("BDT")
+  discountApplied    Decimal?            @db.Decimal(10, 2)
   couponId           String?
   gateway            PaymentGateway
   gatewayReferenceId String? // transaction id from bKash/SSLCommerz/etc, nullable until real integration
@@ -221,9 +221,9 @@ model Payment {
   failureReason      String?
   paidAt             DateTime?
   // The plan's price at checkout, before any discount.
-  listPrice          Decimal?         @db.Decimal(10, 2)
+  listPrice          Decimal?            @db.Decimal(10, 2)
   // The friend's first-payment discount, when it beat the coupon.
-  referralDiscount   Decimal?         @db.Decimal(10, 2)
+  referralDiscount   Decimal?            @db.Decimal(10, 2)
   // The paid period this payment bought (set when it is marked paid).
   periodStart        DateTime?
   periodEnd          DateTime?
@@ -233,11 +233,13 @@ model Payment {
   expiresAt          DateTime?
   // The admin who marked it paid.
   markedPaidBy       String?
-  createdAt          DateTime         @default(now())
+  createdAt          DateTime            @default(now())
   invoice            Invoice?
   refund             Refund?
   // The referral this payment earned a commission for (the friend's first).
   referral           Referral?
+  // The referrer's share of this payment (any payment, renewals too).
+  commission         ReferralCommission?
 
   @@index([platformUserId, createdAt])
   @@index([userId, createdAt])
@@ -802,6 +804,14 @@ model User {
   // statically from /uploads/avatars. Null shows the initials-circle
   // fallback in the UI instead.
   avatarUrl               String?
+  // Settings > Profile: the wide photo over the profile (imgbb, like the
+  // avatar; null shows a gradient), and a one-line address.
+  coverUrl                String?
+  address                 String?
+  // When the person turned on their shareable profile card (a public page
+  // at /card/<referralCode> with their name, photos and an invite); null
+  // while it is off, and then that page shows nothing.
+  profileCardSharedAt     DateTime?
   // No password column: the hash lives on this user's "credential"
   // AuthAccount row, where better-auth reads it (src/auth/credential-account.ts).
   // When the password was last set (CredentialsService.set); null before
@@ -828,6 +838,13 @@ model User {
   // uniquely identifies its owner when a new signup's referralCode DTO
   // field is looked up.
   referralCode            String?                  @unique
+  // Referrals > Profile & payouts: the name invited friends see ("Khaled
+  // invited you"); null = the first word of `name`.
+  referralName            String?
+  // Referrals > Profile & payouts: email me when a friend's payment earns
+  // me a commission, and about my withdrawals.
+  referralEmailEarned     Boolean                  @default(true)
+  referralEmailPayouts    Boolean                  @default(true)
   // Settings > Password Manager's own unlock secret -- deliberately separate
   // from the account password (a leaked account password must not also unlock
   // the vault). Null until the user completes first-time vault setup (see
@@ -910,6 +927,8 @@ model User {
   payments                Payment[]
   payoutMethods           PayoutMethod[]
   payoutRequests          PayoutRequest[]
+  referralCommissions     ReferralCommission[]
+  referralLinks           ReferralLink[]
   oneTimeCodes            OneTimeCode[]
   // Two-step sign-in (src/two-step): the authenticator app, its backup
   // codes, the computers that skip the code for 30 days, and open
@@ -2053,45 +2072,45 @@ model IncomeGoal {
 // =====================================================================
 
 model SavingsGoal {
-  id              String                  @id @default(uuid())
-  businessId      String
-  business        Business                @relation(fields: [businessId], references: [id])
-  name            String
-  targetAmount    Decimal                 @db.Decimal(14, 2)
-  targetDate      DateTime
+  id                     String                  @id @default(uuid())
+  businessId             String
+  business               Business                @relation(fields: [businessId], references: [id])
+  name                   String
+  targetAmount           Decimal                 @db.Decimal(14, 2)
+  targetDate             DateTime
   // Manually entered (not derived from targetDate - createdAt) -- drives the
   // "suggested monthly contribution" (targetAmount / durationMonths) shown
   // alongside the goal, same as the reference layout's "Monthly Savings"
   // card.
-  durationMonths  Int
-  reminderDate    DateTime?
+  durationMonths         Int
+  reminderDate           DateTime?
   // Only a stored preference for now -- no email/SMS is actually sent yet
   // (this app has no email provider or Bangladeshi SMS gateway configured).
   // Wiring up real delivery is a separate, later integration.
-  reminderChannel SavingsReminderChannel?
-  description     String?
-  status          SavingsGoalStatus       @default(ACTIVE)
+  reminderChannel        SavingsReminderChannel?
+  description            String?
+  status                 SavingsGoalStatus       @default(ACTIVE)
   // What was already saved when the goal was made (its first contribution,
   // with no source account), where its plan line starts on createdAt.
-  startAmount     Decimal                 @default(0) @db.Decimal(14, 2)
+  startAmount            Decimal                 @default(0) @db.Decimal(14, 2)
   // The plan line runs from planStartAmount on planStartDate to the target
   // on targetDate. Null: from startAmount on createdAt. Catch up and Resume
   // start a fresh line from that day and what was saved then.
-  planStartDate   DateTime?
-  planStartAmount Decimal?                @db.Decimal(14, 2)
+  planStartDate          DateTime?
+  planStartAmount        Decimal?                @db.Decimal(14, 2)
   // The day the goal reached its target; kept through a full withdrawal, so
   // a withdrawn goal with one was Achieved, and one without was closed early.
-  reachedAt       DateTime?
+  reachedAt              DateTime?
   // Catch up's "save the needed amount a month from now" sends a reminder
   // email on the 1st of each month while the goal is active.
-  monthlyReminder Boolean                 @default(false)
+  monthlyReminder        Boolean                 @default(false)
   // The reminderDate an email already went out for, and the month ("2026-11")
   // of the last monthly reminder, so neither is sent twice.
   reminderSentFor        DateTime?
   monthlyReminderSentFor String?
-  createdAt       DateTime                @default(now())
-  updatedAt       DateTime                @updatedAt
-  entries         SavingsGoalEntry[]
+  createdAt              DateTime                @default(now())
+  updatedAt              DateTime                @updatedAt
+  entries                SavingsGoalEntry[]
 
   @@index([businessId])
 }
@@ -2279,28 +2298,28 @@ enum AssetStatus {
 // table; nothing writes them (the migration moved them to AVAILABLE /
 // PAID_OUT).
 model Referral {
-  id               String             @id @default(uuid())
+  id               String               @id @default(uuid())
   referrerId       String
-  referrer         User               @relation("Referrer", fields: [referrerId], references: [id])
-  referredUserId   String             @unique
-  referredUser     User               @relation("Referred", fields: [referredUserId], references: [id])
+  referrer         User                 @relation("Referrer", fields: [referrerId], references: [id])
+  referredUserId   String               @unique
+  referredUser     User                 @relation("Referred", fields: [referredUserId], references: [id])
   // The old rule's flat reward (a snapshot of referral_reward_amount); 0
   // for a commission row.
-  rewardAmount     Decimal            @db.Decimal(14, 2)
-  status           ReferralStatus     @default(JOINED)
-  kind             ReferralKind       @default(COMMISSION)
+  rewardAmount     Decimal              @db.Decimal(14, 2)
+  status           ReferralStatus       @default(JOINED)
+  kind             ReferralKind         @default(COMMISSION)
   // The friend's first confirmed payment, and what they paid for it.
-  paymentId        String?            @unique
-  payment          Payment?           @relation(fields: [paymentId], references: [id], onDelete: SetNull)
-  paidAmount       Decimal?           @db.Decimal(14, 2)
+  paymentId        String?              @unique
+  payment          Payment?             @relation(fields: [paymentId], references: [id], onDelete: SetNull)
+  paidAmount       Decimal?             @db.Decimal(14, 2)
   // Snapshots at the friend's payment: the rate (20.00 = 20 %) and the
   // commission, rounded down to whole taka.
-  commissionRate   Decimal?           @db.Decimal(5, 2)
-  commissionAmount Decimal?           @db.Decimal(14, 2)
+  commissionRate   Decimal?             @db.Decimal(5, 2)
+  commissionAmount Decimal?             @db.Decimal(14, 2)
   // When the commission leaves the refund window (paidAt + hold days).
   availableAt      DateTime?
   // How much of commissionAmount paid payout requests have covered.
-  paidOutAmount    Decimal            @default(0) @db.Decimal(14, 2)
+  paidOutAmount    Decimal              @default(0) @db.Decimal(14, 2)
   paidOutAt        DateTime?
   cancelledAt      DateTime?
   // FRIEND_REFUNDED | REFERRER_NOT_ON_PAID_PLAN | PROGRAM_OFF |
@@ -2308,8 +2327,15 @@ model Referral {
   cancelReason     String?
   confirmedAt      DateTime?
   withdrawnAt      DateTime?
-  createdAt        DateTime           @default(now())
+  createdAt        DateTime             @default(now())
   allocations      PayoutAllocation[]
+  // The invite link (Referrals > Invite links) the friend signed up from;
+  // null = the main link, or a sign-up from before links had tags.
+  linkId           String?
+  link             ReferralLink?        @relation(fields: [linkId], references: [id], onDelete: SetNull)
+  // One per payment of the friend's (ReferralCommission). The money
+  // columns above are the pre-v9 record of the first payment only.
+  commissions      ReferralCommission[]
 
   @@index([referrerId])
   @@index([referrerId, status])
@@ -2386,19 +2412,25 @@ enum PayoutStatus {
 // the transaction id). REQUESTED or APPROVED -> REJECTED gives the money
 // back to the balance, as does the member's CANCELLED.
 model PayoutRequest {
-  id                  String             @id @default(uuid())
+  id                  String               @id @default(uuid())
   // Shown as WD-1048.
-  number              Int                @unique @default(autoincrement())
+  number              Int                  @unique @default(autoincrement())
   userId              String
-  user                User               @relation(fields: [userId], references: [id])
-  // Taken from the balance; the member receives amount - fee.
-  amount              Decimal            @db.Decimal(14, 2)
-  fee                 Decimal            @default(0) @db.Decimal(14, 2)
+  user                User                 @relation(fields: [userId], references: [id])
+  // The lines' total (less any an admin held back at approval); the
+  // member receives amount - fee.
+  amount              Decimal              @db.Decimal(14, 2)
+  // The lines' total when it was asked for; null on pre-v9 requests.
+  requestedAmount     Decimal?             @db.Decimal(14, 2)
+  // The commission lines it was made of, kept after a reject or cancel
+  // gives them back (each line's payoutId says where it is now).
+  lineIds             String[]             @default([])
+  fee                 Decimal              @default(0) @db.Decimal(14, 2)
   methodId            String?
-  method              PayoutMethod?      @relation(fields: [methodId], references: [id], onDelete: SetNull)
+  method              PayoutMethod?        @relation(fields: [methodId], references: [id], onDelete: SetNull)
   // The method as it was when requested: type, names and numbers.
   methodSnapshot      Json
-  status              PayoutStatus       @default(REQUESTED)
+  status              PayoutStatus         @default(REQUESTED)
   // "Add it as income when it's paid": the member's workspace and wallet,
   // and the posting made at Mark paid.
   incomeBusinessId    String?
@@ -2409,16 +2441,19 @@ model PayoutRequest {
   approvedBy          String?
   paidAt              DateTime?
   // What the admin actually sent.
-  paidAmount          Decimal?           @db.Decimal(14, 2)
+  paidAmount          Decimal?             @db.Decimal(14, 2)
   trxId               String?
   rejectedAt          DateTime?
   rejectReason        String?
   cancelledAt         DateTime?
   // The admin who paid or rejected it.
   processedBy         String?
-  createdAt           DateTime           @default(now())
-  updatedAt           DateTime           @updatedAt
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
   allocations         PayoutAllocation[]
+  // The commission lines it is made of (and, UNDER_CHECK, the ones an
+  // admin held back from it).
+  commissions         ReferralCommission[]
 
   @@index([status, createdAt])
   @@index([userId, createdAt])
@@ -2437,6 +2472,93 @@ model PayoutAllocation {
 
   @@index([payoutId])
   @@index([referralId])
+}
+
+// Where a commission is (Referrals > Earnings):
+//   ON_HOLD        inside the refund window (paidAt + hold days)
+//   AVAILABLE      ready to withdraw
+//   IN_WITHDRAWAL  ticked into a payout request that is not paid yet
+//   UNDER_CHECK    an admin held it back from a request for a second look
+//   PAID_OUT       paid in its payout request
+//   REVERSED       the friend was refunded inside the window
+//   CANCELLED      never earned (program off, referrer on the free plan) or
+//                  cancelled by an admin; cancelReason says which
+enum CommissionStatus {
+  ON_HOLD
+  AVAILABLE
+  IN_WITHDRAWAL
+  UNDER_CHECK
+  PAID_OUT
+  REVERSED
+  CANCELLED
+}
+
+// FIRST = the friend's first payment, RENEWAL = any later one, BONUS = an
+// old flat sign-up bonus (before commissions).
+enum CommissionKind {
+  FIRST
+  RENEWAL
+  BONUS
+}
+
+// The referrer's share of one payment of an invited friend's: every paid
+// payment earns one (renewals too) while the referrer can earn. Made in
+// the payment's own transaction (BillingHooks), and withdrawn whole: a
+// payout request is a set of these lines.
+model ReferralCommission {
+  id           String           @id @default(uuid())
+  referralId   String
+  referral     Referral         @relation(fields: [referralId], references: [id], onDelete: Cascade)
+  referrerId   String
+  referrer     User             @relation(fields: [referrerId], references: [id])
+  // Null for an old sign-up bonus, or the paid-out part of an old
+  // commission that was partly paid (split off when v9 came in).
+  paymentId    String?          @unique
+  payment      Payment?         @relation(fields: [paymentId], references: [id], onDelete: SetNull)
+  kind         CommissionKind
+  // What the friend paid, the rate (20.00 = 20 %) and the share, rounded
+  // down to whole taka.
+  paidAmount   Decimal          @db.Decimal(14, 2)
+  rate         Decimal          @db.Decimal(5, 2)
+  amount       Decimal          @db.Decimal(14, 2)
+  status       CommissionStatus
+  // When it leaves the refund window.
+  availableAt  DateTime
+  // The request it is in (IN_WITHDRAWAL), was held back from (UNDER_CHECK)
+  // or was paid in (PAID_OUT).
+  payoutId     String?
+  payout       PayoutRequest?   @relation(fields: [payoutId], references: [id], onDelete: SetNull)
+  // FRIEND_REFUNDED | REFERRER_NOT_ON_PAID_PLAN | PROGRAM_OFF | ADMIN
+  cancelReason String?
+  paidOutAt    DateTime?
+  // When it was reversed or cancelled.
+  endedAt      DateTime?
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+
+  @@index([referrerId, status])
+  @@index([referralId])
+  @@index([status, availableAt])
+  @@index([payoutId])
+}
+
+// Referrals > Invite links: one referral code, shared in many places, each
+// with its own tag (/register?ref=CODE&src=facebook) so the member sees
+// which place brings people. tag "" is the main link (no src).
+model ReferralLink {
+  id        String     @id @default(uuid())
+  userId    String
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  label     String
+  tag       String
+  // Opens of the link (counted once per visitor session by the sign-up page).
+  clicks    Int        @default(0)
+  // Deleted links keep their name on the friends who came from them.
+  deletedAt DateTime?
+  createdAt DateTime   @default(now())
+  referrals Referral[]
+
+  @@unique([userId, tag])
 }
 
 enum OneTimeCodePurpose {

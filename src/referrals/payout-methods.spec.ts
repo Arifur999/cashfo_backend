@@ -66,6 +66,7 @@ describe('payoutChecks', () => {
     backing: [{ refunded: false }],
     friendPayerAccounts: ['01675904412'],
     flagSameNumber: true,
+    holdsOver: true,
   };
   const okOf = (input: Parameters<typeof payoutChecks>[0]) => Object.fromEntries(payoutChecks(input).map((c) => [c.key, c.ok]));
 
@@ -73,6 +74,7 @@ describe('payoutChecks', () => {
     expect(okOf(base)).toEqual({
       NAME_MATCHES: true,
       CODE_CONFIRMED: true,
+      HOLDS_OVER: true,
       NO_REFUNDS: true,
       FRIEND_PAID_FROM_THIS_NUMBER: true,
       WRONG_NUMBER_FOR_METHOD: true,
@@ -82,6 +84,7 @@ describe('payoutChecks', () => {
   it('warns about another name, a refund, and a friend paying from the payout number or the member’s phone', () => {
     expect(okOf({ ...base, user: { name: 'Rumana Khan', phone: null } }).NAME_MATCHES).toBe(false);
     expect(okOf({ ...base, backing: [{ refunded: true }] }).NO_REFUNDS).toBe(false);
+    expect(okOf({ ...base, holdsOver: false }).HOLDS_OVER).toBe(false);
     expect(okOf({ ...base, friendPayerAccounts: ['+880 1819-552310'] }).FRIEND_PAID_FROM_THIS_NUMBER).toBe(false);
     expect(okOf({ ...base, user: { name: 'Nasrin Akter', phone: '01675904412' } }).FRIEND_PAID_FROM_THIS_NUMBER).toBe(false);
   });

@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { ForbiddenException, Injectable } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
 import { createHash, randomInt, timingSafeEqual } from 'node:crypto';
 import { AuthSessionsService } from '../auth/auth-sessions.service.js';
@@ -86,6 +86,29 @@ export class SupportAccessService {
       });
     }
     return { ended: views.length };
+  }
+
+  // An admin's access to a customer's data (View as customer, Download a
+  // copy) needs the code the customer made: used up when right; a missing or
+  // wrong one is refused and the refusal goes in the audit log as `refused`.
+  async requireConsent(userId: string, code: string, audit: { adminId: string; refused: string; ipAddress?: string }): Promise<void> {
+    const consent = await this.consume(userId, code);
+    if (consent === 'ok') return;
+    await this.prisma.auditLog.create({
+      data: {
+        adminUserId: audit.adminId,
+        action: audit.refused,
+        entityType: 'User',
+        entityId: userId,
+        newValue: { sensitive: true, reason: consent === 'none' ? 'no-code' : 'wrong-code' },
+        ipAddress: audit.ipAddress,
+      },
+    });
+    throw new ForbiddenException(
+      consent === 'none'
+        ? 'There is no support code to use. Ask the customer to make one in Settings > Security.'
+        : "That isn't the customer's support code. Check it with them and try again.",
+    );
   }
 
   // The admin's side: 'ok' once for the right code in time (it is used up),

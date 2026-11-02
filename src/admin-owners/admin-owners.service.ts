@@ -5,14 +5,13 @@ import { AccountExportService } from '../account-export/account-export.service.j
 import { AccountsService } from '../accounts/accounts.service.js';
 import { auditReason } from '../audit-logs/audit-entity-labels.js';
 import { AuthSessionsService } from '../auth/auth-sessions.service.js';
-import { CredentialsService } from '../auth/credentials.service.js';
 import { SubscriptionsService } from '../billing/subscriptions.service.js';
 import { END_USER_WHERE } from '../common/roles.js';
-import { generateTempPassword } from '../common/temp-password.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { TwoStepService } from '../two-step/two-step.service.js';
 import { ChangeOwnerPlanDto } from './dto/change-owner-plan.dto.js';
 import { ListOwnersQueryDto } from './dto/list-owners-query.dto.js';
+import { SupportAccessService } from '../support-access/support-access.service.js';
 import { SuspendOwnerDto } from './dto/suspend-owner.dto.js';
 import { ownerExtras } from './owner-detail.js';
 import { ownerDateFilters, ownerOrderBy, workspaceCount } from './owner-filters.js';
@@ -38,39 +37,12 @@ export class AdminOwnersService {
     private readonly prisma: PrismaService,
     private readonly accountsService: AccountsService,
     private readonly sessions: AuthSessionsService,
-    private readonly credentials: CredentialsService,
+    private readonly supportAccess?: SupportAccessService,
     private readonly subscriptions?: SubscriptionsService,
     private readonly twoStep?: TwoStepService,
     private readonly deletion?: AccountDeletionService,
     private readonly accountExport?: AccountExportService,
   ) {}
-
-  // A temporary password for a customer who can't get in, shown to the
-  // admin once to hand over. Every device they were signed in on is signed
-  // out, and the reset is in the audit log without the password.
-  async resetPassword(userId: string, adminId: string, ipAddress?: string) {
-    const owner = await this.prisma.user.findUnique({ where: { id: userId, ...END_USER_WHERE }, select: { id: true } });
-    if (!owner) {
-      throw new NotFoundException('Owner not found');
-    }
-
-    const temporaryPassword = generateTempPassword();
-    await this.credentials.set(userId, temporaryPassword);
-    await this.sessions.revokeAllForUser(userId);
-
-    await this.prisma.auditLog.create({
-      data: {
-        adminUserId: adminId,
-        action: 'OWNER_PASSWORD_RESET',
-        entityType: 'User',
-        entityId: userId,
-        newValue: { note: 'Temporary password generated and shown to the admin once; value not logged.' },
-        ipAddress,
-      },
-    });
-
-    return { temporaryPassword };
-  }
 
   // A customer who lost their phone and their backup codes: a super admin
   // turns two-step sign-in off, so the password alone signs in again. The
@@ -458,10 +430,12 @@ export class AdminOwnersService {
   }
 
   // "Download a copy" before a reset: the same zip the customer's own
-  // Download my data makes (the vault left out). Audited.
-  async exportOwnerData(userId: string, adminId: string, ipAddress?: string) {
+  // Download my data makes (the vault left out). Only with the support code
+  // the customer made, like View as customer; audited either way.
+  async exportOwnerData(userId: string, code: string, adminId: string, ipAddress?: string) {
     const owner = await this.requireOwner(userId);
     if (owner.status === UserStatus.DELETED) throw new ConflictException('This account was deleted; there is no data left to download.');
+    await this.supportAccess!.requireConsent(userId, code, { adminId, refused: 'OWNER_DATA_EXPORT_REFUSED', ipAddress });
     const file = await this.accountExport!.export(userId);
     await this.prisma.auditLog.create({
       data: { adminUserId: adminId, action: 'OWNER_DATA_EXPORTED', entityType: 'User', entityId: userId, newValue: { fileName: file.fileName }, ipAddress },

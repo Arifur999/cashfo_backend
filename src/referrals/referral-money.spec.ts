@@ -1,41 +1,26 @@
 import {
   addWorkingDays,
-  allocateFifo,
   canonicalEmail,
   commissionPaisa,
   isoWeekKey,
-  legacyStatusOf,
   looksLikeSamePerson,
   maskEmail,
   maskPhone,
   namesMatch,
   normaliseMobile,
-  projectBacking,
-  referralBalances,
   samePhone,
   walletNumberFits,
-  type CommissionEntry,
 } from './referral-money.js';
-
-const day = (iso: string) => new Date(`${iso}T06:00:00.000Z`);
-let n = 0;
-const entry = (over: Partial<CommissionEntry>): CommissionEntry => ({
-  id: `r-${++n}`,
-  status: 'AVAILABLE',
-  commissionPaisa: 54_000,
-  paidOutPaisa: 0,
-  availableAt: day('2026-09-12'),
-  createdAt: day('2026-09-02'),
-  ...over,
-});
+import { balancesOf } from './referral-ledger.js';
 
 describe('commissionPaisa', () => {
-  it('takes the rate of what the friend paid, rounded down to whole taka', () => {
+  it('takes the rate of what the friend paid, rounded down to the paisa', () => {
     expect(commissionPaisa(270_000, 20)).toBe(54_000); // ৳ 2,700 -> ৳ 540
     expect(commissionPaisa(27_000, 20)).toBe(5_400); // ৳ 270 -> ৳ 54
     expect(commissionPaisa(72_000, 20)).toBe(14_400); // ৳ 720 -> ৳ 144
-    expect(commissionPaisa(29_900, 20)).toBe(5_900); // ৳ 299 -> ৳ 59.80 -> ৳ 59
-    expect(commissionPaisa(29_990, 12.5)).toBe(3_700); // ৳ 299.90 at 12.5 % -> ৳ 37.48 -> ৳ 37
+    expect(commissionPaisa(171_900, 20)).toBe(34_380); // ৳ 1,719 -> ৳ 343.80
+    expect(commissionPaisa(29_900, 20)).toBe(5_980); // ৳ 299 -> ৳ 59.80
+    expect(commissionPaisa(29_990, 12.5)).toBe(3_748); // ৳ 299.90 at 12.5 % -> ৳ 37.4875 -> ৳ 37.48
   });
 
   it('is nothing for no payment or a zero rate', () => {
@@ -44,89 +29,31 @@ describe('commissionPaisa', () => {
   });
 });
 
-describe('referralBalances', () => {
-  // Khaled on the boards: ৳ 1,224 available + ৳ 594 paid out = ৳ 1,818
-  // earned, and ৳ 540 pending until 5 Oct.
-  const khaled = [
-    entry({ commissionPaisa: 54_000 }),
-    entry({ commissionPaisa: 14_400 }),
-    entry({ commissionPaisa: 54_000 }),
-    entry({ status: 'PAID_OUT', commissionPaisa: 54_000, paidOutPaisa: 54_000 }),
-    entry({ status: 'PAID_OUT', commissionPaisa: 5_400, paidOutPaisa: 5_400 }),
-    entry({ status: 'PENDING', commissionPaisa: 54_000, availableAt: day('2026-10-05') }),
-    entry({ status: 'CANCELLED', commissionPaisa: 5_400 }),
-    entry({ status: 'JOINED', commissionPaisa: 0 }),
-  ];
-
-  it('adds up available, pending, paid out and earned', () => {
-    expect(referralBalances(khaled, [])).toEqual({
-      availablePaisa: 122_400,
-      reservedPaisa: 0,
-      pendingPaisa: 54_000,
-      pendingNextAt: day('2026-10-05'),
-      paidOutPaisa: 59_400,
-      totalEarnedPaisa: 181_800,
+describe('balancesOf', () => {
+  it('sums the lines by where they are; lifetime leaves out what was taken back', () => {
+    const next = new Date('2026-11-05T06:00:00.000Z');
+    const b = balancesOf(
+      [
+        { status: 'AVAILABLE', paisa: 54_000 },
+        { status: 'ON_HOLD', paisa: 34_380 },
+        { status: 'IN_WITHDRAWAL', paisa: 10_000 },
+        { status: 'UNDER_CHECK', paisa: 3_580 },
+        { status: 'PAID_OUT', paisa: 100_000 },
+        { status: 'REVERSED', paisa: 3_580 },
+        { status: 'CANCELLED', paisa: 9_999 },
+      ],
+      next,
+    );
+    expect(b).toEqual({
+      availablePaisa: 54_000,
+      onHoldPaisa: 34_380,
+      onHoldNextAt: next,
+      inWithdrawalPaisa: 10_000,
+      underCheckPaisa: 3_580,
+      paidOutPaisa: 100_000,
+      reversedPaisa: 3_580,
+      lifetimePaisa: 201_960,
     });
-  });
-
-  it('sets aside what open requests ask for, and gives it back when they are rejected or cancelled', () => {
-    const open = referralBalances(khaled, [{ status: 'REQUESTED', amountPaisa: 100_000 }]);
-    expect(open.availablePaisa).toBe(22_400); // ৳ 224 left after the ৳ 1,000 request
-    expect(open.reservedPaisa).toBe(100_000);
-    expect(open.totalEarnedPaisa).toBe(181_800);
-
-    expect(referralBalances(khaled, [{ status: 'APPROVED', amountPaisa: 100_000 }]).availablePaisa).toBe(22_400);
-    for (const status of ['REJECTED', 'CANCELLED', 'PAID'] as const) {
-      expect(referralBalances(khaled, [{ status, amountPaisa: 100_000 }]).availablePaisa).toBe(122_400);
-    }
-  });
-
-  it('counts an available commission that is partly paid out by what is left', () => {
-    const balances = referralBalances([entry({ commissionPaisa: 54_000, paidOutPaisa: 40_000 })], []);
-    expect(balances.availablePaisa).toBe(14_000);
-    expect(balances.paidOutPaisa).toBe(40_000);
-  });
-});
-
-describe('allocateFifo', () => {
-  const oldest = entry({ id: 'old', commissionPaisa: 54_000, availableAt: day('2026-09-12') });
-  const middle = entry({ id: 'mid', commissionPaisa: 14_400, availableAt: day('2026-09-22') });
-  const newest = entry({ id: 'new', commissionPaisa: 54_000, availableAt: day('2026-09-26') });
-
-  it('takes the oldest available commissions first and says which it closes', () => {
-    expect(allocateFifo([newest, oldest, middle], 100_000)).toEqual([
-      { referralId: 'old', paisa: 54_000, closes: true },
-      { referralId: 'mid', paisa: 14_400, closes: true },
-      { referralId: 'new', paisa: 31_600, closes: false },
-    ]);
-  });
-
-  it('starts a partly paid commission from what is left of it', () => {
-    expect(allocateFifo([{ ...oldest, paidOutPaisa: 50_000 }, middle], 10_000)).toEqual([
-      { referralId: 'old', paisa: 4_000, closes: true },
-      { referralId: 'mid', paisa: 6_000, closes: false },
-    ]);
-  });
-
-  it('refuses more than there is, and skips anything not available', () => {
-    expect(allocateFifo([oldest, { ...middle, status: 'PENDING' }], 60_000)).toBeNull();
-  });
-});
-
-describe('projectBacking', () => {
-  const a = entry({ id: 'a', commissionPaisa: 54_000, availableAt: day('2026-09-12') });
-  const b = entry({ id: 'b', commissionPaisa: 54_000, availableAt: day('2026-09-20') });
-
-  it('lets earlier requests take the oldest commissions first', () => {
-    const open = [
-      { id: 'wd-2', number: 1049, amountPaisa: 50_000 },
-      { id: 'wd-1', number: 1048, amountPaisa: 60_000 },
-    ];
-    expect(projectBacking([b, a], open, 'wd-1')).toEqual([
-      { referralId: 'a', paisa: 54_000, closes: true },
-      { referralId: 'b', paisa: 6_000, closes: false },
-    ]);
-    expect(projectBacking([b, a], open, 'wd-2')).toEqual([{ referralId: 'b', paisa: 48_000, closes: true }]);
   });
 });
 
@@ -192,13 +119,5 @@ describe('numbers and names', () => {
   it('masks where a code went', () => {
     expect(maskEmail('khaled@gmail.com')).toBe('k***@gmail.com');
     expect(maskPhone('01711482915')).toBe('01711-•••915');
-  });
-
-  it('gives old apps the statuses they know', () => {
-    expect(legacyStatusOf('JOINED')).toBe('PENDING');
-    expect(legacyStatusOf('PENDING')).toBe('PENDING');
-    expect(legacyStatusOf('AVAILABLE')).toBe('CONFIRMED');
-    expect(legacyStatusOf('PAID_OUT')).toBe('WITHDRAWN');
-    expect(legacyStatusOf('CANCELLED')).toBe('CANCELLED');
   });
 });

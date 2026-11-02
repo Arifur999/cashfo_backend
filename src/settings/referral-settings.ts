@@ -14,7 +14,7 @@ export interface ReferralSettings {
   // members can withdraw.
   programLive: boolean;
   whoCanEarn: WhoCanEarn;
-  // Of the friend's first payment, rounded down to whole taka.
+  // Of every payment of an invited friend's, rounded down to the paisa.
   commissionPct: number;
   // Off the friend's first payment.
   friendDiscountPct: number;
@@ -60,7 +60,7 @@ export const REFERRAL_DEFAULTS: ReferralSettings = {
   commissionPct: 20,
   friendDiscountPct: 10,
   holdDays: 7,
-  minWithdrawal: 500,
+  minWithdrawal: 300,
   withdrawalFee: 0,
   payWithinDays: 3,
   payoutMethods: ['BKASH', 'NAGAD', 'ROCKET', 'BANK'],

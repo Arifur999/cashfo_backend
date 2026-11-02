@@ -6,7 +6,7 @@ import { AuthSessionsService } from '../auth/auth-sessions.service.js';
 import { dateLabel, localeOf } from '../billing/billing-text.js';
 import { MailService } from '../mail/mail.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
-import { memberLedger } from '../referrals/referral-ledger.js';
+import { referralBalances, releaseLines } from '../referrals/referral-ledger.js';
 import { TwoStepService } from '../two-step/two-step.service.js';
 import { purgeUser } from './account-purge.js';
 import { DELETION_GRACE_DAYS, deletionDate, isPurgeDue, isRestorable, type DeletionPreviewCounts } from './deletion-rules.js';
@@ -53,9 +53,9 @@ export class AccountDeletionService {
       this.prisma.asset.count({ where: { businessId: { in: ids } } }),
       this.prisma.contact.count({ where: { businessId: { in: ids }, category: 'LOAN' } }),
       this.prisma.vaultEntry.count({ where: { userId } }),
-      memberLedger(this.prisma, userId),
+      referralBalances(this.prisma, userId),
     ]);
-    const available = ledger.balances.availablePaisa;
+    const available = ledger.availablePaisa;
     return {
       wallets,
       transactions,
@@ -93,7 +93,14 @@ export class AccountDeletionService {
       // An open checkout could still be marked paid; a withdrawal still
       // waiting for review hands its money back to the balance.
       await tx.payment.updateMany({ where: { userId, status: 'PENDING' }, data: { status: 'FAILED', failureReason: 'account_deleted' } });
-      await tx.payoutRequest.updateMany({ where: { userId, status: 'REQUESTED' }, data: { status: 'CANCELLED', cancelledAt: now } });
+      // Only the requests this cancels give their lines back (one an admin
+      // approves meanwhile keeps them).
+      const cancelled = await tx.payoutRequest.updateManyAndReturn({
+        where: { userId, status: 'REQUESTED' },
+        data: { status: 'CANCELLED', cancelledAt: now },
+        select: { id: true },
+      });
+      await releaseLines(tx, cancelled.map((p) => p.id));
       await tx.userSubscription.updateMany({ where: { userId }, data: { cancelAtPeriodEnd: true } });
       await tx.pushSubscription.deleteMany({ where: { userId } });
     });

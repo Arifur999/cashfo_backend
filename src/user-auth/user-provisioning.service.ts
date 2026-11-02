@@ -1,10 +1,11 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Prisma, WorkspaceType } from '@prisma/client';
-import { randomBytes } from 'crypto';
+import { ensureReferralCode } from '../common/referral-code.js';
 import { AccountsService } from '../accounts/accounts.service.js';
 import { dhakaMonthStart, dhakaToday } from '../common/dhaka.js';
 import { MailService } from '../mail/mail.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { referralLinkFor } from '../referrals/referral-links.service.js';
 import { looksLikeSamePerson } from '../referrals/referral-money.js';
 import type { ReferralSettings } from '../settings/referral-settings.js';
 import { SettingsService } from '../settings/settings.service.js';
@@ -14,6 +15,8 @@ export interface ProvisionOptions {
   // Someone else's shareable code from a signup link. Only counts the first
   // time an account is provisioned, i.e. at signup.
   referralCode?: string;
+  // The tag of the invite link it came through (&src=).
+  referralSource?: string;
 }
 
 // Everything an end user needs before the app issues them a token: a default
@@ -52,9 +55,9 @@ export class UserProvisioningService {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${userId}))`;
       if (await tx.business.findFirst({ where: { ownerId: userId, isDefault: true }, select: { id: true } })) return null;
 
-      await this.assignReferralCode(tx, userId);
+      await ensureReferralCode(tx, userId);
       if (options.referralCode && referralRules) {
-        await this.recordReferral(tx, userId, options.referralCode, referralRules);
+        await this.recordReferral(tx, userId, options.referralCode, options.referralSource, referralRules);
       }
 
       const business = await tx.business.create({
@@ -88,30 +91,19 @@ export class UserProvisioningService {
     return business?.id ?? null;
   }
 
-  // The user's own shareable code -- same short-code algorithm as
-  // ReferralsService.generateUniqueReferralCode(), duplicated rather than
-  // imported to avoid a UserAuthModule <-> ReferralsModule cycle (see that
-  // method's comment).
-  private async assignReferralCode(tx: Prisma.TransactionClient, userId: string) {
-    const user = await tx.user.findUniqueOrThrow({ where: { id: userId }, select: { referralCode: true } });
-    if (user.referralCode) return;
-
-    for (let attempt = 0; attempt < 5; attempt++) {
-      const candidate = randomBytes(5).toString('hex').toUpperCase().slice(0, 8);
-      if (!(await tx.user.findUnique({ where: { referralCode: candidate } }))) {
-        await tx.user.update({ where: { id: userId }, data: { referralCode: candidate } });
-        return;
-      }
-    }
-  }
-
   // The friend JOINED with someone's code; the referrer earns when the
   // friend's first payment is confirmed (ReferralCommissionsService). An
   // unknown or stale code, or the user's own, is silently ignored -- a bad
   // referral link must never block a signup. A sign-up with the referrer's
   // own phone or email, or past the referrer's monthly limit, is kept as
   // CANCELLED (the admin sees it; it earns nothing and gives no discount).
-  private async recordReferral(tx: Prisma.TransactionClient, userId: string, referralCode: string, rules: Pick<ReferralSettings, 'blockSelf' | 'maxPerMonth'>) {
+  private async recordReferral(
+    tx: Prisma.TransactionClient,
+    userId: string,
+    referralCode: string,
+    referralSource: string | undefined,
+    rules: Pick<ReferralSettings, 'blockSelf' | 'maxPerMonth'>,
+  ) {
     const code = referralCode.trim().toUpperCase();
     if (!code) return;
     const [referrer, friend] = await Promise.all([
@@ -136,6 +128,7 @@ export class UserProvisioningService {
         rewardAmount: 0,
         kind: 'COMMISSION',
         status: cancelReason ? 'CANCELLED' : 'JOINED',
+        linkId: await referralLinkFor(tx, referrer.id, referralSource),
         ...(cancelReason && { cancelReason, cancelledAt: new Date() }),
       },
     });

@@ -3,7 +3,7 @@ import { namesMatch, normaliseMobile, samePhone, walletNumberFits } from './refe
 
 // What the payout desk checks on a request, worked out when it is read.
 // ok = false is a warning for the admin, never a block.
-export type PayoutCheckKey = 'NAME_MATCHES' | 'CODE_CONFIRMED' | 'NO_REFUNDS' | 'FRIEND_PAID_FROM_THIS_NUMBER' | 'WRONG_NUMBER_FOR_METHOD';
+export type PayoutCheckKey = 'NAME_MATCHES' | 'CODE_CONFIRMED' | 'HOLDS_OVER' | 'NO_REFUNDS' | 'FRIEND_PAID_FROM_THIS_NUMBER' | 'WRONG_NUMBER_FOR_METHOD';
 
 export interface PayoutCheck {
   key: PayoutCheckKey;
@@ -16,8 +16,10 @@ export interface PayoutCheckInput {
   method: MethodSnapshot;
   user: { name: string; phone: string | null };
   codeConfirmedAt: Date | null;
-  // The commissions behind the request: was the friend's payment refunded?
+  // The commissions in the request: was the friend's payment refunded?
   backing: { refunded: boolean }[];
+  // Every line's refund window is over.
+  holdsOver: boolean;
   // The numbers every friend of this member paid from (Payment.payerAccount).
   friendPayerAccounts: (string | null)[];
   flagSameNumber: boolean;
@@ -30,6 +32,7 @@ export function payoutChecks(input: PayoutCheckInput): PayoutCheck[] {
   const checks: PayoutCheck[] = [
     { key: 'NAME_MATCHES', ok: namesMatch(method.accountName, input.user.name), detail: method.accountName },
     { key: 'CODE_CONFIRMED', ok: input.codeConfirmedAt !== null, detail: input.codeConfirmedAt?.toISOString() ?? null },
+    { key: 'HOLDS_OVER', ok: input.holdsOver, detail: null },
   ];
   const refunds = input.backing.filter((b) => b.refunded).length;
   checks.push({ key: 'NO_REFUNDS', ok: refunds === 0, detail: refunds > 0 ? String(refunds) : null });

@@ -44,6 +44,7 @@ import { PlatformModule } from './platform/platform.module.js';
 import { QuickEntriesModule } from './quick-entries/quick-entries.module.js';
 import { ReceivablesPayablesModule } from './receivables-payables/receivables-payables.module.js';
 import { PushModule } from './push/push.module.js';
+import { ProfileCardModule } from './profile-card/profile-card.module.js';
 import { ReferralsModule } from './referrals/referrals.module.js';
 import { RemindersModule } from './reminders/reminders.module.js';
 import { ReportsModule } from './reports/reports.module.js';
@@ -129,6 +130,7 @@ import { MonthlySummaryModule } from './monthly-summary/monthly-summary.module.j
     ContactsModule,
     ReceivablesPayablesModule,
     ReferralsModule,
+    ProfileCardModule,
     BudgetsModule,
     SavingsGoalsModule,
     AssetsModule,

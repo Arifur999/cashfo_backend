@@ -1,4 +1,4 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { Role, UserStatus } from '@prisma/client';
 import { AuthSessionsService, type ClientInfo } from '../auth/auth-sessions.service.js';
 import { SessionTokensService } from '../auth/session-tokens.service.js';
@@ -37,24 +37,7 @@ export class OwnerImpersonationService {
       throw new BadRequestException('Only an active account can be viewed. Activate it first.');
     }
 
-    const consent = await this.supportAccess.consume(userId, code);
-    if (consent !== 'ok') {
-      await this.prisma.auditLog.create({
-        data: {
-          adminUserId: adminId,
-          action: 'USER_IMPERSONATION_REFUSED',
-          entityType: 'User',
-          entityId: userId,
-          newValue: { sensitive: true, reason: consent === 'none' ? 'no-code' : 'wrong-code' },
-          ipAddress: client.ipAddress,
-        },
-      });
-      throw new ForbiddenException(
-        consent === 'none'
-          ? 'There is no support code to use. Ask the customer to make one in Settings > Security.'
-          : "That isn't the customer's support code. Check it with them and try again.",
-      );
-    }
+    await this.supportAccess.requireConsent(userId, code, { adminId, refused: 'USER_IMPERSONATION_REFUSED', ipAddress: client.ipAddress });
 
     const expiresAt = new Date(Date.now() + IMPERSONATION_MINUTES * 60 * 1000);
     const sessionId = await this.sessions.create(userId, client);

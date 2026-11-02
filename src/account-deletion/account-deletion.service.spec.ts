@@ -52,7 +52,8 @@ const setup = (found: ReturnType<typeof user> | null = user()) => {
   const tx = {
     user: { updateMany: vi.fn().mockResolvedValue({ count: 1 }), findUnique: vi.fn().mockResolvedValue(found), update: vi.fn() },
     payment: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
-    payoutRequest: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
+    payoutRequest: { updateManyAndReturn: vi.fn().mockResolvedValue([{ id: 'wd-1' }]) },
+    referralCommission: { updateMany: vi.fn().mockResolvedValue({ count: 2 }) },
     userSubscription: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
     pushSubscription: { deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
     $executeRaw: vi.fn().mockResolvedValue(1),
@@ -93,7 +94,9 @@ describe('AccountDeletionService.request', () => {
       data: { status: 'PENDING_DELETION', deletionRequestedAt: NOW, deletionScheduledFor: new Date('2026-11-26T06:00:00.000Z') },
     });
     expect(tx.payment.updateMany).toHaveBeenCalledWith({ where: { userId: 'u1', status: 'PENDING' }, data: { status: 'FAILED', failureReason: 'account_deleted' } });
-    expect(tx.payoutRequest.updateMany).toHaveBeenCalledWith({ where: { userId: 'u1', status: 'REQUESTED' }, data: { status: 'CANCELLED', cancelledAt: NOW } });
+    expect(tx.payoutRequest.updateManyAndReturn).toHaveBeenCalledWith({ where: { userId: 'u1', status: 'REQUESTED' }, data: { status: 'CANCELLED', cancelledAt: NOW }, select: { id: true } });
+    // Its lines go back to the balance.
+    expect(tx.referralCommission.updateMany).toHaveBeenCalledWith({ where: { payoutId: { in: ['wd-1'] }, status: 'IN_WITHDRAWAL' }, data: { status: 'AVAILABLE', payoutId: null } });
     expect(tx.userSubscription.updateMany).toHaveBeenCalledWith({ where: { userId: 'u1' }, data: { cancelAtPeriodEnd: true } });
     expect(tx.pushSubscription.deleteMany).toHaveBeenCalledWith({ where: { userId: 'u1' } });
     expect(sessions.revokeAllForUser).toHaveBeenCalledWith('u1');
