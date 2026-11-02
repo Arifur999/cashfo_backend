@@ -1,114 +1,125 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { BillingCycle, Prisma } from '@prisma/client';
 import { isPaidStatus } from '../billing/periods.js';
 import { fromPaisa, referralDiscountPaisa, toPaisa } from '../billing/pricing.js';
 import { SubscriptionsService } from '../billing/subscriptions.service.js';
-import { dhakaDateKey } from '../common/dhaka.js';
+import { dhakaDateKey, dhakaMonthStart, dhakaToday } from '../common/dhaka.js';
 import { ensureReferralCode } from '../common/referral-code.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { SettingsService } from '../settings/settings.service.js';
-import { TransactionsService } from '../transactions/transactions.service.js';
+import type { ReferralProfileDto } from './dto/referral-pages.dto.js';
 import { readSnapshot } from './payout-methods.js';
 import { ReferralCommissionsService } from './referral-commissions.service.js';
-import { findIncomeTarget, memberLedger, requireOrCreateReferralBonusAccount, toEntry } from './referral-ledger.js';
-import { allocateFifo, commissionPaisa, isoWeekKey, legacyStatusOf } from './referral-money.js';
-import { ReferralNotices } from './referral-notices.js';
-import { friendFilterOf } from './referral-rules.js';
+import { EARNING_SELECT, earningView } from './referral-earnings.service.js';
+import { EARNED_STATUSES, FRIEND_STANDINGS, payingFriendWhere, standingWhere } from './referral-friends.js';
+import { referralBalances } from './referral-ledger.js';
+import { commissionPaisa } from './referral-money.js';
 
 const money = (paisa: number) => fromPaisa(paisa);
-const decimalMoney = (value: { toString(): string } | null | undefined) => (value == null ? null : fromPaisa(toPaisa(value)));
 const firstName = (name: string) => name.trim().split(/\s+/)[0] ?? name;
+const DAY_MS = 24 * 60 * 60 * 1000;
+// How many months "Earnings by month" shows.
+const CHART_MONTHS = 12;
+
+// The name invited friends see: the member's own choice, or their first name.
+export const inviteName = (user: { name: string; referralName: string | null }) => user.referralName ?? firstName(user.name);
 
 @Injectable()
 export class ReferralsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly settingsService: SettingsService,
-    private readonly transactionsService: TransactionsService,
     private readonly subscriptions: SubscriptionsService,
     private readonly commissions: ReferralCommissionsService,
-    private readonly notices: ReferralNotices,
   ) {}
 
-  // The member's Referral Program page: their code, whether they can earn,
-  // the program's numbers, the balance and every friend. The older fields
-  // (totalEarned ... recentReferrals) keep their meaning for older apps.
+  // Referrals > Dashboard: the code, whether the member can earn, the
+  // program's numbers, the balance by status, earnings by month, the people
+  // they brought, who earns them the most and the latest commissions. The
+  // older fields at the end keep an older app working until it reloads.
   async getReferralInfo(userId: string) {
     await ensureReferralCode(this.prisma, userId);
-    const user = await this.prisma.user.findUniqueOrThrow({ where: { id: userId } });
-
     const now = new Date();
     await this.commissions.matureDue(now, userId);
+    const { year, month } = dhakaToday();
+    const chartStart = dhakaMonthStart(year, month - (CHART_MONTHS - 1));
 
-    const [settings, sub, ledger, referrals, paidPayouts, paidPlans, legacy] = await Promise.all([
+    const [user, settings, sub, balances, paidPayouts, paidPlans, links, people, chartLines, top, latest, renewing] = await Promise.all([
+      this.prisma.user.findUniqueOrThrow({ where: { id: userId }, select: { referralCode: true, name: true, referralName: true } }),
       this.settingsService.getReferralSettings(),
       this.subscriptions.ensure(userId),
-      memberLedger(this.prisma, userId),
-      this.prisma.referral.findMany({
-        where: { referrerId: userId },
-        orderBy: { createdAt: 'desc' },
-        include: {
-          referredUser: { select: { name: true, createdAt: true, subscription: { select: { plan: { select: { name: true } } } } } },
-          payment: { select: { paidAt: true, status: true, plan: { select: { name: true } } } },
-        },
-      }),
+      referralBalances(this.prisma, userId),
       this.prisma.payoutRequest.findMany({ where: { userId, status: 'PAID' }, orderBy: { paidAt: 'desc' }, take: 1 }),
       this.prisma.subscriptionPlan.findMany({ where: { isActive: true, billingCycle: { not: BillingCycle.FREE } }, orderBy: { displayOrder: 'asc' } }),
-      this.settingsService.get(),
+      this.prisma.referralLink.count({ where: { userId, deletedAt: null, tag: { not: '' } } }),
+      Promise.all(FRIEND_STANDINGS.map((standing) => this.prisma.referral.count({ where: { AND: [{ referrerId: userId }, standingWhere(standing)] } }))),
+      this.prisma.referralCommission.findMany({
+        where: {
+          referrerId: userId,
+          status: { in: [...EARNED_STATUSES] },
+          OR: [{ payment: { paidAt: { gte: chartStart } } }, { paymentId: null, createdAt: { gte: chartStart } }],
+        },
+        select: { amount: true, createdAt: true, payment: { select: { paidAt: true } } },
+      }),
+      this.prisma.referralCommission.groupBy({
+        by: ['referralId'],
+        where: { referrerId: userId, status: { in: [...EARNED_STATUSES] } },
+        _sum: { amount: true },
+        orderBy: { _sum: { amount: 'desc' } },
+        take: 5,
+      }),
+      this.prisma.referralCommission.findMany({
+        where: { referrerId: userId },
+        orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
+        take: 5,
+        select: EARNING_SELECT,
+      }),
+      // Paying friends whose plan renews in the next 30 days.
+      this.prisma.referral.findMany({
+        where: {
+          AND: [
+            { referrerId: userId },
+            payingFriendWhere(),
+            {
+              referredUser: { subscription: { is: { cancelAtPeriodEnd: false, currentPeriodEnd: { gte: now, lte: new Date(now.getTime() + 30 * DAY_MS) } } } },
+            },
+          ],
+        },
+        select: { referredUser: { select: { subscription: { select: { lockedPrice: true, plan: { select: { price: true } } } } } } },
+      }),
     ]);
 
     const onPaidPlan = isPaidStatus(sub.status, sub.plan.billingCycle !== BillingCycle.FREE);
     const lockedReason = !settings.programLive ? 'PROGRAM_OFF' : settings.whoCanEarn === 'PAID_PLAN' && !onPaidPlan ? 'FREE_PLAN' : null;
-    const { balances } = ledger;
     const lastPaid = paidPayouts[0] ?? null;
 
-    const friends = referrals.map((r) => {
-      const entry = toEntry(r);
-      return {
-        id: r.id,
-        name: r.referredUser.name,
-        joinedAt: r.createdAt,
-        kind: r.kind,
-        status: r.status,
-        // Which tab it is under: BOUGHT, NOT_YET, REFUNDED, or OTHER (an old
-        // sign-up bonus, or a sign-up that didn't count).
-        filter: friendFilterOf(r),
-        // The plan the friend bought (their first payment), and the one
-        // they are on now ("On the Free plan").
-        planName: r.payment?.plan.name ?? null,
-        currentPlanName: r.referredUser.subscription?.plan.name ?? null,
-        boughtAt: r.payment?.paidAt ?? null,
-        paidAmount: decimalMoney(r.paidAmount),
-        commissionAmount: r.status === 'JOINED' ? null : money(entry.commissionPaisa),
-        paidOutAmount: money(entry.paidOutPaisa),
-        availableAt: r.availableAt,
-        cancelReason: r.cancelReason,
-        cancelledAt: r.cancelledAt,
-        paidOutAt: r.paidOutAt,
-        refunded: r.payment?.status === 'REFUNDED',
-      };
+    const byMonth = new Map<string, number>();
+    for (const line of chartLines) {
+      const key = dhakaDateKey(line.payment?.paidAt ?? line.createdAt).slice(0, 7);
+      byMonth.set(key, (byMonth.get(key) ?? 0) + toPaisa(line.amount));
+    }
+    const months = Array.from({ length: CHART_MONTHS }, (_, i) => {
+      const key = dhakaDateKey(dhakaMonthStart(year, month - (CHART_MONTHS - 1) + i)).slice(0, 7);
+      return { month: key, amount: money(byMonth.get(key) ?? 0) };
     });
-    const count = (filter: string) => friends.filter((f) => f.filter === filter).length;
+
+    const topNames = top.length
+      ? await this.prisma.referral.findMany({
+          where: { id: { in: top.map((t) => t.referralId) } },
+          select: { id: true, referredUser: { select: { name: true } } },
+        })
+      : [];
+    const nameOf = new Map(topNames.map((r) => [r.id, r.referredUser.name]));
+    const peopleCount = Object.fromEntries(FRIEND_STANDINGS.map((standing, i) => [standing, people[i]])) as Record<(typeof FRIEND_STANDINGS)[number], number>;
+    const expectedPaisa = renewing.reduce((total, r) => {
+      const s = r.referredUser.subscription;
+      return s ? total + commissionPaisa(toPaisa(s.lockedPrice ?? s.plan.price), settings.commissionPct) : total;
+    }, 0);
 
     return {
       referralCode: user.referralCode,
-      // --- As before (older apps read these) ---
-      totalEarned: money(balances.totalEarnedPaisa),
-      pendingEarnings: money(balances.pendingPaisa),
-      availableBalance: money(balances.availablePaisa),
-      referralCount: referrals.length,
-      pendingCount: referrals.filter((r) => r.status === 'PENDING').length,
-      rewardAmountPerReferral: new Prisma.Decimal(legacy.referralRewardAmount).toFixed(2),
-      recentReferrals: referrals.map((r) => ({
-        id: r.id,
-        name: r.referredUser.name,
-        status: legacyStatusOf(r.status),
-        rewardAmount: money(toEntry(r).commissionPaisa),
-        createdAt: r.createdAt.toISOString(),
-        confirmedAt: (r.status === 'AVAILABLE' || r.status === 'PAID_OUT' ? (r.availableAt ?? r.confirmedAt) : null)?.toISOString() ?? null,
-        withdrawnAt: (r.paidOutAt ?? r.withdrawnAt)?.toISOString() ?? null,
-      })),
-      // --- The commission program ---
+      // The name friends see on the invite.
+      inviteName: inviteName(user),
       canEarn: lockedReason === null,
       lockedReason,
       myPlan: { planId: sub.planId, planName: sub.plan.name, status: sub.status, isPaid: onPaidPlan },
@@ -129,120 +140,112 @@ export class ReferralsService {
           return {
             planId: plan.id,
             planName: plan.name,
+            billingCycle: plan.billingCycle,
             price: money(price),
             friendPays: money(friendPays),
             youEarn: money(commissionPaisa(friendPays, settings.commissionPct)),
+            // A renewal is at full price.
+            youEarnRenewal: money(commissionPaisa(price, settings.commissionPct)),
           };
         }),
       },
       balances: {
         available: money(balances.availablePaisa),
-        // Set aside by requests waiting to be paid.
-        reserved: money(balances.reservedPaisa),
-        pending: money(balances.pendingPaisa),
-        pendingNextAt: balances.pendingNextAt,
-        totalEarned: money(balances.totalEarnedPaisa),
+        onHold: money(balances.onHoldPaisa),
+        onHoldNextAt: balances.onHoldNextAt,
+        inWithdrawal: money(balances.inWithdrawalPaisa),
+        underCheck: money(balances.underCheckPaisa),
         paidOut: money(balances.paidOutPaisa),
+        reversed: money(balances.reversedPaisa),
+        lifetime: money(balances.lifetimePaisa),
         lastPaidAt: lastPaid?.paidAt ?? null,
+        // Older names for the same numbers.
+        reserved: money(balances.inWithdrawalPaisa),
+        pending: money(balances.onHoldPaisa),
+        pendingNextAt: balances.onHoldNextAt,
+        totalEarned: money(balances.lifetimePaisa),
       },
       lastPayout: lastPaid && {
         id: lastPaid.id,
-        amount: decimalMoney(lastPaid.paidAmount ?? lastPaid.amount),
+        amount: fromPaisa(toPaisa(lastPaid.paidAmount ?? lastPaid.amount)),
         methodType: readSnapshot(lastPaid.methodSnapshot).type,
         paidAt: lastPaid.paidAt,
       },
-      friends,
-      friendCounts: { all: friends.length, bought: count('BOUGHT'), notYet: count('NOT_YET'), refunded: count('REFUNDED') },
+      // Tagged links besides the main one.
+      linkCount: links + 1,
+      months,
+      people: { total: people.reduce((a, b) => a + b, 0), ...peopleCount },
+      // What paying friends' renewals in the next 30 days should earn.
+      expectedNext30Days: money(expectedPaisa),
+      topFriends: top.map((t) => ({ referralId: t.referralId, name: nameOf.get(t.referralId) ?? '', earned: fromPaisa(toPaisa(t._sum.amount ?? 0)) })),
+      latest: latest.map(earningView),
+      // --- As before (an older app reads these until it reloads) ---
+      totalEarned: money(balances.lifetimePaisa),
+      pendingEarnings: money(balances.onHoldPaisa),
+      availableBalance: money(balances.availablePaisa),
+      referralCount: people.reduce((a, b) => a + b, 0),
+      pendingCount: 0,
+      rewardAmountPerReferral: '0.00',
+      recentReferrals: [],
+      friends: [],
+      friendCounts: { all: 0, bought: 0, notYet: 0, refunded: 0 },
     };
   }
 
-  // The old instant withdrawal (POST /api/businesses/:id/referrals/withdraw):
-  // old ৳ 100 sign-up bonuses that are available are booked as Referral
-  // income into one of the member's wallets, as before. Commissions are
-  // cashed out through payout requests instead. Under the member's lock, so
-  // a double click or a payout request being made waits its turn.
-  async withdraw(userId: string, businessId: string, accountId: string, actorUserId: string) {
-    return this.transactionsService.withLocks([`referrals:${userId}`, `referral-bonus:${businessId}`], async (tx) => {
-      const { rows, entries, balances } = await memberLedger(tx, userId);
-      const bonusIds = new Set(rows.filter((r) => r.kind === 'SIGNUP_BONUS').map((r) => r.id));
-      const bonuses = entries.filter((e) => bonusIds.has(e.id));
-      const bonusLeft = bonuses.filter((e) => e.status === 'AVAILABLE').reduce((sum, e) => sum + Math.max(0, e.commissionPaisa - e.paidOutPaisa), 0);
-      const amountPaisa = Math.min(bonusLeft, balances.availablePaisa);
-      const allocation = amountPaisa > 0 ? allocateFifo(bonuses, amountPaisa) : null;
-      if (!allocation) throw new BadRequestException('No available balance to withdraw.');
-
-      const target = await findIncomeTarget(tx, userId, businessId, accountId);
-      if ('problem' in target) throw new BadRequestException(target.problem);
-      const incomeAccount = await requireOrCreateReferralBonusAccount(tx, businessId);
-      const amount = amountPaisa / 100;
-
-      await this.transactionsService.createTransaction(
-        businessId,
-        {
-          transactionType: 'INCOME',
-          // Today in Dhaka -- UTC's date is still yesterday before 6am here.
-          transactionDate: dhakaDateKey(new Date()),
-          description: 'Referral Program withdrawal',
-          entries: [
-            { accountId: target.account.id, entryType: 'DEBIT', amount, categoryId: 'Referral Bonus' },
-            { accountId: incomeAccount.id, entryType: 'CREDIT', amount },
-          ],
-        },
-        actorUserId,
-        tx,
-      );
-
-      const now = new Date();
-      for (const part of allocation) {
-        await tx.referral.update({
-          where: { id: part.referralId },
-          data: {
-            paidOutAmount: { increment: new Prisma.Decimal(fromPaisa(part.paisa)) },
-            ...(part.closes && { status: 'PAID_OUT', paidOutAt: now, withdrawnAt: now }),
-          },
-        });
-      }
-      return { withdrawnAmount: fromPaisa(amountPaisa) };
-    });
-  }
-
   // GET /api/referrals/invite/:code (no sign-in): who invited the person
-  // signing up, for "Khaled Mahmud invited you".
+  // signing up, for "Khaled invited you". Only the name they chose to show.
   async invite(code: string) {
     const settings = await this.settingsService.getReferralSettings();
     const normalized = code.trim().toUpperCase();
     const referrer = /^[A-Z0-9]{4,16}$/.test(normalized)
-      ? await this.prisma.user.findUnique({ where: { referralCode: normalized }, select: { name: true, role: true, status: true } })
+      ? await this.prisma.user.findUnique({ where: { referralCode: normalized }, select: { name: true, referralName: true, role: true, status: true } })
       : null;
     const valid = Boolean(referrer && referrer.role === 'USER' && referrer.status === 'ACTIVE');
+    const shown = valid ? inviteName(referrer!) : null;
     return {
       valid,
-      referrerFirstName: valid ? firstName(referrer!.name) : null,
-      referrerName: valid ? referrer!.name : null,
+      referrerFirstName: shown,
+      referrerName: shown,
       friendDiscountPct: valid && settings.programLive ? settings.friendDiscountPct : 0,
       programLive: settings.programLive,
     };
   }
 
-  // "Send a reminder" to friends who joined but haven't bought: a row in
-  // their bell, at most once a week each.
-  async remind(userId: string, referralIds: string[]) {
-    const settings = await this.settingsService.getReferralSettings();
-    if (!settings.programLive) throw new BadRequestException('The Referral Program is paused');
-    const [me, rows] = await Promise.all([
-      this.prisma.user.findUniqueOrThrow({ where: { id: userId }, select: { name: true } }),
-      this.prisma.referral.findMany({ where: { id: { in: referralIds }, referrerId: userId, status: 'JOINED' }, select: { id: true, referredUserId: true } }),
-    ]);
-    const week = isoWeekKey(new Date());
-    let sent = 0;
-    for (const row of rows) {
-      const fresh = await this.notices.bell(row.referredUserId, 'REFERRAL', `referral-nudge:${row.id}:${week}`, {
-        event: 'INVITE_REMINDER',
-        referrerFirstName: firstName(me.name),
-        friendDiscountPct: settings.friendDiscountPct,
-      });
-      if (fresh) sent++;
-    }
-    return { sent, skipped: referralIds.length - sent };
+  // Referrals > Profile & payouts: the name friends see, the email
+  // switches, and the contact details the payout desk checks against.
+  async profile(userId: string) {
+    const user = await this.prisma.user.findUniqueOrThrow({
+      where: { id: userId },
+      select: {
+        name: true,
+        referralName: true,
+        email: true,
+        emailVerified: true,
+        phone: true,
+        phoneVerifiedAt: true,
+        referralEmailEarned: true,
+        referralEmailPayouts: true,
+      },
+    });
+    return {
+      name: user.name,
+      referralName: user.referralName,
+      inviteName: inviteName(user),
+      email: user.email,
+      emailVerified: user.emailVerified,
+      phone: user.phone,
+      phoneVerified: user.phoneVerifiedAt !== null,
+      emailEarned: user.referralEmailEarned,
+      emailPayouts: user.referralEmailPayouts,
+    };
+  }
+
+  async updateProfile(userId: string, dto: ReferralProfileDto) {
+    const data: Prisma.UserUpdateInput = {};
+    if (dto.referralName !== undefined) data.referralName = dto.referralName;
+    if (dto.emailEarned !== undefined) data.referralEmailEarned = dto.emailEarned;
+    if (dto.emailPayouts !== undefined) data.referralEmailPayouts = dto.emailPayouts;
+    await this.prisma.user.update({ where: { id: userId }, data });
+    return this.profile(userId);
   }
 }

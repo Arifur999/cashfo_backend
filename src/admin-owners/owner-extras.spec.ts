@@ -23,7 +23,6 @@ describe('workspacesIncluded', () => {
   });
 });
 
-const ref = { kind: 'COMMISSION', rewardAmount: 0, commissionAmount: null, paidOutAmount: 0, availableAt: null, createdAt: NOW };
 
 describe('ownerExtras', () => {
   it('adds up wallets, transactions, referrals, payments, devices and tickets', async () => {
@@ -37,12 +36,15 @@ describe('ownerExtras', () => {
       },
       transaction: { count: vi.fn().mockResolvedValue(146), groupBy: vi.fn().mockResolvedValue([{ businessId: 'own', _count: 112 }, { businessId: 'shop', _count: 34 }]) },
       referral: {
-        findMany: vi.fn().mockResolvedValue([
-          // The same rows serve the ledger (referral-ledger.ts) as well.
-          { ...ref, id: 'r1', paymentId: 'p1', status: 'AVAILABLE', commissionAmount: 54 },
-          { ...ref, id: 'r2', paymentId: 'p2', status: 'PAID_OUT', commissionAmount: 54, paidOutAmount: 54 },
-          { ...ref, id: 'r3', paymentId: null, status: 'JOINED' },
+        findMany: vi.fn().mockResolvedValue([{ _count: { commissions: 1 } }, { _count: { commissions: 2 } }, { _count: { commissions: 0 } }]),
+      },
+      referralCommission: {
+        groupBy: vi.fn().mockResolvedValue([
+          { status: 'AVAILABLE', _sum: { amount: 54 } },
+          { status: 'PAID_OUT', _sum: { amount: 54 } },
+          { status: 'REVERSED', _sum: { amount: 30 } },
         ]),
+        findFirst: vi.fn().mockResolvedValue(null),
       },
       payoutRequest: { findMany: vi.fn().mockResolvedValue([]) },
       payment: {
@@ -116,6 +118,7 @@ describe('ownerExtras', () => {
       account: { groupBy: vi.fn().mockResolvedValue([]) },
       transaction: { count: vi.fn().mockResolvedValue(0), groupBy: vi.fn().mockResolvedValue([]) },
       referral: { findMany: vi.fn().mockResolvedValue([]) },
+      referralCommission: { groupBy: vi.fn().mockResolvedValue([]), findFirst: vi.fn().mockResolvedValue(null) },
       payoutRequest: { findMany: vi.fn().mockResolvedValue([]) },
       payment: { aggregate: vi.fn().mockResolvedValue({ _sum: { amount: null }, _count: 0 }), findFirst: vi.fn().mockResolvedValue(null) },
       supportTicket: { findMany: vi.fn().mockResolvedValue([]), groupBy: vi.fn().mockResolvedValue([]) },

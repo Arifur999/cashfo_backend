@@ -1,15 +1,16 @@
-import { Body, Controller, Delete, Get, HttpCode, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
-import { MemberRole } from '@prisma/client';
+import { Body, Controller, Delete, Get, Header, HttpCode, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
-import { RequireBusinessMembership } from '../business-access/decorators/require-business-membership.decorator.js';
-import { RequireRole } from '../business-access/decorators/require-role.decorator.js';
 import { CurrentUser } from '../user-auth/decorators/current-user.decorator.js';
 import { UserAuthGuard } from '../user-auth/guards/user-auth.guard.js';
 import type { RequestUser } from '../user-auth/interfaces/request-user.interface.js';
 import { CreatePayoutMethodDto, UpdatePayoutMethodDto } from './dto/payout-method.dto.js';
-import { WithdrawReferralEarningsDto } from './dto/withdraw-referral-earnings.dto.js';
+import { CreateReferralLinkDto, UpdateReferralLinkDto } from './dto/referral-links.dto.js';
+import { EarningsQueryDto, FriendsQueryDto, InviteClickDto, ReferralProfileDto } from './dto/referral-pages.dto.js';
 import { ConfirmWithdrawalDto, PageQueryDto, RemindFriendsDto, StartWithdrawalDto } from './dto/withdrawal.dto.js';
 import { PayoutMethodsService } from './payout-methods.service.js';
+import { ReferralEarningsService } from './referral-earnings.service.js';
+import { ReferralFriendsService } from './referral-friends.service.js';
+import { ReferralLinksService } from './referral-links.service.js';
 import { ReferralsService } from './referrals.service.js';
 import { WithdrawalsService } from './withdrawals.service.js';
 
@@ -27,11 +28,80 @@ export class ReferralsController {
     private readonly referralsService: ReferralsService,
     private readonly methods: PayoutMethodsService,
     private readonly withdrawals: WithdrawalsService,
+    private readonly friends: ReferralFriendsService,
+    private readonly earnings: ReferralEarningsService,
+    private readonly links: ReferralLinksService,
   ) {}
 
   @Get()
   getInfo(@CurrentUser() user: RequestUser) {
     return this.referralsService.getReferralInfo(user.id);
+  }
+
+  // --- Referred users ---
+
+  @Get('friends')
+  listFriends(@CurrentUser() user: RequestUser, @Query() query: FriendsQueryDto) {
+    return this.friends.list(user.id, query);
+  }
+
+  @Get('friends/:id')
+  friend(@CurrentUser() user: RequestUser, @Param('id') id: string) {
+    return this.friends.detail(user.id, id);
+  }
+
+  // --- Earnings: every commission line ---
+
+  @Get('earnings')
+  listEarnings(@CurrentUser() user: RequestUser, @Query() query: EarningsQueryDto) {
+    return this.earnings.list(user.id, query);
+  }
+
+  @Get('earnings/available')
+  availableEarnings(@CurrentUser() user: RequestUser) {
+    return this.earnings.available(user.id);
+  }
+
+  @Get('earnings/export')
+  @Header('Content-Type', 'text/csv; charset=utf-8')
+  @Header('Content-Disposition', 'attachment; filename="referral-earnings.csv"')
+  @Header('Cache-Control', 'private, no-store')
+  exportEarnings(@CurrentUser() user: RequestUser, @Query() query: EarningsQueryDto) {
+    return this.earnings.exportCsv(user.id, query);
+  }
+
+  // --- Invite links ---
+
+  @Get('links')
+  listLinks(@CurrentUser() user: RequestUser) {
+    return this.links.list(user.id);
+  }
+
+  @Post('links')
+  createLink(@CurrentUser() user: RequestUser, @Body() dto: CreateReferralLinkDto) {
+    return this.links.create(user.id, dto);
+  }
+
+  @Patch('links/:id')
+  renameLink(@CurrentUser() user: RequestUser, @Param('id') id: string, @Body() dto: UpdateReferralLinkDto) {
+    return this.links.rename(user.id, id, dto);
+  }
+
+  @Delete('links/:id')
+  removeLink(@CurrentUser() user: RequestUser, @Param('id') id: string) {
+    return this.links.remove(user.id, id);
+  }
+
+  // --- Profile & payouts ---
+
+  @Get('profile')
+  profile(@CurrentUser() user: RequestUser) {
+    return this.referralsService.profile(user.id);
+  }
+
+  @Patch('profile')
+  updateProfile(@CurrentUser() user: RequestUser, @Body() dto: ReferralProfileDto) {
+    return this.referralsService.updateProfile(user.id, dto);
   }
 
   // --- Where the money goes ---
@@ -100,7 +170,7 @@ export class ReferralsController {
   @Post('remind')
   @HttpCode(200)
   remind(@CurrentUser() user: RequestUser, @Body() dto: RemindFriendsDto) {
-    return this.referralsService.remind(user.id, dto.referralIds);
+    return this.friends.remind(user.id, dto.referralIds);
   }
 }
 
@@ -108,26 +178,22 @@ export class ReferralsController {
 // ("Khaled Mahmud invited you") and the friend's discount.
 @Controller('api/referrals/invite')
 export class ReferralInviteController {
-  constructor(private readonly referralsService: ReferralsService) {}
+  constructor(
+    private readonly referralsService: ReferralsService,
+    private readonly links: ReferralLinksService,
+  ) {}
 
   @Throttle({ default: { limit: 30, ttl: 60 * 1000 } })
   @Get(':code')
   invite(@Param('code') code: string) {
     return this.referralsService.invite(code);
   }
-}
 
-// Business-scoped: the old instant withdrawal books the member's available
-// old sign-up bonuses as Referral income in one workspace's wallet.
-// Commissions go through withdrawals (above) instead.
-@RequireBusinessMembership()
-@Controller('api/businesses/:businessId/referrals')
-export class ReferralsWithdrawController {
-  constructor(private readonly referralsService: ReferralsService) {}
-
-  @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
-  @Post('withdraw')
-  withdraw(@Param('businessId') businessId: string, @Body() dto: WithdrawReferralEarningsDto, @CurrentUser() user: RequestUser) {
-    return this.referralsService.withdraw(user.id, businessId, dto.accountId, user.id);
+  // The sign-up page counts an open of the link, once per visitor session.
+  @Throttle({ default: { limit: 30, ttl: 60 * 1000 } })
+  @Post(':code/click')
+  @HttpCode(204)
+  async click(@Param('code') code: string, @Body() dto: InviteClickDto) {
+    await this.links.click(code, dto.src);
   }
 }

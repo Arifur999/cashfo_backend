@@ -11,7 +11,10 @@ import { AdminReferralsService } from './admin-referrals.service.js';
 import { PayoutMethodsService } from './payout-methods.service.js';
 import { ReferralCommissionsService } from './referral-commissions.service.js';
 import { ReferralNotices } from './referral-notices.js';
-import { ReferralInviteController, ReferralsController, ReferralsWithdrawController } from './referrals.controller.js';
+import { ReferralEarningsService } from './referral-earnings.service.js';
+import { ReferralFriendsService } from './referral-friends.service.js';
+import { ReferralLinksService } from './referral-links.service.js';
+import { ReferralInviteController, ReferralsController } from './referrals.controller.js';
 import { ReferralsService } from './referrals.service.js';
 import { WithdrawalsService } from './withdrawals.service.js';
 
@@ -24,8 +27,18 @@ import { WithdrawalsService } from './withdrawals.service.js';
 // (UserAuthModule records a sign-up's referral itself), so there's no cycle.
 @Module({
   imports: [UserAuthModule, AdminAuthModule, TransactionsModule, SettingsModule, BillingModule, MailModule, OneTimeCodesModule],
-  controllers: [ReferralInviteController, ReferralsController, ReferralsWithdrawController, AdminReferralsController],
-  providers: [ReferralsService, ReferralCommissionsService, ReferralNotices, PayoutMethodsService, WithdrawalsService, AdminReferralsService],
+  controllers: [ReferralInviteController, ReferralsController, AdminReferralsController],
+  providers: [
+    ReferralsService,
+    ReferralCommissionsService,
+    ReferralNotices,
+    PayoutMethodsService,
+    WithdrawalsService,
+    AdminReferralsService,
+    ReferralFriendsService,
+    ReferralEarningsService,
+    ReferralLinksService,
+  ],
   exports: [ReferralsService],
 })
 export class ReferralsModule {}

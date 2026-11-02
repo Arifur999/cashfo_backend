@@ -39,6 +39,7 @@ const emptyExtras = () => ({
   account: { groupBy: vi.fn().mockResolvedValue([]) },
   transaction: { count: vi.fn().mockResolvedValue(0), groupBy: vi.fn().mockResolvedValue([]) },
   referral: { findMany: vi.fn().mockResolvedValue([]) },
+  referralCommission: { groupBy: vi.fn().mockResolvedValue([]), findFirst: vi.fn().mockResolvedValue(null) },
   payoutRequest: { findMany: vi.fn().mockResolvedValue([]) },
   payment: { aggregate: vi.fn().mockResolvedValue({ _sum: { amount: null }, _count: 0 }), findFirst: vi.fn().mockResolvedValue(null) },
   supportTicket: { findMany: vi.fn().mockResolvedValue([]), groupBy: vi.fn().mockResolvedValue([]) },
