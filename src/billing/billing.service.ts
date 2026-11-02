@@ -1,5 +1,5 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
-import { BillingCycle, PaymentStatus, type Coupon, type SubscriptionPlan } from '@prisma/client';
+import { BillingCycle, PaymentStatus, type Coupon, type Prisma, type SubscriptionPlan } from '@prisma/client';
 import { dhakaDateKey, dhakaMonthStart, dhakaToday } from '../common/dhaka.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { SettingsService } from '../settings/settings.service.js';
@@ -163,6 +163,7 @@ export class BillingService {
     const { billingCheckoutHours } = await this.settingsService.getCached();
     const payment = await this.prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`billing:${userId}`}))`;
+      if (price.source === 'COUPON' && coupon?.maxRedemptions != null) await this.holdCouponPlace(tx, coupon.id, coupon.maxRedemptions, userId);
       const sub = await this.subscriptions.ensure(userId, tx);
       await tx.payment.updateMany({ where: { userId, status: PaymentStatus.PENDING }, data: { status: PaymentStatus.FAILED, failureReason: 'replaced' } });
       return tx.payment.create({
@@ -326,6 +327,22 @@ export class BillingService {
       if (!problem && coupon) couponPaisa = couponDiscountPaisa(coupon, listPaisa);
     }
     return { price: priceWith(listPaisa, couponPaisa, referralPaisa), problem, coupon, couponPaisa, referralPaisa };
+  }
+
+  // A coupon with a cap counts the open checkouts using it (other people's:
+  // this person's own gives way to the new one) with the redemptions, so
+  // more people than the cap can't each open a checkout and all be
+  // confirmed. One checkout at a time per coupon (the lock), so two can't
+  // both take the last place.
+  private async holdCouponPlace(tx: Prisma.TransactionClient, couponId: string, maxRedemptions: number, userId: string) {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`coupon:${couponId}`}))`;
+    const [coupon, open] = await Promise.all([
+      tx.coupon.findUniqueOrThrow({ where: { id: couponId }, select: { timesRedeemed: true } }),
+      tx.payment.count({ where: { couponId, status: PaymentStatus.PENDING, expiresAt: { gt: new Date() }, NOT: { userId } } }),
+    ]);
+    if (coupon.timesRedeemed + open >= maxRedemptions) {
+      throw new BadRequestException({ statusCode: 400, error: 'Bad Request', message: COUPON_MESSAGES.USED_UP, reason: 'USED_UP' });
+    }
   }
 
   private async requirePaidPlan(planId: string): Promise<SubscriptionPlan> {

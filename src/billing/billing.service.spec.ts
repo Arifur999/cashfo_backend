@@ -34,10 +34,13 @@ const setup = ({
   found = coupon() as Record<string, unknown> | null,
   usedBefore = 0,
   sub = FREE_SUB as Record<string, unknown>,
+  openCheckouts = 0,
 } = {}) => {
   const tx = {
     $executeRaw: vi.fn().mockResolvedValue(0),
+    coupon: { findUniqueOrThrow: vi.fn().mockResolvedValue({ timesRedeemed: (found?.timesRedeemed as number) ?? 0 }) },
     payment: {
+      count: vi.fn().mockResolvedValue(openCheckouts),
       updateMany: vi.fn().mockResolvedValue({ count: 1 }),
       create: vi.fn((args: { data: Record<string, unknown> }) => Promise.resolve({ id: 'abcd1234-0000', expiresAt: new Date(), ...args.data })),
     },
@@ -127,6 +130,18 @@ describe('BillingService.checkout', () => {
     const { service, tx } = setup({ found: null, sub: { ...FREE_SUB, planId: 'monthly', plan: { billingCycle: 'MONTHLY' }, currentPeriodEnd: new Date() } });
     await service.checkout('u-1', { planId: 'monthly', gateway: 'NAGAD' });
     expect(tx.payment.create.mock.calls[0][0].data).toMatchObject({ purpose: 'RENEWAL', amount: '299.00', couponId: null, discountApplied: null });
+  });
+
+  it("counts other people's open checkouts against a coupon's cap", async () => {
+    const full = setup({ found: coupon({ maxRedemptions: 10, timesRedeemed: 8 }), openCheckouts: 2 });
+    const error = await full.service.checkout('u-1', { planId: 'monthly', gateway: 'BKASH', couponCode: 'EID20' }).catch((e: unknown) => e);
+    expect((error as BadRequestException).getResponse()).toMatchObject({ reason: 'USED_UP' });
+    expect(full.tx.payment.create).not.toHaveBeenCalled();
+    expect(full.tx.payment.count).toHaveBeenCalledWith({ where: { couponId: 'c-1', status: 'PENDING', expiresAt: { gt: expect.any(Date) }, NOT: { userId: 'u-1' } } });
+
+    const room = setup({ found: coupon({ maxRedemptions: 10, timesRedeemed: 8 }), openCheckouts: 1 });
+    await room.service.checkout('u-1', { planId: 'monthly', gateway: 'BKASH', couponCode: 'EID20' });
+    expect(room.tx.payment.create).toHaveBeenCalled();
   });
 
   it('refuses a bad coupon with its reason, and opens nothing', async () => {
