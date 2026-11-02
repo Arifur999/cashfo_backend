@@ -40,6 +40,9 @@ const setup = (accountType: string, openingBalance: string, entries: Entry[]) =>
 
   const prisma = {
     account: { findUnique: vi.fn(({ where }: { where: { id: string } }) => Promise.resolve(where.id === account.id ? account : null)) },
+    // No asset or savings goal owns these rows.
+    asset: { findMany: vi.fn().mockResolvedValue([]) },
+    savingsGoalEntry: { findMany: vi.fn().mockResolvedValue([]) },
     transactionEntry: {
       count: vi.fn(({ where }: { where: Record<string, unknown> }) => Promise.resolve(select(where).length)),
       aggregate: vi.fn(({ where }: { where: Record<string, unknown> }) => {
@@ -248,6 +251,8 @@ describe('AccountBalanceService.getWalletsOverview', () => {
   const setup = (accounts = wallets) => {
     const prisma = {
       account: { findMany: vi.fn().mockResolvedValue(accounts) },
+      // Cash has entries; the others none yet.
+      $queryRaw: vi.fn().mockResolvedValue([{ accountId: 'cash', entries: 4, lastActivity: new Date('2026-09-20T00:00:00.000Z') }]),
       transactionEntry: {
         groupBy: vi.fn(({ by, where }: { by: string[]; where: Record<string, unknown> }) => {
           if (by.join() !== 'accountId,entryType') throw new Error(`The fake entries do not group by ${by.join()}`);
@@ -287,9 +292,9 @@ describe('AccountBalanceService.getWalletsOverview', () => {
       inactiveAmount: '0.00',
       availableBalance: '1385.00',
       accounts: [
-        { id: 'cash', name: 'cash', nameBn: null, accountNumber: null, accountSubtype: 'cash', status: 'ACTIVE', openingBalance: '100.00', totalIn: '500.00', totalOut: '240.00', savings: '0.00', adjustment: '-50.00', currentBalance: '310.00' },
-        { id: 'bank', name: 'bank', nameBn: null, accountNumber: null, accountSubtype: 'bank', status: 'ACTIVE', openingBalance: '1000.00', totalIn: '25.00', totalOut: '0.00', savings: '0.00', adjustment: '50.00', currentBalance: '1075.00' },
-        { id: 'bkash', name: 'bkash', nameBn: null, accountNumber: null, accountSubtype: 'mfs', status: 'ARCHIVED', openingBalance: '0.00', totalIn: '0.00', totalOut: '0.00', savings: '0.00', adjustment: '0.00', currentBalance: '0.00' },
+        { id: 'cash', name: 'cash', nameBn: null, accountNumber: null, accountSubtype: 'cash', status: 'ACTIVE', lastActivity: '2026-09-20', entryCount: 4, openingBalance: '100.00', totalIn: '500.00', totalOut: '240.00', savings: '0.00', adjustment: '-50.00', currentBalance: '310.00' },
+        { id: 'bank', name: 'bank', nameBn: null, accountNumber: null, accountSubtype: 'bank', status: 'ACTIVE', lastActivity: null, entryCount: 0, openingBalance: '1000.00', totalIn: '25.00', totalOut: '0.00', savings: '0.00', adjustment: '50.00', currentBalance: '1075.00' },
+        { id: 'bkash', name: 'bkash', nameBn: null, accountNumber: null, accountSubtype: 'mfs', status: 'ARCHIVED', lastActivity: null, entryCount: 0, openingBalance: '0.00', totalIn: '0.00', totalOut: '0.00', savings: '0.00', adjustment: '0.00', currentBalance: '0.00' },
       ],
     });
     expect(await setup().service.getWalletsOverview('biz-1', {})).toEqual(overview);
@@ -411,5 +416,47 @@ describe('AccountBalanceService.getLedger particulars', () => {
     ] as never);
     const result = await service.getLedger('biz-1', 'acc');
     expect(result.entries[0]).toMatchObject({ counterAccounts: ['Salary Income'], category: 'Salary', description: 'October salary' });
+  });
+});
+
+describe('AccountBalanceService.getLedger filters', () => {
+  const rows = () => [debit('salary', '2026-10-01', '1000'), credit('rent', '2026-10-02', '300'), credit('food', '2026-10-03', '45.50'), debit('gift', '2026-10-04', '200')];
+
+  it('shows only what was received, each row with its true running balance', async () => {
+    const { service } = setup('ASSET', '100.00', rows());
+    const result = await ledger(service, { direction: 'in' });
+    expect(result.ids).toEqual(['salary', 'gift']);
+    expect(result.running).toEqual(['1100.00', '954.50']);
+    expect(result.counts).toEqual({ all: 4, in: 2, out: 2 });
+    expect(result.filtered).toBe(true);
+    expect(result.meta).toEqual({ page: 1, limit: 50, total: 2, totalPages: 1 });
+    // The period's figures stay the period's.
+    expect(result.balanceBroughtForward).toBe('100.00');
+    expect(result.closingBalance).toBe('954.50');
+  });
+
+  it('finds a row by its note or its amount, commas or not', async () => {
+    const { service } = setup('ASSET', '0.00', rows());
+    expect((await ledger(service, { search: 'RENT' })).ids).toEqual(['rent']);
+    expect((await ledger(service, { search: '1,000' })).ids).toEqual(['salary']);
+    expect((await ledger(service, { search: '45.5' })).ids).toEqual(['food']);
+  });
+
+  it('keeps one kind, and says which kinds the period has', async () => {
+    const { service } = setup('ASSET', '0.00', rows());
+    const all = await ledger(service, {});
+    expect(all.kinds).toEqual(['INCOME']);
+    expect(all.filtered).toBe(false);
+    expect((await ledger(service, { kind: 'EXPENSE' })).ids).toEqual([]);
+    expect((await ledger(service, { kind: 'INCOME' })).ids).toEqual(['salary', 'rent', 'food', 'gift']);
+  });
+
+  it('pages the filtered rows', async () => {
+    const { service } = setup('ASSET', '0.00', rows());
+    const second = await ledger(service, { direction: 'out', page: 2, limit: 1 });
+    expect(second.ids).toEqual(['food']);
+    expect(second.pageOpeningBalance).toBe('700.00');
+    expect(second.pageClosingBalance).toBe('654.50');
+    expect(second.meta).toEqual({ page: 2, limit: 1, total: 2, totalPages: 2 });
   });
 });
