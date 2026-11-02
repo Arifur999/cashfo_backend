@@ -24,6 +24,23 @@ describe('OtpSenders.pick', () => {
   });
 });
 
+describe('OtpSenders.emailFirst', () => {
+  const verified = { ...person, phoneVerifiedAt: new Date() };
+
+  it('sends by email first, with a verified phone to fall back on', () => {
+    expect(senders().emailFirst({ ...verified, emailVerified: true }).map((route) => route.sender.channel)).toEqual(['EMAIL', 'SMS']);
+    expect(senders().emailFirst({ ...person, emailVerified: true }).map((route) => route.sender.channel)).toEqual(['EMAIL']);
+  });
+
+  it('tries the verified phone before an address never confirmed', () => {
+    expect(senders().emailFirst({ ...verified, emailVerified: false }).map((route) => route.sender.channel)).toEqual(['SMS', 'EMAIL']);
+  });
+
+  it('has nothing when nothing can send', () => {
+    expect(senders({ sms: false, email: false }).emailFirst(verified)).toEqual([]);
+  });
+});
+
 describe('the code SMS', () => {
   it('fits one SMS part in either language', () => {
     const en = otpSmsText('Smartly', '123456', { locale: 'en', minutes: 10 });

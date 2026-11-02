@@ -92,9 +92,13 @@ export class DevLogOtpSender implements OtpSender {
 // (phoneVerifiedAt) gets codes by SMS: anyone signed in can type a number.
 export interface OtpPerson {
   email: string;
+  // False when the address was never confirmed (it may not reach them).
+  emailVerified?: boolean;
   phone: string | null;
   phoneVerifiedAt?: Date | null;
 }
+
+export type OtpRoute = { sender: OtpSender; destination: string };
 
 // SMS when it is set up and the person has a verified phone; otherwise
 // email; otherwise (development) the log. Null: nothing can send a code.
@@ -119,11 +123,15 @@ export class OtpSenders {
     return this.sms.isConfigured() ? { sender: this.sms, destination: phone } : null;
   }
 
-  // A code that goes by email whatever else is set up (one asked for often,
-  // like the vault's unlock code, where a text message would cost each time).
-  emailTo(email: string): { sender: OtpSender; destination: string } | null {
-    if (this.email.isConfigured()) return { sender: this.email, destination: email };
-    return this.devLog.isConfigured() ? { sender: this.devLog, destination: email } : null;
+  // A code asked for often (the vault's unlock code), where a text message
+  // would cost each time: email first, a verified phone as the fallback when
+  // the email can't be sent. An address never confirmed goes after the
+  // phone, as it may not reach them. Empty: nothing can send it.
+  emailFirst(person: OtpPerson): OtpRoute[] {
+    const email = this.email.isConfigured() ? this.email : this.devLog.isConfigured() ? this.devLog : null;
+    const emailRoute = email ? [{ sender: email, destination: person.email }] : [];
+    const smsRoute = person.phone && person.phoneVerifiedAt && this.sms.isConfigured() ? [{ sender: this.sms, destination: person.phone }] : [];
+    return person.emailVerified === false ? [...smsRoute, ...emailRoute] : [...emailRoute, ...smsRoute];
   }
 
   // The sender for a code already sent on `channel` (a resend goes the same way).

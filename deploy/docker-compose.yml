@@ -59,6 +59,8 @@ x-api-env: &api-env
   VAULT_ENCRYPTION_KEY: ${VAULT_ENCRYPTION_KEY:?set VAULT_ENCRYPTION_KEY}
   VAULT_TOKEN_SECRET: ${VAULT_TOKEN_SECRET:?set VAULT_TOKEN_SECRET}
   VAULT_TOKEN_EXPIRES_IN: ${VAULT_TOKEN_EXPIRES_IN:-10m}
+  # "off" skips the vault's unlock code (an emergency switch; see .env.example).
+  VAULT_UNLOCK_CODE: ${VAULT_UNLOCK_CODE:-}
   # Two-step sign-in; both optional (the vault key and a key derived from
   # JWT_SECRET stand in).
   TWO_FACTOR_ENCRYPTION_KEY: ${TWO_FACTOR_ENCRYPTION_KEY:-}

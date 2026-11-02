@@ -17,7 +17,7 @@ import {
   verifyProblem,
   type CodeProblem,
 } from './one-time-codes.js';
-import { OtpSenders, type OtpMessage } from './otp-senders.js';
+import { OtpSenders, type OtpMessage, type OtpRoute } from './otp-senders.js';
 
 type Client = PrismaService | Prisma.TransactionClient;
 
@@ -25,6 +25,7 @@ export interface CodeRecipient {
   id: string;
   name: string;
   email: string;
+  emailVerified?: boolean;
   phone: string | null;
   // Set once the phone was proved theirs; only then do codes go by SMS.
   phoneVerifiedAt?: Date | null;
@@ -78,18 +79,23 @@ export class OneTimeCodesService {
     private readonly senders: OtpSenders,
   ) {}
 
-  // A fresh code for `purpose`, replacing any unused one. smsTo sends it to
-  // that phone by SMS (proving the number), emailOnly to the account's
-  // email; otherwise it goes the way pick() chooses. 503
-  // EMAIL_NOT_CONFIGURED / SMS_NOT_CONFIGURED when nothing can send it.
+  // A fresh code for `purpose`, replacing any unused one (only those
+  // matching `replace`, when given: one sign-in's code leaves another's
+  // alone). smsTo sends it to that phone by SMS (proving the number);
+  // emailFirst by email, falling back to a verified phone when the email
+  // can't go (OtpSenders.emailFirst); otherwise it goes the way pick()
+  // chooses. 503 EMAIL_NOT_CONFIGURED / SMS_NOT_CONFIGURED when nothing can
+  // send it.
   async issue(
     person: CodeRecipient,
     purpose: OneTimeCodePurpose,
     payload: Prisma.InputJsonObject,
     action: OtpMessage['action'],
-    options: { smsTo?: string; emailOnly?: boolean } = {},
+    options: { smsTo?: string; emailFirst?: boolean; replace?: Prisma.OneTimeCodeWhereInput } = {},
   ): Promise<Challenge> {
-    const route = options.smsTo ? this.senders.smsTo(options.smsTo) : options.emailOnly ? this.senders.emailTo(person.email) : this.senders.pick(person);
+    const one = options.smsTo ? this.senders.smsTo(options.smsTo) : options.emailFirst ? null : this.senders.pick(person);
+    const routes: OtpRoute[] = options.emailFirst ? this.senders.emailFirst(person) : one ? [one] : [];
+    const route = routes[0];
     if (!route) {
       throw new ServiceUnavailableException({
         statusCode: 503,
@@ -101,7 +107,7 @@ export class OneTimeCodesService {
     const now = new Date();
     const id = randomUUID();
     const code = generateCode();
-    await this.prisma.oneTimeCode.deleteMany({ where: { userId: person.id, purpose, consumedAt: null } });
+    await this.prisma.oneTimeCode.deleteMany({ where: { ...options.replace, userId: person.id, purpose, consumedAt: null } });
     const row = await this.prisma.oneTimeCode.create({
       data: {
         id,
@@ -115,13 +121,41 @@ export class OneTimeCodesService {
         lastSentAt: now,
       },
     });
-    try {
-      await route.sender.send(route.destination, code, this.message(person, action));
-    } catch {
-      await this.prisma.oneTimeCode.delete({ where: { id } }).catch(() => undefined);
-      throw this.notSent();
+    // The first route that sends it; the row follows the one that did.
+    for (const [index, next] of routes.entries()) {
+      try {
+        if (index > 0) await this.prisma.oneTimeCode.update({ where: { id }, data: { channel: next.sender.channel, destination: next.destination } });
+        await next.sender.send(next.destination, code, this.message(person, action));
+        return this.challengeOf(index > 0 ? await this.prisma.oneTimeCode.findUniqueOrThrow({ where: { id } }) : row, now);
+      } catch {
+        // On to the next way, if there is one.
+      }
     }
-    return this.challengeOf(row, now);
+    await this.prisma.oneTimeCode.delete({ where: { id } }).catch(() => undefined);
+    throw this.notSent();
+  }
+
+  // The newest code still waiting for `purpose` that matches `where` (one
+  // sign-in's own), or null.
+  async pending(userId: string, purpose: OneTimeCodePurpose, where: Prisma.OneTimeCodeWhereInput = {}, now = new Date()): Promise<OneTimeCode | null> {
+    return this.prisma.oneTimeCode.findFirst({ where: { ...where, userId, purpose, consumedAt: null, expiresAt: { gt: now } }, orderBy: { lastSentAt: 'desc' } });
+  }
+
+  // A code asked for again while one is still waiting: the same challenge,
+  // sent again once the resend wait is over (counting toward the sends),
+  // or as it is inside the wait (no new message). Null when that code can't
+  // be used any more (too many tries or sends): the caller issues a new one.
+  async again(person: CodeRecipient, row: OneTimeCode, action: OtpMessage['action'], now = new Date()): Promise<Challenge | null> {
+    const problem = resendProblem(row, now, resendGapMs(row.purpose));
+    if (problem === 'RESEND_TOO_SOON') return this.challengeOf(row, now);
+    if (problem) return null;
+    return this.resend(person, row.id, row.purpose, action);
+  }
+
+  // One challenge, checked to belong to this person and purpose (404
+  // CHALLENGE_NOT_FOUND otherwise).
+  async peek(userId: string, id: string, purpose: OneTimeCodePurpose): Promise<OneTimeCode> {
+    return this.find(userId, id, purpose);
   }
 
   // The same challenge with a new code, a minute after the last send (see
