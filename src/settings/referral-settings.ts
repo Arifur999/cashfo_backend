@@ -60,7 +60,7 @@ export const REFERRAL_DEFAULTS: ReferralSettings = {
   commissionPct: 20,
   friendDiscountPct: 10,
   holdDays: 7,
-  minWithdrawal: 500,
+  minWithdrawal: 300,
   withdrawalFee: 0,
   payWithinDays: 3,
   payoutMethods: ['BKASH', 'NAGAD', 'ROCKET', 'BANK'],
