@@ -1733,6 +1733,9 @@ model Business {
   budgetCategories            BudgetCategory[]
   incomeGoals                 IncomeGoal[]
   savingsGoals                SavingsGoal[]
+  zakatProfile                ZakatProfile?
+  zakatExtras                 ZakatExtra[]
+  zakatPayments               ZakatPayment[]
   assets                      Asset[]
   assetCategoryOptions        AssetCategoryOption[]
   groupMembers                GroupMember[]
@@ -2225,6 +2228,10 @@ model Asset {
   soldAccountId         String?
   soldTransactionId     String?             @unique
   notes                 String?
+  // Gold or silver jewellery: its metal and weight in vori, so Zakat values
+  // it at today's price per vori (null: by currentValue).
+  metal                 ZakatMetal?
+  weightVori            Decimal?            @db.Decimal(10, 3)
   createdAt             DateTime            @default(now())
   updatedAt             DateTime            @updatedAt
   valueHistory          AssetValueHistory[]
@@ -2909,6 +2916,8 @@ enum UserNotificationType {
   CAMPAIGN
   // A feature request the customer voted for changed status.
   IDEA
+  // The zakat date is 30 or 3 days away and some zakat is left to give.
+  ZAKAT
 }
 
 // A browser or phone that gets web push notifications for one customer
@@ -2966,4 +2975,108 @@ model Reminder {
 
   @@unique([userId, kind, targetKey])
   @@index([enabled, kind])
+}
+
+// =====================================================================
+// Zakat (Zakat calculator). The amount is worked out on every read from the
+// workspace's own records -- wallets, savings, gold and investments in
+// Assets, and what contacts owe or are owed -- so no money figure is stored
+// here except what the member added by hand and what they recorded giving.
+// =====================================================================
+
+// Gold and silver as BAJUS prices them, per vori.
+enum ZakatMetal {
+  GOLD_22
+  GOLD_21
+  GOLD_18
+  GOLD_TRADITIONAL
+  SILVER_22
+}
+
+// The nisab followed: 52.5 vori of silver (the lower) or 7.5 vori of gold.
+enum ZakatBasis {
+  SILVER
+  GOLD
+}
+
+// When the zakat year is due: 1 Ramadan, 1 Muharram (the next one on the
+// Umm al-Qura calendar), or the member's own date each year.
+enum ZakatDateMode {
+  RAMADAN
+  MUHARRAM
+  CUSTOM
+}
+
+// The steps of "Check your numbers" a hand-added line belongs to.
+enum ZakatGroup {
+  CASH
+  SAVINGS
+  GOLD
+  INVESTMENTS
+  OWED_TO_YOU
+  YOU_OWE
+}
+
+// A workspace's zakat choices.
+model ZakatProfile {
+  id          String        @id @default(uuid())
+  businessId  String        @unique
+  business    Business      @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  basis       ZakatBasis    @default(SILVER)
+  dateMode    ZakatDateMode @default(RAMADAN)
+  // CUSTOM: the day of the year it is due ("2027-01-15"; the month and day
+  // repeat every year).
+  customDate  String?
+  // The member's own prices per vori (22 karat); null: the platform's.
+  goldPrice   Decimal?      @db.Decimal(14, 2)
+  silverPrice Decimal?      @db.Decimal(14, 2)
+  // Lines left out of the sum ("account:<id>", "contact:<id>", "asset:<id>").
+  excluded    String[]      @default([])
+  // Contacts whose whole debt is taken off, not only what is due within 12 months.
+  debtFull    String[]      @default([])
+  // Assets (land, a flat) bought to sell: counted under investments.
+  forSale     String[]      @default([])
+  // "Yes, this is right" for the year it was said in: { "dueDate": ..., "steps": [...] }.
+  checked     Json?
+  // The zakat last worked out, and for which due date (the bell reminds
+  // only while some of it is left to give).
+  lastZakat   Decimal?      @db.Decimal(14, 2)
+  lastDueDate String?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+}
+
+// Something the member has but didn't put in the app: cash at home, a
+// provident fund, gold by weight, a debt. Only the zakat page counts it.
+model ZakatExtra {
+  id         String      @id @default(uuid())
+  businessId String
+  business   Business    @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  group      ZakatGroup
+  name       String
+  // Money lines; gold and silver come by metal and weight instead.
+  amount     Decimal?    @db.Decimal(14, 2)
+  metal      ZakatMetal?
+  weightVori Decimal?    @db.Decimal(10, 3)
+  createdAt  DateTime    @default(now())
+
+  @@index([businessId])
+}
+
+// Zakat given: an expense under the Zakat category from one wallet, for the
+// zakat year due on dueDate.
+model ZakatPayment {
+  id            String   @id @default(uuid())
+  businessId    String
+  business      Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  dueDate       String
+  amount        Decimal  @db.Decimal(14, 2)
+  paidOn        DateTime @db.Date
+  accountId     String
+  transactionId String   @unique
+  givenTo       String?
+  createdBy     String
+  createdAt     DateTime @default(now())
+
+  @@index([businessId, dueDate])
 }

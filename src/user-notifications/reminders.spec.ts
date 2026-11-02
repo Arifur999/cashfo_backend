@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { announcementReminders, budgetReminders, categoryNamesBn, loanReminders, savingsReminders } from './reminders.js';
+import { announcementReminders, budgetReminders, categoryNamesBn, loanReminders, savingsReminders, zakatReminders } from './reminders.js';
 
 describe('budgetReminders', () => {
   it('reminds once past 90% of a limit and again once over it', () => {
@@ -78,5 +78,23 @@ describe('announcementReminders', () => {
     const startAt = new Date('2026-09-29T04:00:00.000Z');
     const [draft] = announcementReminders([{ id: 'a1', title: 'New', titleBn: 'নতুন', body: 'Body', bodyBn: null, startAt }]);
     expect(draft).toEqual({ key: 'announcement:a1', type: 'ANNOUNCEMENT', businessId: null, data: { title: 'New', titleBn: 'নতুন', body: 'Body', bodyBn: null }, at: startAt });
+  });
+});
+
+describe('zakatReminders', () => {
+  const line = { businessId: 'b1', dueDate: '2027-02-08', zakat: 28548, paid: 0 };
+
+  it('reminds 30 and 3 days before, the nearer one when both are due', () => {
+    expect(zakatReminders('2027-01-09', [line])).toEqual([
+      { key: 'zakat:b1:2027-02-08:30', type: 'ZAKAT', businessId: 'b1', data: { dueDate: '2027-02-08', days: 30, left: '28548.00', zakat: '28548.00' } },
+    ]);
+    expect(zakatReminders('2027-02-06', [line]).map((d) => d.key)).toEqual(['zakat:b1:2027-02-08:3']);
+    expect(zakatReminders('2027-02-08', [line]).map((d) => d.key)).toEqual(['zakat:b1:2027-02-08:3']);
+  });
+
+  it('says nothing too early, after the date, or once it is all given', () => {
+    expect(zakatReminders('2026-12-01', [line])).toEqual([]);
+    expect(zakatReminders('2027-02-09', [line])).toEqual([]);
+    expect(zakatReminders('2027-02-06', [{ ...line, paid: 28548 }])).toEqual([]);
   });
 });
