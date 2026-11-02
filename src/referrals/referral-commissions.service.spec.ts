@@ -21,7 +21,7 @@ const setup = ({
     status: 'ON_HOLD',
     paidAmount: '1719.00',
     rate: '20.00',
-    amount: '343.00',
+    amount: '343.80',
     availableAt: new Date(Date.now() + 86_400_000),
     referral: { referredUser: { name: 'Nusrat Jahan' } },
     ...commission,
@@ -66,14 +66,14 @@ describe('ReferralCommissionsService.onFriendPaid', () => {
     expect(created).toHaveLength(1);
     const data = created[0] as Record<string, { toString(): string } | string | Date>;
     expect(data).toMatchObject({ referralId: 'ref-1', referrerId: 'u-khaled', paymentId: 'pay-1', kind: 'FIRST', status: 'ON_HOLD' });
-    expect(data.amount.toString()).toBe('343');
+    expect(data.amount.toString()).toBe('343.8');
     expect(data.rate.toString()).toBe('20');
     expect(data.availableAt).toEqual(new Date(PAID_AT.getTime() + 7 * 86_400_000));
     expect(notices.commissionEarned).toHaveBeenCalledWith(
       'u-khaled',
       expect.objectContaining({ id: 'com-1', renewal: false }),
       'Nusrat Jahan',
-      expect.objectContaining({ commissionId: 'com-1', amount: '343.00', planName: 'Yearly Pro' }),
+      expect.objectContaining({ commissionId: 'com-1', amount: '343.80', planName: 'Yearly Pro' }),
       tx,
     );
     expect(after).toBe(email);

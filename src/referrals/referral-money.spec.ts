@@ -14,12 +14,13 @@ import {
 import { balancesOf } from './referral-ledger.js';
 
 describe('commissionPaisa', () => {
-  it('takes the rate of what the friend paid, rounded down to whole taka', () => {
+  it('takes the rate of what the friend paid, rounded down to the paisa', () => {
     expect(commissionPaisa(270_000, 20)).toBe(54_000); // ৳ 2,700 -> ৳ 540
     expect(commissionPaisa(27_000, 20)).toBe(5_400); // ৳ 270 -> ৳ 54
     expect(commissionPaisa(72_000, 20)).toBe(14_400); // ৳ 720 -> ৳ 144
-    expect(commissionPaisa(29_900, 20)).toBe(5_900); // ৳ 299 -> ৳ 59.80 -> ৳ 59
-    expect(commissionPaisa(29_990, 12.5)).toBe(3_700); // ৳ 299.90 at 12.5 % -> ৳ 37.48 -> ৳ 37
+    expect(commissionPaisa(171_900, 20)).toBe(34_380); // ৳ 1,719 -> ৳ 343.80
+    expect(commissionPaisa(29_900, 20)).toBe(5_980); // ৳ 299 -> ৳ 59.80
+    expect(commissionPaisa(29_990, 12.5)).toBe(3_748); // ৳ 299.90 at 12.5 % -> ৳ 37.4875 -> ৳ 37.48
   });
 
   it('is nothing for no payment or a zero rate', () => {

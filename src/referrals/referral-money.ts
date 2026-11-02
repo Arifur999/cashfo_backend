@@ -5,13 +5,13 @@ import { dhakaDateKey } from '../common/dhaka.js';
 // prices (billing/pricing.ts toPaisa / fromPaisa).
 
 // The referrer's commission: `ratePct` % of what the friend paid, rounded
-// down to whole taka (৳ 2,700 at 20 % -> ৳ 540; ৳ 299 at 20 % -> ৳ 59).
+// down to the paisa (৳ 1,719 at 20 % -> ৳ 343.80; ৳ 299.90 at 12.5 % -> ৳ 37.48).
 export function commissionPaisa(paidPaisa: number, ratePct: number): number {
   if (!(paidPaisa > 0) || !(ratePct > 0)) return 0;
   // The rate has at most two decimals (Decimal(5,2)); kept whole so the
   // product stays exact.
   const rateBasis = Math.round(ratePct * 100);
-  return Math.floor((paidPaisa * rateBasis) / 1_000_000) * 100;
+  return Math.floor((paidPaisa * rateBasis) / 10_000);
 }
 
 export const OPEN_PAYOUT_STATUSES: readonly PayoutStatus[] = ['REQUESTED', 'APPROVED'];

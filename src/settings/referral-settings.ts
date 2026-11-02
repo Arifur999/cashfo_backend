@@ -14,7 +14,7 @@ export interface ReferralSettings {
   // members can withdraw.
   programLive: boolean;
   whoCanEarn: WhoCanEarn;
-  // Of the friend's first payment, rounded down to whole taka.
+  // Of every payment of an invited friend's, rounded down to the paisa.
   commissionPct: number;
   // Off the friend's first payment.
   friendDiscountPct: number;
