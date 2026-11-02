@@ -14,7 +14,9 @@ const setup = ({ row = null as null | { id: string; value: string; expiresAt: Da
     },
     auditLog: { findFirst: vi.fn().mockResolvedValue(null), create: vi.fn() },
     authSession: { findMany: vi.fn().mockResolvedValue(views), count: vi.fn().mockResolvedValue(0) },
-    $transaction: vi.fn().mockResolvedValue([]),
+    // The array form (issuing a code) or the locked check (consume).
+    $transaction: vi.fn((work: unknown) => (typeof work === 'function' ? work(prisma) : Promise.resolve([]))),
+    $executeRaw: vi.fn(),
   };
   const sessions = { revoke: vi.fn() };
   return { service: new SupportAccessService(prisma as never, sessions as never), prisma, sessions };
