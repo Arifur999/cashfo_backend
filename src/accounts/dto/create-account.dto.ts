@@ -1,8 +1,11 @@
-import { IsEnum, IsNotEmpty, IsOptional, IsString, Matches } from 'class-validator';
+import { Transform } from 'class-transformer';
+import { IsEnum, IsIn, IsNotEmpty, IsOptional, IsString, Matches, ValidateIf } from 'class-validator';
 import { AccountType } from '@prisma/client';
-import { MONEY_STRING_MESSAGE, MONEY_STRING_REGEX } from '../../common/dto.js';
+import { MONEY_STRING_MESSAGE, MONEY_STRING_REGEX, trim, whenSent } from '../../common/dto.js';
+import { ACCOUNT_COLORS } from '../account-colors.js';
 
 export class CreateAccountDto {
+  @Transform(trim)
   @IsString()
   @IsNotEmpty()
   name: string;
@@ -14,6 +17,12 @@ export class CreateAccountDto {
   @IsOptional()
   @IsString()
   accountNumber?: string;
+
+  // A money account's card colour, one of ACCOUNT_COLORS.
+  @ValidateIf(whenSent)
+  @Transform(({ value }: { value: unknown }) => (typeof value === 'string' ? value.trim().toLowerCase() : value))
+  @IsIn(ACCOUNT_COLORS, { message: 'Pick one of the card colours' })
+  color?: string;
 
   @IsEnum(AccountType)
   accountType: AccountType;
