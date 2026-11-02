@@ -177,6 +177,24 @@ export class UserAuthController {
     return this.userProfileService.updateAvatar(user.id, null);
   }
 
+  // The cover over the profile: the same image rules as the photo.
+  @UseGuards(UserAuthGuard)
+  @Post('cover')
+  @UseInterceptors(FileInterceptor('file', userAvatarMulterOptions))
+  async uploadCover(@CurrentUser() user: RequestUser, @UploadedFile() file: Express.Multer.File) {
+    if (!file) {
+      throw new BadRequestException('No file was uploaded');
+    }
+    const coverUrl = await this.imgbbService.uploadImage(file.buffer, file.originalname);
+    return this.userProfileService.updateCover(user.id, coverUrl);
+  }
+
+  @UseGuards(UserAuthGuard)
+  @Delete('cover')
+  removeCover(@CurrentUser() user: RequestUser) {
+    return this.userProfileService.updateCover(user.id, null);
+  }
+
   // Checks the current password, so it gets the login's brute-force budget
   // rather than the global 100 a minute.
   @Throttle({ default: { limit: 5, ttl: 15 * 60 * 1000 } })

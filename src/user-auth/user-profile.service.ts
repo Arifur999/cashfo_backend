@@ -53,6 +53,11 @@ export class UserProfileService {
       phone: user.phone,
       phoneVerifiedAt: user.phoneVerifiedAt,
       avatarUrl: user.avatarUrl,
+      coverUrl: user.coverUrl,
+      address: user.address,
+      // Whether the shareable profile card is on, and its code (the
+      // referral code), for Settings > Profile.
+      profileCard: { shared: user.profileCardSharedAt !== null, code: user.referralCode },
       preferredLanguage: user.preferredLanguage,
       emailVerifiedAt: user.emailVerifiedAt,
       emailVerified: user.emailVerified,
@@ -129,13 +134,20 @@ export class UserProfileService {
       data: {
         ...(dto.name !== undefined && { name: dto.name }),
         ...(dto.phone !== undefined && !keepsVerified && { phone: dto.phone || null, phoneVerifiedAt: null }),
+        ...(dto.address !== undefined && { address: dto.address || null }),
       },
     });
-    return { id: user.id, name: user.name, email: user.email, phone: user.phone, phoneVerifiedAt: user.phoneVerifiedAt, avatarUrl: user.avatarUrl };
+    return { id: user.id, name: user.name, email: user.email, phone: user.phone, phoneVerifiedAt: user.phoneVerifiedAt, avatarUrl: user.avatarUrl, address: user.address };
   }
 
   async updateAvatar(userId: string, avatarUrl: string | null) {
     const user = await this.prisma.user.update({ where: { id: userId }, data: { avatarUrl } });
     return { id: user.id, avatarUrl: user.avatarUrl };
+  }
+
+  // The wide photo over the profile; null goes back to the gradient.
+  async updateCover(userId: string, coverUrl: string | null) {
+    const user = await this.prisma.user.update({ where: { id: userId }, data: { coverUrl } });
+    return { id: user.id, coverUrl: user.coverUrl };
   }
 }

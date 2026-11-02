@@ -43,10 +43,10 @@ export class AccountExportService {
   async export(userId: string, isShut: (workspace: Business) => boolean = () => false): Promise<{ fileName: string; data: Buffer }> {
     const user = await this.prisma.user.findUniqueOrThrow({
       where: { id: userId },
-      select: { name: true, email: true, phone: true, preferredLanguage: true, createdAt: true, ownedBusinesses: { where: { deletedAt: null }, orderBy: { createdAt: 'asc' } } },
+      select: { name: true, email: true, phone: true, address: true, preferredLanguage: true, createdAt: true, ownedBusinesses: { where: { deletedAt: null }, orderBy: { createdAt: 'asc' } } },
     });
 
-    const files: ZipEntry[] = [{ name: 'profile.csv', data: toCsv(['Name', 'Email', 'Phone', 'Language', 'Joined'], [[user.name, user.email, user.phone, user.preferredLanguage, user.createdAt]]) }];
+    const files: ZipEntry[] = [{ name: 'profile.csv', data: toCsv(['Name', 'Email', 'Phone', 'Address', 'Language', 'Joined'], [[user.name, user.email, user.phone, user.address, user.preferredLanguage, user.createdAt]]) }];
     files.push(...(await this.habitSheets(userId)).map((sheet) => ({ name: `${HABITS_FOLDER}/${sheet.name}`, data: sheet.data })));
     // A workspace that happens to share the trackers' folder name gets its own.
     const used = new Set<string>([HABITS_FOLDER]);

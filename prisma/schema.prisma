@@ -802,6 +802,14 @@ model User {
   // statically from /uploads/avatars. Null shows the initials-circle
   // fallback in the UI instead.
   avatarUrl               String?
+  // Settings > Profile: the wide photo over the profile (imgbb, like the
+  // avatar; null shows a gradient), and a one-line address.
+  coverUrl                String?
+  address                 String?
+  // When the person turned on their shareable profile card (a public page
+  // at /card/<referralCode> with their name, photos and an invite); null
+  // while it is off, and then that page shows nothing.
+  profileCardSharedAt     DateTime?
   // No password column: the hash lives on this user's "credential"
   // AuthAccount row, where better-auth reads it (src/auth/credential-account.ts).
   // When the password was last set (CredentialsService.set); null before

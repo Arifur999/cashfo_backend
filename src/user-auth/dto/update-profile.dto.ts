@@ -1,4 +1,6 @@
-import { IsNotEmpty, IsOptional, IsString } from 'class-validator';
+import { Transform } from 'class-transformer';
+import { IsNotEmpty, IsOptional, IsString, MaxLength } from 'class-validator';
+import { trim } from '../../common/dto.js';
 
 export class UpdateProfileDto {
   @IsOptional()
@@ -12,4 +14,11 @@ export class UpdateProfileDto {
   @IsOptional()
   @IsString()
   phone?: string;
+
+  // One line ("House 12, Road 5, Dhanmondi, Dhaka"); an empty string clears it.
+  @IsOptional()
+  @Transform(trim)
+  @IsString()
+  @MaxLength(200)
+  address?: string;
 }
