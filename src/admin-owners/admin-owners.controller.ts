@@ -12,7 +12,7 @@ import { AdminOwnersService } from './admin-owners.service.js';
 import { CreateAdminNoteDto } from './dto/admin-note.dto.js';
 import { ChangeOwnerPlanDto } from './dto/change-owner-plan.dto.js';
 import { ListOwnersQueryDto } from './dto/list-owners-query.dto.js';
-import { StartImpersonationDto } from './dto/start-impersonation.dto.js';
+import { SupportCodeDto } from './dto/support-code.dto.js';
 import { SuspendOwnerDto } from './dto/suspend-owner.dto.js';
 import { OwnerImpersonationService } from './owner-impersonation.service.js';
 
@@ -75,13 +75,15 @@ export class AdminOwnersController {
     return this.adminOwnersService.signOutEverywhere(userId, admin.id, req.ip);
   }
 
-  // "Download a copy" before a reset: the customer's Download my data zip.
+  // "Download a copy" before a reset: the customer's Download my data zip,
+  // only with the support code they made (a POST, as the code is used up).
   @Roles(AdminRole.SUPER_ADMIN)
-  @Throttle({ default: { limit: 5, ttl: 60 * 1000 } })
-  @Get(':userId/export')
+  @Throttle({ default: { limit: 5, ttl: 15 * 60 * 1000, getTracker: (req) => `${req.ip}|${req.params?.userId ?? ''}` } })
+  @Post(':userId/export')
+  @HttpCode(200)
   @Header('Cache-Control', 'private, no-store')
-  async exportOwnerData(@Param('userId') userId: string, @CurrentAdmin() admin: RequestAdminUser, @Req() req: Request) {
-    const file = await this.adminOwnersService.exportOwnerData(userId, admin.id, req.ip);
+  async exportOwnerData(@Param('userId') userId: string, @Body() dto: SupportCodeDto, @CurrentAdmin() admin: RequestAdminUser, @Req() req: Request) {
+    const file = await this.adminOwnersService.exportOwnerData(userId, dto.code, admin.id, req.ip);
     return new StreamableFile(file.data, { type: 'application/zip', disposition: `attachment; filename="${file.fileName}"` });
   }
 
@@ -103,15 +105,6 @@ export class AdminOwnersController {
   @Patch(':userId/activate')
   activate(@Param('userId') userId: string, @CurrentAdmin() admin: RequestAdminUser, @Req() req: Request) {
     return this.adminOwnersService.activate(userId, admin.id, req.ip);
-  }
-
-  // A temporary password opens the whole account, unlike "View as
-  // customer" (read-only, and only with the customer's code): super admins
-  // only. Support sends the customer to Forgot password instead.
-  @Roles(AdminRole.SUPER_ADMIN)
-  @Post(':userId/reset-password')
-  resetPassword(@Param('userId') userId: string, @CurrentAdmin() admin: RequestAdminUser, @Req() req: Request) {
-    return this.adminOwnersService.resetPassword(userId, admin.id, req.ip);
   }
 
   @Roles(AdminRole.SUPER_ADMIN, AdminRole.FINANCE_ADMIN)
@@ -144,7 +137,7 @@ export class AdminOwnersController {
   @Roles(AdminRole.SUPER_ADMIN)
   @Throttle({ default: { limit: 5, ttl: 15 * 60 * 1000, getTracker: (req) => `${req.ip}|${req.params?.userId ?? ''}` } })
   @Post(':userId/impersonate')
-  impersonate(@Param('userId') userId: string, @Body() dto: StartImpersonationDto, @CurrentAdmin() admin: RequestAdminUser, @Req() req: Request) {
+  impersonate(@Param('userId') userId: string, @Body() dto: SupportCodeDto, @CurrentAdmin() admin: RequestAdminUser, @Req() req: Request) {
     return this.impersonation.start(userId, admin.id, { ipAddress: req.ip, userAgent: req.headers['user-agent'] }, dto.code);
   }
 
