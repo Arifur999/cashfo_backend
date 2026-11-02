@@ -44,7 +44,7 @@ export class ReferralsService {
     const { year, month } = dhakaToday();
     const chartStart = dhakaMonthStart(year, month - (CHART_MONTHS - 1));
 
-    const [user, settings, sub, balances, paidPayouts, paidPlans, links, people, chartLines, top, latest, renewing] = await Promise.all([
+    const [user, settings, sub, balances, paidPayouts, paidPlans, links, people, chartLines, top, latest, renewing, firstEarned] = await Promise.all([
       this.prisma.user.findUniqueOrThrow({ where: { id: userId }, select: { referralCode: true, name: true, referralName: true } }),
       this.settingsService.getReferralSettings(),
       this.subscriptions.ensure(userId),
@@ -86,6 +86,11 @@ export class ReferralsService {
           ],
         },
         select: { referredUser: { select: { subscription: { select: { lockedPrice: true, plan: { select: { price: true } } } } } } },
+      }),
+      this.prisma.referralCommission.findFirst({
+        where: { referrerId: userId, status: { in: [...EARNED_STATUSES] } },
+        orderBy: { createdAt: 'asc' },
+        select: { createdAt: true, payment: { select: { paidAt: true } } },
       }),
     ]);
 
@@ -177,6 +182,9 @@ export class ReferralsService {
       people: { total: people.reduce((a, b) => a + b, 0), ...peopleCount },
       // What paying friends' renewals in the next 30 days should earn.
       expectedNext30Days: money(expectedPaisa),
+      expectedRenewals: renewing.length,
+      // When the first commission was earned ("Since August").
+      firstEarnedAt: firstEarned ? (firstEarned.payment?.paidAt ?? firstEarned.createdAt) : null,
       topFriends: top.map((t) => ({ referralId: t.referralId, name: nameOf.get(t.referralId) ?? '', earned: fromPaisa(toPaisa(t._sum.amount ?? 0)) })),
       latest: latest.map(earningView),
       // --- As before (an older app reads these until it reloads) ---
@@ -214,21 +222,29 @@ export class ReferralsService {
   // Referrals > Profile & payouts: the name friends see, the email
   // switches, and the contact details the payout desk checks against.
   async profile(userId: string) {
-    const user = await this.prisma.user.findUniqueOrThrow({
-      where: { id: userId },
-      select: {
-        name: true,
-        referralName: true,
-        email: true,
-        emailVerified: true,
-        phone: true,
-        phoneVerifiedAt: true,
-        referralEmailEarned: true,
-        referralEmailPayouts: true,
-      },
-    });
+    await ensureReferralCode(this.prisma, userId);
+    const [user, first] = await Promise.all([
+      this.prisma.user.findUniqueOrThrow({
+        where: { id: userId },
+        select: {
+          name: true,
+          referralName: true,
+          email: true,
+          emailVerified: true,
+          phone: true,
+          phoneVerifiedAt: true,
+          referralEmailEarned: true,
+          referralEmailPayouts: true,
+          referralCode: true,
+        },
+      }),
+      this.prisma.referral.findFirst({ where: { referrerId: userId }, orderBy: { createdAt: 'asc' }, select: { createdAt: true } }),
+    ]);
     return {
       name: user.name,
+      referralCode: user.referralCode,
+      // When their first friend signed up.
+      referringSince: first?.createdAt ?? null,
       referralName: user.referralName,
       inviteName: inviteName(user),
       email: user.email,
