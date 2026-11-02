@@ -15,6 +15,17 @@ const folderName = (name: string) =>
     .trim()
     .slice(0, 60) || 'Workspace';
 
+// What the .zip says about the PIN-locked workspaces it left out.
+const lockedNote = (names: string[]) =>
+  [
+    'These workspaces are locked with a PIN, so this download left them out:',
+    '',
+    ...names.map((name) => '- ' + name),
+    '',
+    'Open each one in Smartly and enter its PIN, then download your data again.',
+    '',
+  ].join('\r\n');
+
 // The folder for the personal trackers, which belong to the person, not to
 // any workspace.
 const HABITS_FOLDER = 'Habit Tracker';
@@ -22,12 +33,14 @@ const HABITS_FOLDER = 'Habit Tracker';
 // Settings > Resources > Download my data: the customer's profile, their
 // Habit Tracker (habits, to-dos, books, skills, Namaz and Ramadan sheets,
 // qaza) and every workspace they own, as spreadsheets in one .zip, a folder
-// per workspace. Saved passwords (the vault) are left out on purpose.
+// per workspace. Saved passwords (the vault) are left out on purpose, and so
+// is a workspace `isShut` says stays shut (a PIN-locked one the download
+// carries no unlock for); a note in the .zip names those.
 @Injectable()
 export class AccountExportService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async export(userId: string): Promise<{ fileName: string; data: Buffer }> {
+  async export(userId: string, isShut: (workspace: Business) => boolean = () => false): Promise<{ fileName: string; data: Buffer }> {
     const user = await this.prisma.user.findUniqueOrThrow({
       where: { id: userId },
       select: { name: true, email: true, phone: true, preferredLanguage: true, createdAt: true, ownedBusinesses: { where: { deletedAt: null }, orderBy: { createdAt: 'asc' } } },
@@ -37,7 +50,10 @@ export class AccountExportService {
     files.push(...(await this.habitSheets(userId)).map((sheet) => ({ name: `${HABITS_FOLDER}/${sheet.name}`, data: sheet.data })));
     // A workspace that happens to share the trackers' folder name gets its own.
     const used = new Set<string>([HABITS_FOLDER]);
+    const shut = user.ownedBusinesses.filter(isShut);
+    if (shut.length > 0) files.push({ name: 'Locked workspaces.txt', data: Buffer.from(lockedNote(shut.map((workspace) => workspace.name)), 'utf8') });
     for (const workspace of user.ownedBusinesses) {
+      if (shut.includes(workspace)) continue;
       // Two workspaces with one name get their own folders.
       let folder = folderName(workspace.isDefault ? 'Personal' : workspace.name);
       for (let n = 2; used.has(folder); n++) folder = `${folderName(workspace.name)} (${n})`;
