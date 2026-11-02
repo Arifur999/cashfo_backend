@@ -1,4 +1,7 @@
-import { IsNotEmpty, IsOptional, IsString } from 'class-validator';
+import { Transform } from 'class-transformer';
+import { IsIn, IsNotEmpty, IsOptional, IsString, ValidateIf } from 'class-validator';
+import { ACCOUNT_COLORS } from '../account-colors.js';
+import { trim } from '../../common/dto.js';
 
 // accountType is deliberately NOT editable here -- see
 // AccountsService.update()'s comment for why (changing an account's type
@@ -6,6 +9,7 @@ import { IsNotEmpty, IsOptional, IsString } from 'class-validator';
 // asks to prevent; simplest fix is to just not allow it at all).
 export class UpdateAccountDto {
   @IsOptional()
+  @Transform(trim)
   @IsString()
   @IsNotEmpty()
   name?: string;
@@ -17,6 +21,12 @@ export class UpdateAccountDto {
   @IsOptional()
   @IsString()
   accountNumber?: string;
+
+  // A money account's card colour, one of ACCOUNT_COLORS; null goes back to its type's own.
+  @ValidateIf((dto: UpdateAccountDto) => dto.color !== undefined && dto.color !== null)
+  @Transform(({ value }: { value: unknown }) => (typeof value === 'string' ? value.trim().toLowerCase() : value))
+  @IsIn(ACCOUNT_COLORS, { message: 'Pick one of the card colours' })
+  color?: string | null;
 
   @IsOptional()
   @IsString()

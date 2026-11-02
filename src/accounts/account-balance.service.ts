@@ -1,7 +1,8 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { dayDate, entryTotals, isDebitPositive, LIVE_TRANSACTION, signedNet } from './account-figures.js';
-import { MONEY_ACCOUNT_SUBTYPES } from './accounts.service.js';
+import { BALANCE_ADJUSTMENT_ACCOUNT_SUBTYPE, MONEY_ACCOUNT_SUBTYPES } from './accounts.service.js';
+import { LEDGER_KINDS, ledgerKind, ledgerRowMatches, type LedgerKind } from './ledger-kind.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 
 // The accounting rule lives in account-figures.ts; still exported from here
@@ -13,6 +14,10 @@ export interface LedgerFilters {
   dateTo?: string;
   page?: number;
   limit?: number;
+  direction?: 'in' | 'out';
+  kind?: LedgerKind;
+  search?: string;
+  standingOnly?: boolean;
 }
 
 @Injectable()
@@ -86,17 +91,17 @@ export class AccountBalanceService {
   //   balance just before the page's first row and after its last one, for
   //   a "carried over" line between pages. A page past the end has no rows
   //   and sits after the period's last entry, so both equal closingBalance.
-  // - Pagination: fetches every entry from the start of the (possibly
-  //   date-filtered) range through the END of the requested page, computes
-  //   the running balance over that whole prefix in order, then slices out
-  //   just the requested page for the response. This is deliberately O(page
-  //   * limit) rather than O(limit) -- a running balance is only correct if
-  //   computed from a real starting point through every prior entry in
-  //   order, so a later page's entries genuinely depend on every entry
-  //   before them. Fine at this app's realistic scale (a personal/small-
-  //   business account's entry count); a materialized running-balance-
-  //   checkpoint strategy would be the right fix if accounts ever grow into
-  //   the tens of thousands of entries, but that's premature here.
+  // - Pagination: fetches every entry in the (possibly date-filtered)
+  //   range, computes the running balance over all of them in order, then
+  //   slices out the requested page. A running balance is only correct if
+  //   computed from a real starting point through every prior entry, and the
+  //   filters' counts (received, sent, the kinds there are) need every row
+  //   anyway. Fine at this app's realistic scale (a personal/small-business
+  //   account's entry count); a materialized running-balance-checkpoint
+  //   strategy would be the right fix if accounts ever grow into the tens
+  //   of thousands of entries, but that's premature here.
+  // - direction / kind / search narrow the rows shown, never the balances:
+  //   each row keeps the running balance the whole period gives it.
   async getLedger(businessId: string, accountId: string, filters: LedgerFilters = {}) {
     const account = await this.prisma.account.findUnique({ where: { id: accountId } });
     if (!account || account.businessId !== businessId) {
@@ -112,38 +117,81 @@ export class AccountBalanceService {
     if (filters.dateTo) dateFilter.lte = new Date(filters.dateTo);
     const hasDateFilter = Object.keys(dateFilter).length > 0;
 
+    const standing = filters.standingOnly ? LIVE_TRANSACTION : {};
     const where: Prisma.TransactionEntryWhereInput = {
       accountId,
-      ...(hasDateFilter && { transaction: { transactionDate: dateFilter } }),
+      ...((hasDateFilter || filters.standingOnly) && { transaction: { ...standing, ...(hasDateFilter && { transactionDate: dateFilter }) } }),
     };
 
-    const [priorMovement, periodMovement, total, entriesUpToPageEnd] = await Promise.all([
+    const [priorMovement, entries] = await Promise.all([
       filters.dateFrom
-        ? this.netMovement({ accountId, transaction: { transactionDate: { lt: new Date(filters.dateFrom) } } }, debitPositive)
+        ? this.netMovement({ accountId, transaction: { ...standing, transactionDate: { lt: new Date(filters.dateFrom) } } }, debitPositive)
         : new Prisma.Decimal(0),
-      this.netMovement(where, debitPositive),
-      this.prisma.transactionEntry.count({ where }),
       this.prisma.transactionEntry.findMany({
         where,
         // The transaction's other legs name where the money came from or
-        // went to (a statement's particulars).
-        include: { transaction: { include: { entries: { select: { accountId: true, categoryId: true, account: { select: { name: true } } } } } } },
+        // went to (a statement's particulars); its contact names a loan's
+        // or a payment's other side.
+        include: {
+          transaction: {
+            include: {
+              entries: { select: { accountId: true, categoryId: true, account: { select: { name: true, accountSubtype: true } } } },
+              contact: { select: { name: true, category: true } },
+            },
+          },
+        },
         // The entry id breaks ties (one date holds many transactions, and a
         // transaction can touch the account twice) so every request sees the
         // same order and a row never shows on two pages or none.
         orderBy: [{ transaction: { transactionDate: 'asc' } }, { transaction: { createdAt: 'asc' } }, { id: 'asc' }],
-        take: page * limit,
       }),
     ]);
 
-    const balanceBroughtForward = new Prisma.Decimal(account.openingBalance).plus(priorMovement);
-    const closingBalance = balanceBroughtForward.plus(periodMovement);
+    // What the period's transactions belong to: an asset bought or sold, a
+    // savings goal's move, and for a transfer's charge, the transfer's
+    // receiving account.
+    const transactionIds = [...new Set(entries.map((entry) => entry.transactionId))];
+    const chargeForIds = [...new Set(entries.map((entry) => entry.transaction.chargeForId).filter((id): id is string => !!id))];
+    const [assets, goalEntries, chargedTransfers] =
+      transactionIds.length === 0
+        ? [[], [], []]
+        : await Promise.all([
+            this.prisma.asset.findMany({
+              where: { businessId, OR: [{ purchaseTransactionId: { in: transactionIds } }, { soldTransactionId: { in: transactionIds } }] },
+              select: { id: true, name: true, purchaseTransactionId: true, soldTransactionId: true },
+            }),
+            this.prisma.savingsGoalEntry.findMany({ where: { businessId, transactionId: { in: transactionIds } }, select: { transactionId: true, savingsGoal: { select: { name: true } } } }),
+            chargeForIds.length
+              ? this.prisma.transactionEntry.findMany({ where: { transactionId: { in: chargeForIds }, entryType: 'DEBIT' }, select: { transactionId: true, account: { select: { name: true } } } })
+              : [],
+          ]);
+    const assetBy = new Map<string, { id: string; name: string; side: 'PURCHASE' | 'SALE' }>();
+    for (const asset of assets) {
+      if (asset.purchaseTransactionId) assetBy.set(asset.purchaseTransactionId, { id: asset.id, name: asset.name, side: 'PURCHASE' });
+      if (asset.soldTransactionId) assetBy.set(asset.soldTransactionId, { id: asset.id, name: asset.name, side: 'SALE' });
+    }
+    const goalBy = new Map(goalEntries.filter((entry) => entry.transactionId).map((entry) => [entry.transactionId!, entry.savingsGoal.name]));
+    const chargedToBy = new Map(chargedTransfers.map((entry) => [entry.transactionId, entry.account.name]));
 
+    const balanceBroughtForward = new Prisma.Decimal(account.openingBalance).plus(priorMovement);
     let running = balanceBroughtForward;
-    const allRows = entriesUpToPageEnd.map((entry) => {
+    const allRows = entries.map((entry) => {
       const amount = new Prisma.Decimal(entry.amount);
-      const delta = entry.entryType === 'DEBIT' ? (debitPositive ? amount : amount.negated()) : debitPositive ? amount.negated() : amount;
-      running = running.plus(delta);
+      const raises = (entry.entryType === 'DEBIT') === debitPositive;
+      const balanceBefore = running;
+      running = running.plus(raises ? amount : amount.negated());
+      const legs = (entry.transaction.entries ?? []).filter((leg) => leg.accountId !== accountId);
+      const asset = assetBy.get(entry.transactionId) ?? null;
+      const { kind, party } = ledgerKind({
+        transactionType: entry.transaction.transactionType,
+        direction: raises ? 'in' : 'out',
+        accountSubtype: account.accountSubtype,
+        legs: legs.map((leg) => ({ accountName: leg.account.name, accountSubtype: leg.account.accountSubtype, categoryId: leg.categoryId })),
+        contact: entry.transaction.contact ? { name: entry.transaction.contact.name, category: entry.transaction.contact.category } : null,
+        asset,
+        goalName: goalBy.get(entry.transactionId) ?? null,
+        adjustmentSubtype: BALANCE_ADJUSTMENT_ACCOUNT_SUBTYPE,
+      });
       return {
         entryId: entry.id,
         transactionId: entry.transactionId,
@@ -160,22 +208,45 @@ export class AccountBalanceService {
         // stay in the running balance: the wallet really moved, then moved
         // back.
         reversalOfId: entry.transaction.reversalOfId,
+        balanceBefore,
         runningBalance: running,
         // The accounts on the other side of this posting ("Mutual trust
         // bank" for a transfer out), and its category when it has one.
-        counterAccounts: [...new Set((entry.transaction.entries ?? []).filter((leg) => leg.accountId !== accountId).map((leg) => leg.account.name))],
+        counterAccounts: [...new Set(legs.map((leg) => leg.account.name))],
         category: (entry.transaction.entries ?? []).find((leg) => leg.categoryId)?.categoryId ?? null,
+        // Received or sent, what kind of row it is and who or what it was
+        // with, and the feature records it belongs to.
+        direction: raises ? ('in' as const) : ('out' as const),
+        kind,
+        party,
+        contactId: entry.transaction.contactId,
+        assetId: asset?.id ?? null,
+        // A transfer's charge: the transfer, and the account it went to.
+        chargeForId: entry.transaction.chargeForId,
+        chargeFor: entry.transaction.chargeForId ? (chargedToBy.get(entry.transaction.chargeForId) ?? null) : null,
       };
     });
+    const closingBalance = running;
+
+    // What the filters show; the balances stay every row's true running
+    // balance, as the whole period builds it.
+    const filtered = !!(filters.direction || filters.kind || filters.search);
+    const rows = filtered
+      ? allRows.filter(
+          (row) =>
+            (!filters.direction || row.direction === filters.direction) &&
+            (!filters.kind || row.kind === filters.kind) &&
+            (!filters.search || ledgerRowMatches({ ...row, amount: new Prisma.Decimal(row.amount).toFixed(2) }, filters.search)),
+        )
+      : allRows;
 
     const pageStart = (page - 1) * limit;
-    const pageRows = allRows.slice(pageStart, pageStart + limit);
-    let pageOpeningBalance = closingBalance;
-    let pageClosingBalance = closingBalance;
-    if (pageRows.length > 0) {
-      pageOpeningBalance = pageStart > 0 ? allRows[pageStart - 1].runningBalance : balanceBroughtForward;
-      pageClosingBalance = pageRows[pageRows.length - 1].runningBalance;
-    }
+    const pageRows = rows.slice(pageStart, pageStart + limit);
+    // A page past the end has no rows and sits after the period's last
+    // entry, so both equal closingBalance.
+    const pageOpeningBalance = pageRows.length > 0 ? pageRows[0].balanceBefore : closingBalance;
+    const pageClosingBalance = pageRows.length > 0 ? pageRows[pageRows.length - 1].runningBalance : closingBalance;
+    const total = rows.length;
 
     return {
       accountId,
@@ -185,13 +256,18 @@ export class AccountBalanceService {
       accountSubtype: account.accountSubtype,
       openingBalance: account.openingBalance,
       balanceBroughtForward: balanceBroughtForward.toFixed(2),
-      entries: pageRows,
+      entries: pageRows.map(({ balanceBefore: _before, ...row }) => row),
       // The whole period's closing figure, whichever page this is -- not
       // necessarily the account's current balance if dateTo cuts off before
       // the most recent activity.
       closingBalance: closingBalance.toFixed(2),
       pageOpeningBalance: pageOpeningBalance.toFixed(2),
       pageClosingBalance: pageClosingBalance.toFixed(2),
+      // Every row of the period, received and sent, and the kinds there
+      // are: the filters' counts and choices.
+      counts: { all: allRows.length, in: allRows.filter((row) => row.direction === 'in').length, out: allRows.filter((row) => row.direction === 'out').length },
+      kinds: LEDGER_KINDS.filter((kind) => allRows.some((row) => row.kind === kind)),
+      filtered,
       meta: { page, limit, total, totalPages: Math.ceil(total / limit) },
     };
   }
@@ -306,9 +382,9 @@ export class AccountBalanceService {
     });
     const accountIds = accounts.map((a) => a.id);
 
-    const [nonTransferGrouped, transferEntries, asOfGrouped] =
+    const [nonTransferGrouped, transferEntries, asOfGrouped, activity] =
       accountIds.length === 0
-        ? [[], [], []]
+        ? [[], [], [], []]
         : await Promise.all([
             this.prisma.transactionEntry.groupBy({
               by: ['accountId', 'entryType'],
@@ -326,8 +402,18 @@ export class AccountBalanceService {
                   _sum: { amount: true },
                 })
               : [],
+            // How many entries each account has (any status: only an account
+            // with none can be deleted, as removeOrArchive() decides) and the
+            // day it last moved money (standing transactions only).
+            this.prisma.$queryRaw<{ accountId: string; entries: number; lastActivity: Date | null }[]>`
+              SELECT e."accountId" AS "accountId", COUNT(*)::int AS "entries",
+                     MAX(t."transactionDate") FILTER (WHERE t."status" = 'POSTED' AND t."reversalOfId" IS NULL) AS "lastActivity"
+              FROM "TransactionEntry" e JOIN "Transaction" t ON t."id" = e."transactionId"
+              WHERE e."accountId" IN (${Prisma.join(accountIds)})
+              GROUP BY e."accountId"`,
           ]);
     const asOfTotals = filters.asOf ? entryTotals(asOfGrouped) : null;
+    const activityByAccount = new Map(activity.map((row) => [row.accountId, row]));
 
     const inByAccount = new Map<string, Prisma.Decimal>();
     const outByAccount = new Map<string, Prisma.Decimal>();
@@ -365,7 +451,11 @@ export class AccountBalanceService {
         nameBn: account.nameBn,
         accountNumber: account.accountNumber,
         accountSubtype: account.accountSubtype,
+        color: account.color,
         status: account.status,
+        // A YYYY-MM-DD day, or null before the first standing entry.
+        lastActivity: activityByAccount.get(account.id)?.lastActivity?.toISOString().slice(0, 10) ?? null,
+        entryCount: activityByAccount.get(account.id)?.entries ?? 0,
         openingBalance: account.openingBalance.toFixed(2),
         totalIn: (inByAccount.get(account.id) ?? new Prisma.Decimal(0)).toFixed(2),
         totalOut: (outByAccount.get(account.id) ?? new Prisma.Decimal(0)).toFixed(2),

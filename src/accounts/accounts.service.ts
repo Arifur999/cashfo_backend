@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { AccountType, Prisma, WorkspaceType } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { dayWindow, entryTotals, LIVE_TRANSACTION, periodFigures, type EntryTotals } from './account-figures.js';
@@ -13,6 +13,10 @@ const ACCOUNT_TYPE_ORDER: AccountType[] = ['ASSET', 'LIABILITY', 'EQUITY', 'INCO
 // Expense/Transfer wrappers use this to populate their account pickers and
 // to validate Transfer only moves money between real money accounts.
 export const MONEY_ACCOUNT_SUBTYPES = ['cash', 'bank', 'mfs'];
+// The accounts the pickers list side by side by name: money and savings
+// wallets. Two with one name couldn't be told apart, so names are unique
+// among them (whatever the case).
+const NAMED_WALLET_SUBTYPES = [...MONEY_ACCOUNT_SUBTYPES, 'savings'];
 
 // Hidden or feature-owned accounts other modules post through: assets' pooled
 // cost account and the referral payout income account.
@@ -21,13 +25,23 @@ export const REFERRAL_BONUS_INCOME_SUBTYPE = 'referral-bonus';
 // The hidden equity account a savings goal's "Already saved" money is
 // posted against (it came from no cash account).
 export const SAVINGS_OPENING_ACCOUNT_SUBTYPE = 'savings-opening';
+// The equity account "Match real balance" (Balance > Accounts) posts its
+// adjustments against, so the difference is neither income nor expense.
+export const BALANCE_ADJUSTMENT_ACCOUNT_SUBTYPE = 'balance-adjustment';
 
 // Subtypes the app looks accounts up by and posts through on its own: the
 // seeded Accounts Receivable/Payable (Dena-Pawna, Loan Management) and the
 // two above. Only the system creates them; a user-made account with one of
 // these subtypes would be picked up in their place, and changing or
 // removing the real one breaks every feature that posts through it.
-export const RESERVED_ACCOUNT_SUBTYPES = ['receivable', 'payable', FIXED_ASSETS_ACCOUNT_SUBTYPE, REFERRAL_BONUS_INCOME_SUBTYPE, SAVINGS_OPENING_ACCOUNT_SUBTYPE];
+export const RESERVED_ACCOUNT_SUBTYPES = [
+  'receivable',
+  'payable',
+  FIXED_ASSETS_ACCOUNT_SUBTYPE,
+  REFERRAL_BONUS_INCOME_SUBTYPE,
+  SAVINGS_OPENING_ACCOUNT_SUBTYPE,
+  BALANCE_ADJUSTMENT_ACCOUNT_SUBTYPE,
+];
 
 const isReservedSystemAccount = (account: { isSystemAccount: boolean; accountSubtype: string | null }) =>
   account.isSystemAccount && !!account.accountSubtype && RESERVED_ACCOUNT_SUBTYPES.includes(account.accountSubtype);
@@ -226,6 +240,10 @@ export class AccountsService {
       await this.requireCompatibleParent(businessId, dto.parentId, dto.accountType);
     }
 
+    if (dto.accountType === 'ASSET' && dto.accountSubtype && NAMED_WALLET_SUBTYPES.includes(dto.accountSubtype)) {
+      await this.refuseTakenWalletName(businessId, dto.name);
+    }
+
     // No entries exist yet for a brand-new account, so currentBalance is
     // simply the opening balance -- no need to round-trip through
     // AccountBalanceService.recalculateBalance() for a sum that's
@@ -238,6 +256,7 @@ export class AccountsService {
         name: dto.name,
         nameBn: dto.nameBn,
         accountNumber: dto.accountNumber,
+        color: dto.color,
         accountType: dto.accountType,
         accountSubtype: dto.accountSubtype,
         parentId: dto.parentId,
@@ -263,6 +282,11 @@ export class AccountsService {
       this.refuseReservedSubtype(dto.accountSubtype);
     }
 
+    const subtype = dto.accountSubtype ?? account.accountSubtype;
+    if (dto.name !== undefined && account.accountType === 'ASSET' && subtype && NAMED_WALLET_SUBTYPES.includes(subtype)) {
+      await this.refuseTakenWalletName(businessId, dto.name, id);
+    }
+
     if (dto.parentId !== undefined && dto.parentId !== null) {
       if (dto.parentId === id) {
         throw new BadRequestException('An account cannot be its own parent');
@@ -277,10 +301,26 @@ export class AccountsService {
         ...(dto.name !== undefined && { name: dto.name }),
         ...(dto.nameBn !== undefined && { nameBn: dto.nameBn }),
         ...(dto.accountNumber !== undefined && { accountNumber: dto.accountNumber }),
+        ...(dto.color !== undefined && { color: dto.color }),
         ...(dto.accountSubtype !== undefined && { accountSubtype: dto.accountSubtype }),
         ...(dto.parentId !== undefined && { parentId: dto.parentId }),
       },
     });
+  }
+
+  // Another money or savings wallet already has this name (any case).
+  private async refuseTakenWalletName(businessId: string, name: string, exceptId?: string) {
+    const taken = await this.prisma.account.findFirst({
+      where: {
+        businessId,
+        accountType: 'ASSET',
+        accountSubtype: { in: NAMED_WALLET_SUBTYPES },
+        name: { equals: name.trim(), mode: 'insensitive' },
+        ...(exceptId && { id: { not: exceptId } }),
+      },
+      select: { id: true },
+    });
+    if (taken) throw new ConflictException('You already have an account with this name.');
   }
 
   async archive(businessId: string, id: string) {

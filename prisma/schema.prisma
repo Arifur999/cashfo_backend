@@ -1801,6 +1801,9 @@ model Account {
   // validated/used anywhere in the Transaction Engine. Optional since it
   // doesn't apply to every account (a "Cash" wallet has none).
   accountNumber   String?
+  // A money account's card colour, one of ACCOUNT_COLORS (accounts.service);
+  // null draws its type's own colour.
+  color           String?
   accountType     AccountType
   accountSubtype  String?
   openingBalance  Decimal            @default(0) @db.Decimal(14, 2)
