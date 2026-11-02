@@ -1,7 +1,7 @@
 import type { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { SessionTokensService } from '../auth/session-tokens.service.js';
-import { WorkspaceUnlockService } from './workspace-unlock.service.js';
+import { unlockTokens, WorkspaceUnlockService } from './workspace-unlock.service.js';
 
 const env: Record<string, string> = { USER_JWT_SECRET: 'user-access', USER_JWT_REFRESH_SECRET: 'user-refresh' };
 const config = {
@@ -33,5 +33,26 @@ describe('WorkspaceUnlockService', () => {
 
   it('is never accepted as an access token', () => {
     expect(() => new SessionTokensService(jwt, config).verifyAccess('user', unlockToken)).toThrow();
+  });
+});
+
+describe('reads across workspaces', () => {
+  const owner = { id: 'user-1', sessionId: 'session-1' };
+
+  it('splits the unlocks one header carries', () => {
+    expect(unlockTokens(' a, b ,,c')).toEqual(['a', 'b', 'c']);
+    expect(unlockTokens(['a,b', 'c'])).toEqual(['a', 'b', 'c']);
+    expect(unlockTokens(undefined)).toEqual([]);
+  });
+
+  it('keeps a PIN-locked workspace shut without its unlock', () => {
+    expect(unlocks.isShut(owner, { id: 'biz-1', pinHash: 'pin-hash' }, [])).toBe(true);
+    expect(unlocks.isShut(owner, { id: 'biz-1', pinHash: 'pin-hash' }, ['junk', unlockToken])).toBe(false);
+    expect(unlocks.isShut(owner, { id: 'biz-2', pinHash: 'pin-hash' }, [unlockToken])).toBe(true);
+  });
+
+  it("never shuts a workspace without a PIN, nor for a super admin's read-only view", () => {
+    expect(unlocks.isShut(owner, { id: 'biz-1', pinHash: null }, [])).toBe(false);
+    expect(unlocks.isShut({ ...owner, impersonatedBy: 'admin-1' }, { id: 'biz-1', pinHash: 'pin-hash' }, [])).toBe(false);
   });
 });

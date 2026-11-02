@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import type { GroupKind } from '@prisma/client';
-import { WorkspaceUnlockService } from '../business-access/workspace-unlock.service.js';
+import { unlockTokens, WorkspaceUnlockService } from '../business-access/workspace-unlock.service.js';
 import { dhakaToday } from '../common/dhaka.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import type { RequestUser } from '../user-auth/interfaces/request-user.interface.js';
@@ -64,10 +64,7 @@ export class GroupSummaryService {
   ) {}
 
   async summary(user: RequestUser, month: string | undefined, unlockHeader: string | string[] | undefined) {
-    const tokens = (Array.isArray(unlockHeader) ? unlockHeader.join(',') : (unlockHeader ?? ''))
-      .split(',')
-      .map((token) => token.trim())
-      .filter(Boolean);
+    const tokens = unlockTokens(unlockHeader);
     const memberships = await this.prisma.businessMember.findMany({
       where: { userId: user.id, status: 'ACTIVE', business: { type: 'GROUP', deletedAt: null } },
       include: { business: { select: { id: true, name: true, pinHash: true } } },
@@ -78,9 +75,7 @@ export class GroupSummaryService {
 
     const groups: (GroupSummary | LockedGroupSummary)[] = [];
     for (const { business } of memberships) {
-      const { pinHash } = business;
-      // A super admin's read-only view skips the PIN, as the membership guard does.
-      if (pinHash && !user.impersonatedBy && !tokens.some((token) => this.unlocks.opens(token, user.id, user.sessionId, business.id, pinHash))) {
+      if (this.unlocks.isShut(user, business, tokens)) {
         groups.push({ businessId: business.id, name: business.name, locked: true });
         continue;
       }
