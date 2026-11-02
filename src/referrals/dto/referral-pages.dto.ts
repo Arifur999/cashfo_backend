@@ -2,8 +2,7 @@ import { CommissionStatus } from '@prisma/client';
 import { Transform, Type } from 'class-transformer';
 import { IsBoolean, IsIn, IsInt, IsNotEmpty, IsString, Matches, Max, MaxLength, Min, ValidateIf } from 'class-validator';
 import { trim, whenSent } from '../../common/dto.js';
-import { FRIEND_STANDINGS } from '../referral-friends.js';
-import type { FriendStanding } from '../referral-rules.js';
+import { FRIEND_FILTERS, type FriendFilter } from '../referral-friends.js';
 
 // The tag at the end of an invite link (&src=facebook).
 export const LINK_TAG = /^[a-z0-9]{2,20}$/;
@@ -31,8 +30,8 @@ class PageQuery {
 
 export class FriendsQueryDto extends PageQuery {
   @ValidateIf(whenSent)
-  @IsIn(FRIEND_STANDINGS)
-  standing?: FriendStanding;
+  @IsIn(FRIEND_FILTERS)
+  standing?: FriendFilter;
 }
 
 export class EarningsQueryDto extends PageQuery {

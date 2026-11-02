@@ -13,9 +13,16 @@ const notPaying: Prisma.ReferralWhereInput = { referredUser: { NOT: { subscripti
 
 export const payingFriendWhere = (): Prisma.ReferralWhereInput => ({ AND: [counted, { referredUser: { subscription: { is: PAID_SUBSCRIPTION } } }] });
 
+// The tabs of Referrals > Referred users: one standing, or ENDED for
+// "Stopped or refunded".
+export type FriendFilter = FriendStanding | 'ENDED';
+export const FRIEND_FILTERS: FriendFilter[] = ['PAYING', 'FREE', 'STOPPED', 'REFUNDED', 'BLOCKED', 'ENDED'];
+
 // The friends in one standing, as friendStanding() decides it for a row.
-export function standingWhere(standing: FriendStanding): Prisma.ReferralWhereInput {
+export function standingWhere(standing: FriendFilter): Prisma.ReferralWhereInput {
   switch (standing) {
+    case 'ENDED':
+      return { OR: [standingWhere('STOPPED'), standingWhere('REFUNDED')] };
     case 'BLOCKED':
       return blocked;
     case 'PAYING':
