@@ -47,7 +47,7 @@ const setup = ({ claimed = 1, current = 'PENDING', row = pendingRow() as Record<
       periodEnd: PERIOD_END,
     }),
   };
-  const hooks = { runPaid: vi.fn().mockResolvedValue(undefined) };
+  const hooks = { runPaid: vi.fn().mockResolvedValue([]), afterCommit: vi.fn() };
   const notices = { paid: vi.fn().mockResolvedValue(undefined), bell: vi.fn().mockResolvedValue(true), failed: vi.fn().mockResolvedValue(undefined) };
   const settings = { getCached: vi.fn().mockResolvedValue({ billingCheckoutHours: 48 }) };
   const service = new PaymentConfirmationService(prisma as never, subscriptions as never, hooks as never, notices as never, settings as never);

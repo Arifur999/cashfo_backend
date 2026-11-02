@@ -96,7 +96,7 @@ export class PaymentConfirmationService {
 
       const invoice = payment.invoice ?? (await this.createInvoice(tx, payment, coupon?.code ?? null));
       const updated = await tx.payment.findUniqueOrThrow({ where: { id } });
-      await this.hooks.runPaid(updated, tx);
+      const afterCommit = await this.hooks.runPaid(updated, tx);
 
       if (actor) {
         await tx.auditLog.create({
@@ -131,14 +131,16 @@ export class PaymentConfirmationService {
           currentPeriodEnd: subscription.currentPeriodEnd,
         },
         planName: payment.plan.name,
+        afterCommit,
       };
     });
+    await this.hooks.afterCommit(result.afterCommit);
 
     // The receipt carries the invoice PDF; when it went, the invoice is
     // marked emailed. Neither may fail the Mark paid that already happened.
     const emailed = await this.notices.paid(result.payment, result.planName, result.invoice.invoiceNumber, () => this.invoiceAttachment(result.invoice.id));
     const invoice = emailed ? await this.stampEmailed(result.invoice) : result.invoice;
-    const { planName: _planName, ...answer } = result;
+    const { planName: _planName, afterCommit: _afterCommit, ...answer } = result;
     return { ...answer, invoice };
   }
 

@@ -35,7 +35,7 @@ const setup = ({ emailed = true, pdfFails = false } = {}) => {
     invoice: { update: vi.fn().mockResolvedValue({}) },
   };
   const subscriptions = { activateFromPayment: vi.fn().mockResolvedValue({ subscription: null, periodStart: null, periodEnd: null }) };
-  const hooks = { runPaid: vi.fn().mockResolvedValue(undefined) };
+  const hooks = { runPaid: vi.fn().mockResolvedValue([]), afterCommit: vi.fn() };
   // Calls the attachment loader the way BillingNotices does before sending.
   const attachments: unknown[] = [];
   const notices = {
