@@ -2,11 +2,13 @@ import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { AnnouncementsService } from '../announcements/announcements.service.js';
 import { BudgetsService } from '../budgets/budgets.service.js';
+import { WorkspaceUnlockService } from '../business-access/workspace-unlock.service.js';
 import { dhakaDateOnly, dhakaToday } from '../common/dhaka.js';
 import { MailService } from '../mail/mail.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { ReceivablesPayablesService } from '../receivables-payables/receivables-payables.service.js';
 import { SavingsGoalsService } from '../savings-goals/savings-goals.service.js';
+import type { RequestUser } from '../user-auth/interfaces/request-user.interface.js';
 import { UpdateReminderPreferencesDto } from './dto/update-reminder-preferences.dto.js';
 import { announcementReminders, budgetReminders, categoryNamesBn, loanReminders, savingsReminders, type ReminderDraft } from './reminders.js';
 
@@ -36,14 +38,23 @@ export class UserNotificationsService {
     private readonly savingsGoalsService: SavingsGoalsService,
     private readonly announcementsService: AnnouncementsService,
     private readonly mail: MailService,
+    private readonly unlocks: WorkspaceUnlockService,
   ) {}
 
-  async feed(userId: string) {
+  // A reminder about a PIN-locked workspace keeps its details (a contact's
+  // name, an amount, a goal) out of the bell unless the request carries that
+  // workspace's unlock: only that it is there, and which workspace, show.
+  async feed(user: RequestUser, unlockTokens: string[] = []) {
+    const userId = user.id;
     await this.refresh(userId);
-    const [data, unreadCount] = await Promise.all([
+    const [rows, unreadCount] = await Promise.all([
       this.prisma.userNotification.findMany({ where: { userId }, orderBy: { createdAt: 'desc' }, take: FEED_SIZE, select: FEED_SELECT }),
       this.prisma.userNotification.count({ where: { userId, readAt: null } }),
     ]);
+    const businessIds = [...new Set(rows.flatMap((row) => (row.businessId ? [row.businessId] : [])))];
+    const workspaces = businessIds.length ? await this.prisma.business.findMany({ where: { id: { in: businessIds }, pinHash: { not: null } }, select: { id: true, pinHash: true } }) : [];
+    const shut = new Set(workspaces.filter((workspace) => this.unlocks.isShut(user, workspace, unlockTokens)).map((workspace) => workspace.id));
+    const data = rows.map((row) => (row.businessId && shut.has(row.businessId) ? { ...row, data: {}, locked: true } : row));
     return { data, unreadCount };
   }
 

@@ -1,4 +1,5 @@
-import { Body, Controller, Get, HttpCode, Param, ParseUUIDPipe, Post, Put, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Headers, HttpCode, Param, ParseUUIDPipe, Post, Put, UseGuards } from '@nestjs/common';
+import { unlockTokens, WORKSPACE_UNLOCK_HEADER } from '../business-access/workspace-unlock.service.js';
 import { CurrentUser } from '../user-auth/decorators/current-user.decorator.js';
 import { UserAuthGuard } from '../user-auth/guards/user-auth.guard.js';
 import type { RequestUser } from '../user-auth/interfaces/request-user.interface.js';
@@ -11,9 +12,11 @@ import { UserNotificationsService } from './user-notifications.service.js';
 export class UserNotificationsController {
   constructor(private readonly service: UserNotificationsService) {}
 
+  // The unlocks of PIN-locked workspaces come comma-separated: without one,
+  // that workspace's reminders come back with their details left out.
   @Get()
-  feed(@CurrentUser() user: RequestUser) {
-    return this.service.feed(user.id);
+  feed(@CurrentUser() user: RequestUser, @Headers(WORKSPACE_UNLOCK_HEADER) unlock: string | undefined) {
+    return this.service.feed(user, unlockTokens(unlock));
   }
 
   @Get('preferences')
