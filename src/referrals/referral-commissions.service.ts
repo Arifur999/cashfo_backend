@@ -1,6 +1,6 @@
 import { Injectable, Logger, type OnModuleInit } from '@nestjs/common';
 import { BillingCycle, Prisma, type Payment } from '@prisma/client';
-import { BillingHooks } from '../billing/billing-hooks.js';
+import { BillingHooks, type AfterCommit } from '../billing/billing-hooks.js';
 import { isPaidStatus } from '../billing/periods.js';
 import { fromPaisa, toPaisa } from '../billing/pricing.js';
 import { SubscriptionsService } from '../billing/subscriptions.service.js';
@@ -8,7 +8,7 @@ import { HousekeepingScheduler } from '../housekeeping/housekeeping.scheduler.js
 import { PrismaService } from '../prisma/prisma.service.js';
 import { SettingsService } from '../settings/settings.service.js';
 import { money, ReferralNotices } from './referral-notices.js';
-import { friendPaidOutcome, friendRefundedOutcome } from './referral-rules.js';
+import { friendPaidOutcome, friendRefundedOutcome, isBlockedSignup } from './referral-rules.js';
 
 const FIVE_MINUTES = 5 * 60 * 1000;
 // How many commissions one maturing run moves.
@@ -16,14 +16,14 @@ const MATURE_BATCH = 200;
 
 // Takes the referrer's lock inside the payment's own transaction: the same
 // key (and hashtext) as TransactionsService.withLocks(['referrals:<id>']),
-// so a commission never changes under a withdrawal being counted.
+// so a commission never changes under a withdrawal being made or paid.
 const lockReferrer = (tx: Prisma.TransactionClient, referrerId: string) => tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`referrals:${referrerId}`}))`;
 
-// Commissions: made when an invited friend's first payment is confirmed,
-// cut back or cancelled when it is refunded inside the window, and moved
-// to AVAILABLE when the window ends. The first two run inside billing's
-// own transaction (BillingHooks); maturing runs on every referral read and
-// on the housekeeping timer.
+// Commissions: one for every confirmed payment of an invited friend's
+// (renewals too), cut back or reversed when that payment is refunded
+// inside its window, and moved to AVAILABLE when the window ends. The
+// first two run inside billing's own transaction (BillingHooks); maturing
+// runs on every referral read and on the housekeeping timer.
 @Injectable()
 export class ReferralCommissionsService implements OnModuleInit {
   private readonly logger = new Logger(ReferralCommissionsService.name);
@@ -43,24 +43,27 @@ export class ReferralCommissionsService implements OnModuleInit {
     this.housekeeping.register({ name: 'referral-commission-maturing', everyMs: FIVE_MINUTES, run: (now) => this.matureDue(now) });
   }
 
-  // The friend's first confirmed payment. A referral that isn't JOINED
-  // (an old sign-up bonus, one already decided, or a later payment) is
-  // left alone.
-  async onFriendPaid(payment: Payment, tx: Prisma.TransactionClient) {
+  // A confirmed payment of an invited friend's: the referrer's share, or a
+  // CANCELLED line saying why there is none. A sign-up that never counted
+  // (self-referral, monthly limit) earns nothing at all. The email waits
+  // for the commit.
+  async onFriendPaid(payment: Payment, tx: Prisma.TransactionClient): Promise<AfterCommit | void> {
     if (!payment.userId) return;
-    const found = await tx.referral.findUnique({ where: { referredUserId: payment.userId }, select: { id: true, referrerId: true, status: true } });
-    if (!found || found.status !== 'JOINED') return;
-    await lockReferrer(tx, found.referrerId);
-    const referral = await tx.referral.findUniqueOrThrow({ where: { id: found.id }, include: { referredUser: { select: { name: true } } } });
-    if (referral.status !== 'JOINED') return;
+    const referral = await tx.referral.findUnique({
+      where: { referredUserId: payment.userId },
+      select: { id: true, referrerId: true, status: true, cancelReason: true, referredUser: { select: { name: true } } },
+    });
+    if (!referral || isBlockedSignup(referral)) return;
+    await lockReferrer(tx, referral.referrerId);
+    if (await tx.referralCommission.findUnique({ where: { paymentId: payment.id }, select: { id: true } })) return;
 
-    const [settings, referrerSub, plan] = await Promise.all([
+    const [settings, referrerSub, plan, earlier] = await Promise.all([
       this.settingsService.getReferralSettings(tx),
       this.subscriptions.ensure(referral.referrerId, tx),
       tx.subscriptionPlan.findUnique({ where: { id: payment.planId }, select: { name: true } }),
+      tx.referralCommission.count({ where: { referralId: referral.id, kind: { not: 'BONUS' } } }),
     ]);
     const now = new Date();
-    const paidAt = payment.paidAt ?? now;
     const outcome = friendPaidOutcome({
       programLive: settings.programLive,
       whoCanEarn: settings.whoCanEarn,
@@ -68,117 +71,134 @@ export class ReferralCommissionsService implements OnModuleInit {
       paidPaisa: toPaisa(payment.amount),
       commissionPct: settings.commissionPct,
       holdDays: settings.holdDays,
-      paidAt,
+      paidAt: payment.paidAt ?? now,
       now,
     });
+    if (outcome.commissionPaisa <= 0) return;
 
-    const common = {
-      paymentId: payment.id,
-      paidAmount: payment.amount,
-      commissionRate: new Prisma.Decimal(settings.commissionPct),
-      commissionAmount: new Prisma.Decimal(fromPaisa(outcome.commissionPaisa)),
+    const renewal = earlier > 0;
+    const commission = await tx.referralCommission.create({
+      data: {
+        referralId: referral.id,
+        referrerId: referral.referrerId,
+        paymentId: payment.id,
+        kind: renewal ? 'RENEWAL' : 'FIRST',
+        paidAmount: payment.amount,
+        rate: new Prisma.Decimal(settings.commissionPct),
+        amount: new Prisma.Decimal(fromPaisa(outcome.commissionPaisa)),
+        status: outcome.status,
+        availableAt: outcome.availableAt,
+        ...(outcome.status === 'CANCELLED' && { cancelReason: outcome.reason, endedAt: now }),
+      },
+    });
+
+    const base = {
+      commissionId: commission.id,
+      referralId: referral.id,
+      friendName: referral.referredUser.name,
+      planName: plan?.name ?? null,
+      amount: money(commission.amount),
+      kind: commission.kind,
     };
-    const data: Prisma.ReferralUncheckedUpdateManyInput =
-      outcome.status === 'CANCELLED'
-        ? { ...common, status: 'CANCELLED', cancelledAt: now, cancelReason: outcome.reason }
-        : { ...common, status: outcome.status, availableAt: outcome.availableAt };
-    const { count } = await tx.referral.updateMany({ where: { id: referral.id, status: 'JOINED' }, data });
-    if (count === 0) return;
-
-    const base = { referralId: referral.id, friendName: referral.referredUser.name, planName: plan?.name ?? null, amount: fromPaisa(outcome.commissionPaisa) };
     if (outcome.status === 'CANCELLED') {
       // Worth telling: they missed it by not being on a paid plan.
       if (outcome.reason === 'REFERRER_NOT_ON_PAID_PLAN') {
         await this.notices.bell(
           referral.referrerId,
           'REFERRAL',
-          `referral:${referral.id}:missed`,
+          `commission:${commission.id}:missed`,
           { event: 'COMMISSION_MISSED', ...base, reason: outcome.reason },
           tx,
         );
       }
       return;
     }
-    await this.notices.bell(
+    const email = await this.notices.commissionEarned(
       referral.referrerId,
-      'REFERRAL',
-      `referral:${referral.id}:pending`,
-      { event: 'COMMISSION_PENDING', ...base, paidAmount: money(payment.amount), availableAt: outcome.availableAt.toISOString() },
+      { id: commission.id, amount: commission.amount, availableAt: commission.availableAt, renewal },
+      referral.referredUser.name,
+      { ...base, paidAmount: money(payment.amount), availableAt: commission.availableAt.toISOString() },
       tx,
     );
     if (outcome.status === 'AVAILABLE') {
-      await this.notices.bell(referral.referrerId, 'REFERRAL', `referral:${referral.id}:available`, { event: 'COMMISSION_AVAILABLE', ...base }, tx);
+      await this.notices.bell(referral.referrerId, 'REFERRAL', `commission:${commission.id}:available`, { event: 'COMMISSION_AVAILABLE', ...base }, tx);
     }
+    return email;
   }
 
-  // A refund of the payment that earned a commission.
+  // A refund of a payment that earned a commission.
   async onFriendRefunded(payment: Payment, tx: Prisma.TransactionClient, refund: { amount: number; full: boolean }) {
-    const found = await tx.referral.findUnique({ where: { paymentId: payment.id }, select: { id: true, referrerId: true } });
+    const found = await tx.referralCommission.findUnique({ where: { paymentId: payment.id }, select: { id: true, referrerId: true } });
     if (!found) return;
     await lockReferrer(tx, found.referrerId);
-    const referral = await tx.referral.findUniqueOrThrow({ where: { id: found.id }, include: { referredUser: { select: { name: true } } } });
+    const commission = await tx.referralCommission.findUniqueOrThrow({
+      where: { id: found.id },
+      include: { referral: { select: { referredUser: { select: { name: true } } } } },
+    });
     const settings = await this.settingsService.getReferralSettings(tx);
     const outcome = friendRefundedOutcome({
-      status: referral.status,
-      availableAt: referral.availableAt,
+      status: commission.status,
+      availableAt: commission.availableAt,
       cancelOnRefund: settings.cancelOnRefund,
-      paidPaisa: toPaisa(referral.paidAmount ?? payment.amount),
+      paidPaisa: toPaisa(commission.paidAmount),
       refundPaisa: Math.round(refund.amount * 100),
       full: refund.full,
-      commissionRatePct: Number(referral.commissionRate ?? settings.commissionPct),
+      commissionRatePct: Number(commission.rate),
       now: new Date(),
     });
     if (!outcome) return;
     if (outcome.action === 'REDUCE') {
-      await tx.referral.updateMany({
-        where: { id: referral.id, status: 'PENDING' },
-        data: { commissionAmount: new Prisma.Decimal(fromPaisa(outcome.commissionPaisa)) },
+      await tx.referralCommission.updateMany({
+        where: { id: commission.id, status: 'ON_HOLD' },
+        data: { amount: new Prisma.Decimal(fromPaisa(outcome.commissionPaisa)) },
       });
       return;
     }
-    const { count } = await tx.referral.updateMany({
-      where: { id: referral.id, status: 'PENDING' },
-      data: { status: 'CANCELLED', cancelledAt: new Date(), cancelReason: 'FRIEND_REFUNDED' },
+    const { count } = await tx.referralCommission.updateMany({
+      where: { id: commission.id, status: 'ON_HOLD' },
+      data: { status: 'REVERSED', cancelReason: 'FRIEND_REFUNDED', endedAt: new Date() },
     });
     if (count === 0) return;
     await this.notices.bell(
-      referral.referrerId,
+      commission.referrerId,
       'REFERRAL',
-      `referral:${referral.id}:cancelled`,
+      `commission:${commission.id}:cancelled`,
       {
         event: 'COMMISSION_CANCELLED',
-        referralId: referral.id,
-        friendName: referral.referredUser.name,
-        amount: money(referral.commissionAmount ?? 0),
+        commissionId: commission.id,
+        referralId: commission.referralId,
+        friendName: commission.referral.referredUser.name,
+        amount: money(commission.amount),
         reason: 'FRIEND_REFUNDED',
       },
       tx,
     );
   }
 
-  // PENDING commissions (and old sign-up bonuses) whose window is over
-  // become AVAILABLE: for one member when their page is read, for everyone
-  // on the timer. Each move is claimed on the row, so a race makes it once.
+  // ON_HOLD commissions whose window is over become AVAILABLE: for one
+  // member when their pages are read, for everyone on the timer. Each move
+  // is claimed on the row, so a race makes it once.
   async matureDue(now = new Date(), referrerId?: string) {
-    const due = await this.prisma.referral.findMany({
-      where: { status: 'PENDING', availableAt: { lte: now }, ...(referrerId && { referrerId }) },
-      select: { id: true, referrerId: true, kind: true, commissionAmount: true, rewardAmount: true, referredUser: { select: { name: true } } },
+    const due = await this.prisma.referralCommission.findMany({
+      where: { status: 'ON_HOLD', availableAt: { lte: now }, ...(referrerId && { referrerId }) },
+      select: { id: true, referrerId: true, referralId: true, kind: true, amount: true, referral: { select: { referredUser: { select: { name: true } } } } },
       orderBy: { availableAt: 'asc' },
       take: MATURE_BATCH,
     });
     for (const row of due) {
       try {
-        const { count } = await this.prisma.referral.updateMany({ where: { id: row.id, status: 'PENDING' }, data: { status: 'AVAILABLE', confirmedAt: now } });
+        const { count } = await this.prisma.referralCommission.updateMany({ where: { id: row.id, status: 'ON_HOLD' }, data: { status: 'AVAILABLE' } });
         if (count === 0) continue;
-        await this.notices.bell(row.referrerId, 'REFERRAL', `referral:${row.id}:available`, {
+        await this.notices.bell(row.referrerId, 'REFERRAL', `commission:${row.id}:available`, {
           event: 'COMMISSION_AVAILABLE',
-          referralId: row.id,
-          friendName: row.referredUser.name,
-          amount: money(row.commissionAmount ?? row.rewardAmount),
+          commissionId: row.id,
+          referralId: row.referralId,
+          friendName: row.referral.referredUser.name,
+          amount: money(row.amount),
           kind: row.kind,
         });
       } catch (error) {
-        this.logger.warn(`Maturing referral ${row.id} failed: ${error instanceof Error ? error.message : String(error)}`);
+        this.logger.warn(`Maturing commission ${row.id} failed: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
   }

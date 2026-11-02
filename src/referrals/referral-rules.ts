@@ -1,10 +1,19 @@
-import type { ReferralStatus } from '@prisma/client';
+import type { CommissionStatus } from '@prisma/client';
 import { commissionPaisa } from './referral-money.js';
 import type { WhoCanEarn } from '../settings/referral-settings.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-export type CancelReason = 'FRIEND_REFUNDED' | 'REFERRER_NOT_ON_PAID_PLAN' | 'PROGRAM_OFF' | 'SELF_REFERRAL' | 'MONTHLY_LIMIT' | 'ADMIN';
+// Why a commission earned nothing (CANCELLED), or was taken back.
+export type CancelReason = 'FRIEND_REFUNDED' | 'REFERRER_NOT_ON_PAID_PLAN' | 'PROGRAM_OFF' | 'ADMIN';
+
+// A sign-up that never counts: the referrer's own phone or email, or past
+// their monthly limit (UserProvisioningService.recordReferral). It earns
+// nothing and gives the friend no discount.
+export const BLOCKED_SIGNUP_REASONS = ['SELF_REFERRAL', 'MONTHLY_LIMIT'] as const;
+
+export const isBlockedSignup = (referral: { status: string; cancelReason: string | null }): boolean =>
+  referral.status === 'CANCELLED' && (BLOCKED_SIGNUP_REASONS as readonly string[]).includes(referral.cancelReason ?? '');
 
 export interface FriendPaidInput {
   programLive: boolean;
@@ -20,25 +29,26 @@ export interface FriendPaidInput {
 }
 
 export type FriendPaidOutcome =
-  { status: 'PENDING' | 'AVAILABLE'; commissionPaisa: number; availableAt: Date } | { status: 'CANCELLED'; commissionPaisa: number; reason: CancelReason };
+  | { status: 'ON_HOLD' | 'AVAILABLE'; commissionPaisa: number; availableAt: Date }
+  | { status: 'CANCELLED'; commissionPaisa: number; availableAt: Date; reason: CancelReason };
 
-// What the friend's first payment does to a JOINED referral: a commission
-// held for the refund window (already AVAILABLE when the window is over,
-// e.g. a hold of 0 days), or nothing because the program was off or the
-// referrer wasn't on a paid plan.
+// What one payment of an invited friend's earns the referrer: a share held
+// for the refund window (already AVAILABLE when the window is over, e.g. a
+// hold of 0 days), or nothing because the program was off or the referrer
+// wasn't on a paid plan.
 export function friendPaidOutcome(input: FriendPaidInput): FriendPaidOutcome {
   const commission = commissionPaisa(input.paidPaisa, input.commissionPct);
-  if (!input.programLive) return { status: 'CANCELLED', commissionPaisa: commission, reason: 'PROGRAM_OFF' };
-  if (input.whoCanEarn === 'PAID_PLAN' && !input.referrerOnPaidPlan) {
-    return { status: 'CANCELLED', commissionPaisa: commission, reason: 'REFERRER_NOT_ON_PAID_PLAN' };
-  }
   const availableAt = new Date(input.paidAt.getTime() + Math.max(0, input.holdDays) * DAY_MS);
-  return { status: availableAt <= input.now ? 'AVAILABLE' : 'PENDING', commissionPaisa: commission, availableAt };
+  if (!input.programLive) return { status: 'CANCELLED', commissionPaisa: commission, availableAt, reason: 'PROGRAM_OFF' };
+  if (input.whoCanEarn === 'PAID_PLAN' && !input.referrerOnPaidPlan) {
+    return { status: 'CANCELLED', commissionPaisa: commission, availableAt, reason: 'REFERRER_NOT_ON_PAID_PLAN' };
+  }
+  return { status: availableAt <= input.now ? 'AVAILABLE' : 'ON_HOLD', commissionPaisa: commission, availableAt };
 }
 
 export interface FriendRefundedInput {
-  status: ReferralStatus;
-  availableAt: Date | null;
+  status: CommissionStatus;
+  availableAt: Date;
   cancelOnRefund: boolean;
   paidPaisa: number;
   refundPaisa: number;
@@ -47,27 +57,32 @@ export interface FriendRefundedInput {
   now: Date;
 }
 
-export type FriendRefundedOutcome = { action: 'CANCEL' } | { action: 'REDUCE'; commissionPaisa: number } | null;
+export type FriendRefundedOutcome = { action: 'REVERSE' } | { action: 'REDUCE'; commissionPaisa: number } | null;
 
-// A refund of the friend's payment inside the refund window: a full one
-// cancels the commission; a partial one leaves the commission on what was
-// kept. Once the window is over (or with the setting off) nothing changes;
-// the admin's payout checks show the refund instead.
+// A refund of the payment inside its refund window: a full one reverses
+// the commission; a partial one leaves the commission on what was kept.
+// Once the window is over (or with the setting off) nothing changes; the
+// payout desk shows the refund on that line instead.
 export function friendRefundedOutcome(input: FriendRefundedInput): FriendRefundedOutcome {
-  if (!input.cancelOnRefund || input.status !== 'PENDING') return null;
-  if (input.availableAt && input.availableAt <= input.now) return null;
+  if (!input.cancelOnRefund || input.status !== 'ON_HOLD') return null;
+  if (input.availableAt <= input.now) return null;
   const kept = Math.max(0, input.paidPaisa - input.refundPaisa);
-  if (input.full || kept === 0) return { action: 'CANCEL' };
+  if (input.full || kept === 0) return { action: 'REVERSE' };
   const reduced = commissionPaisa(kept, input.commissionRatePct);
-  return reduced > 0 ? { action: 'REDUCE', commissionPaisa: reduced } : { action: 'CANCEL' };
+  return reduced > 0 ? { action: 'REDUCE', commissionPaisa: reduced } : { action: 'REVERSE' };
 }
 
-// Which tab of "Friends who joined with your link" a friend falls under.
-export type FriendFilter = 'BOUGHT' | 'NOT_YET' | 'REFUNDED' | 'OTHER';
+// How an invited friend stands (Referrals > Referred users):
+//   PAYING    on a paid plan now
+//   STOPPED   paid before, not now
+//   REFUNDED  paid, and every payment was refunded
+//   FREE      never paid
+//   BLOCKED   a sign-up that doesn't count (self-referral, monthly limit)
+export type FriendStanding = 'PAYING' | 'STOPPED' | 'REFUNDED' | 'FREE' | 'BLOCKED';
 
-export function friendFilterOf(row: { status: ReferralStatus; paymentId: string | null; cancelReason: string | null }): FriendFilter {
-  if (row.status === 'JOINED') return 'NOT_YET';
-  if (row.status === 'CANCELLED' && row.cancelReason === 'FRIEND_REFUNDED') return 'REFUNDED';
-  if (row.paymentId) return 'BOUGHT';
-  return 'OTHER';
+export function friendStanding(input: { blocked: boolean; onPaidPlan: boolean; paidCount: number; refundedCount: number }): FriendStanding {
+  if (input.blocked) return 'BLOCKED';
+  if (input.onPaidPlan) return 'PAYING';
+  if (input.paidCount === 0) return input.refundedCount > 0 ? 'REFUNDED' : 'FREE';
+  return 'STOPPED';
 }

@@ -1,4 +1,4 @@
-import type { PayoutMethodType, PayoutStatus, ReferralStatus } from '@prisma/client';
+import type { PayoutMethodType, PayoutStatus } from '@prisma/client';
 import { dhakaDateKey } from '../common/dhaka.js';
 
 // Referral money is worked out in paisa (whole numbers), like billing's
@@ -14,120 +14,10 @@ export function commissionPaisa(paidPaisa: number, ratePct: number): number {
   return Math.floor((paidPaisa * rateBasis) / 1_000_000) * 100;
 }
 
-// One commission (or old sign-up bonus) as the balance sees it.
-export interface CommissionEntry {
-  id: string;
-  status: ReferralStatus;
-  commissionPaisa: number;
-  paidOutPaisa: number;
-  availableAt: Date | null;
-  createdAt: Date;
-}
-
-export interface PayoutEntry {
-  id: string;
-  number: number;
-  status: PayoutStatus;
-  amountPaisa: number;
-  createdAt: Date;
-}
-
-export interface Balances {
-  // What the member can ask for now: available commissions not yet paid
-  // out, less what open requests have set aside.
-  availablePaisa: number;
-  // Set aside by REQUESTED and APPROVED requests.
-  reservedPaisa: number;
-  // Commissions still inside the refund window.
-  pendingPaisa: number;
-  pendingNextAt: Date | null;
-  // Paid out so far (payouts and old in-app withdrawals).
-  paidOutPaisa: number;
-  // available + reserved + paid out.
-  totalEarnedPaisa: number;
-}
-
 export const OPEN_PAYOUT_STATUSES: readonly PayoutStatus[] = ['REQUESTED', 'APPROVED'];
 
-const remainingOf = (row: CommissionEntry): number => Math.max(0, row.commissionPaisa - row.paidOutPaisa);
-
-export function referralBalances(rows: CommissionEntry[], payouts: Pick<PayoutEntry, 'status' | 'amountPaisa'>[]): Balances {
-  let gross = 0;
-  let pending = 0;
-  let paidOut = 0;
-  let pendingNextAt: Date | null = null;
-  for (const row of rows) {
-    if (row.status === 'AVAILABLE') gross += remainingOf(row);
-    if (row.status === 'AVAILABLE' || row.status === 'PAID_OUT') paidOut += Math.min(row.paidOutPaisa, row.commissionPaisa);
-    if (row.status === 'PENDING') {
-      pending += row.commissionPaisa;
-      if (row.availableAt && (!pendingNextAt || row.availableAt < pendingNextAt)) pendingNextAt = row.availableAt;
-    }
-  }
-  const reserved = payouts.filter((p) => OPEN_PAYOUT_STATUSES.includes(p.status)).reduce((sum, p) => sum + p.amountPaisa, 0);
-  const available = Math.max(0, gross - reserved);
-  return {
-    availablePaisa: available,
-    reservedPaisa: reserved,
-    pendingPaisa: pending,
-    pendingNextAt,
-    paidOutPaisa: paidOut,
-    totalEarnedPaisa: available + reserved + paidOut,
-  };
-}
-
-// The order money leaves the balance: the oldest available first.
-export function fifoOrder<T extends CommissionEntry>(rows: T[]): T[] {
-  const time = (date: Date | null) => date?.getTime() ?? 0;
-  return rows
-    .filter((row) => row.status === 'AVAILABLE' && remainingOf(row) > 0)
-    .sort((a, b) => time(a.availableAt) - time(b.availableAt) || a.createdAt.getTime() - b.createdAt.getTime() || a.id.localeCompare(b.id));
-}
-
-export interface Allocation {
-  referralId: string;
-  paisa: number;
-  // The commission is fully paid out after this.
-  closes: boolean;
-}
-
-// Takes `amountPaisa` from the available commissions, oldest first. Null
-// when they don't hold that much.
-export function allocateFifo(rows: CommissionEntry[], amountPaisa: number): Allocation[] | null {
-  const out: Allocation[] = [];
-  let left = amountPaisa;
-  for (const row of fifoOrder(rows)) {
-    if (left <= 0) break;
-    const remaining = remainingOf(row);
-    const take = Math.min(remaining, left);
-    out.push({ referralId: row.id, paisa: take, closes: take === remaining });
-    left -= take;
-  }
-  return left > 0 ? null : out;
-}
-
-// Which commissions an open request is expected to take, if the requests
-// before it (by number) are paid first. For the admin's "why this member
-// is owed this" before Mark paid records the real allocation.
-export function projectBacking(rows: CommissionEntry[], openPayouts: Pick<PayoutEntry, 'id' | 'number' | 'amountPaisa'>[], payoutId: string): Allocation[] {
-  const queue = fifoOrder(rows).map((row) => ({ id: row.id, left: remainingOf(row) }));
-  const ordered = [...openPayouts].sort((a, b) => a.number - b.number);
-  let index = 0;
-  for (const payout of ordered) {
-    let need = payout.amountPaisa;
-    const taken: Allocation[] = [];
-    while (need > 0 && index < queue.length) {
-      const slot = queue[index];
-      const take = Math.min(slot.left, need);
-      if (take > 0) taken.push({ referralId: slot.id, paisa: take, closes: take === slot.left });
-      slot.left -= take;
-      need -= take;
-      if (slot.left === 0) index++;
-    }
-    if (payout.id === payoutId) return taken;
-  }
-  return [];
-}
+// Most commission lines one withdrawal can hold.
+export const MAX_WITHDRAWAL_LINES = 500;
 
 // --- Dates ---
 
@@ -234,13 +124,4 @@ export function maskPhone(phone: string): string {
   const digits = normaliseMobile(phone);
   if (digits.length < 8) return '•••';
   return `${digits.slice(0, 5)}-•••${digits.slice(-3)}`;
-}
-
-// The statuses the old referral page knew, for GET /api/referrals'
-// recentReferrals (kept as it was): not yet earned, earned, withdrawn.
-export function legacyStatusOf(status: ReferralStatus): 'PENDING' | 'CONFIRMED' | 'WITHDRAWN' | 'CANCELLED' {
-  if (status === 'AVAILABLE' || status === 'CONFIRMED') return 'CONFIRMED';
-  if (status === 'PAID_OUT' || status === 'WITHDRAWN') return 'WITHDRAWN';
-  if (status === 'CANCELLED') return 'CANCELLED';
-  return 'PENDING';
 }

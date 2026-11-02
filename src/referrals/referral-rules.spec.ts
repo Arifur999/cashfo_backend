@@ -1,4 +1,4 @@
-import { friendFilterOf, friendPaidOutcome, friendRefundedOutcome, type FriendPaidInput } from './referral-rules.js';
+import { friendPaidOutcome, friendRefundedOutcome, friendStanding, isBlockedSignup, type FriendPaidInput } from './referral-rules.js';
 
 const PAID_AT = new Date('2026-09-28T06:00:00.000Z');
 const paid = (over: Partial<FriendPaidInput> = {}): FriendPaidInput => ({
@@ -15,7 +15,7 @@ const paid = (over: Partial<FriendPaidInput> = {}): FriendPaidInput => ({
 
 describe('friendPaidOutcome', () => {
   it('holds the commission for the refund window', () => {
-    expect(friendPaidOutcome(paid())).toEqual({ status: 'PENDING', commissionPaisa: 54_000, availableAt: new Date('2026-10-05T06:00:00.000Z') });
+    expect(friendPaidOutcome(paid())).toEqual({ status: 'ON_HOLD', commissionPaisa: 54_000, availableAt: new Date('2026-10-05T06:00:00.000Z') });
   });
 
   it('is available at once when the window is already over (no hold days)', () => {
@@ -26,12 +26,13 @@ describe('friendPaidOutcome', () => {
     expect(friendPaidOutcome(paid({ referrerOnPaidPlan: false }))).toEqual({
       status: 'CANCELLED',
       commissionPaisa: 54_000,
+      availableAt: new Date('2026-10-05T06:00:00.000Z'),
       reason: 'REFERRER_NOT_ON_PAID_PLAN',
     });
   });
 
   it('lets everyone earn when the program says so', () => {
-    expect(friendPaidOutcome(paid({ referrerOnPaidPlan: false, whoCanEarn: 'EVERYONE' })).status).toBe('PENDING');
+    expect(friendPaidOutcome(paid({ referrerOnPaidPlan: false, whoCanEarn: 'EVERYONE' })).status).toBe('ON_HOLD');
   });
 
   it('earns nothing while the program is off', () => {
@@ -41,7 +42,7 @@ describe('friendPaidOutcome', () => {
 
 describe('friendRefundedOutcome', () => {
   const base = {
-    status: 'PENDING' as const,
+    status: 'ON_HOLD' as const,
     availableAt: new Date('2026-10-05T06:00:00.000Z'),
     cancelOnRefund: true,
     paidPaisa: 270_000,
@@ -51,8 +52,8 @@ describe('friendRefundedOutcome', () => {
     now: new Date('2026-10-01T06:00:00.000Z'),
   };
 
-  it('cancels the commission on a full refund inside the window', () => {
-    expect(friendRefundedOutcome(base)).toEqual({ action: 'CANCEL' });
+  it('reverses the commission on a full refund inside the window', () => {
+    expect(friendRefundedOutcome(base)).toEqual({ action: 'REVERSE' });
   });
 
   it('keeps a commission on what was kept after a partial refund', () => {
@@ -66,14 +67,24 @@ describe('friendRefundedOutcome', () => {
   });
 });
 
-describe('friendFilterOf', () => {
-  it('sorts friends into the page tabs', () => {
-    expect(friendFilterOf({ status: 'JOINED', paymentId: null, cancelReason: null })).toBe('NOT_YET');
-    expect(friendFilterOf({ status: 'PENDING', paymentId: 'p', cancelReason: null })).toBe('BOUGHT');
-    expect(friendFilterOf({ status: 'PAID_OUT', paymentId: 'p', cancelReason: null })).toBe('BOUGHT');
-    expect(friendFilterOf({ status: 'CANCELLED', paymentId: 'p', cancelReason: 'REFERRER_NOT_ON_PAID_PLAN' })).toBe('BOUGHT');
-    expect(friendFilterOf({ status: 'CANCELLED', paymentId: 'p', cancelReason: 'FRIEND_REFUNDED' })).toBe('REFUNDED');
-    expect(friendFilterOf({ status: 'AVAILABLE', paymentId: null, cancelReason: null })).toBe('OTHER');
-    expect(friendFilterOf({ status: 'CANCELLED', paymentId: null, cancelReason: 'SELF_REFERRAL' })).toBe('OTHER');
+describe('friendStanding', () => {
+  const none = { blocked: false, onPaidPlan: false, paidCount: 0, refundedCount: 0 };
+
+  it('sorts friends by how they stand', () => {
+    expect(friendStanding(none)).toBe('FREE');
+    expect(friendStanding({ ...none, onPaidPlan: true, paidCount: 1 })).toBe('PAYING');
+    expect(friendStanding({ ...none, paidCount: 2 })).toBe('STOPPED');
+    expect(friendStanding({ ...none, refundedCount: 1 })).toBe('REFUNDED');
+    expect(friendStanding({ ...none, blocked: true, onPaidPlan: true })).toBe('BLOCKED');
+  });
+});
+
+describe('isBlockedSignup', () => {
+  it('blocks only a self-referral or a sign-up past the monthly limit', () => {
+    expect(isBlockedSignup({ status: 'CANCELLED', cancelReason: 'SELF_REFERRAL' })).toBe(true);
+    expect(isBlockedSignup({ status: 'CANCELLED', cancelReason: 'MONTHLY_LIMIT' })).toBe(true);
+    // A pre-v9 friend whose first payment was refunded still earns on renewals.
+    expect(isBlockedSignup({ status: 'CANCELLED', cancelReason: 'FRIEND_REFUNDED' })).toBe(false);
+    expect(isBlockedSignup({ status: 'JOINED', cancelReason: null })).toBe(false);
   });
 });
