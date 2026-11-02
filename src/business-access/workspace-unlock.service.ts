@@ -20,6 +20,15 @@ interface UnlockClaims {
   pv: string;
 }
 
+// The unlocks a request carries: the one header, comma-separated when one
+// call covers several workspaces (the group list, the bell, the data
+// download).
+export const unlockTokens = (header: string | string[] | undefined): string[] =>
+  (Array.isArray(header) ? header.join(',') : (header ?? ''))
+    .split(',')
+    .map((token) => token.trim())
+    .filter(Boolean);
+
 export interface WorkspaceUnlock {
   unlockToken: string;
   expiresIn: number;
@@ -51,6 +60,15 @@ export class WorkspaceUnlockService {
       return false;
     }
     return claims.sub === userId && claims.sid === sessionId && claims.bid === businessId && claims.pv === pinVersion(pinHash);
+  }
+
+  // Whether a read across workspaces must keep this one shut: it has a PIN
+  // and none of the unlocks opens it. A super admin's read-only view skips
+  // the PIN, as the membership guard does.
+  isShut(user: { id: string; sessionId: string; impersonatedBy?: string | null }, business: { id: string; pinHash: string | null }, tokens: string[]): boolean {
+    const { pinHash } = business;
+    if (!pinHash || user.impersonatedBy) return false;
+    return !tokens.some((token) => this.opens(token, user.id, user.sessionId, business.id, pinHash));
   }
 
   private secret(): string {

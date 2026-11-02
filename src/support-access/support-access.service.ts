@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import type { Prisma } from '@prisma/client';
 import { createHash, randomInt, timingSafeEqual } from 'node:crypto';
 import { AuthSessionsService } from '../auth/auth-sessions.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
@@ -91,7 +92,15 @@ export class SupportAccessService {
   // 'none' when there is no live code, 'wrong' otherwise -- and the fifth
   // wrong try throws the code away.
   async consume(userId: string, code: string): Promise<ConsumeResult> {
-    const row = await this.prisma.verification.findFirst({
+    // One check at a time per customer: tries sent together each count.
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`support-code:${userId}`}))`;
+      return this.check(tx, userId, code);
+    });
+  }
+
+  private async check(db: Prisma.TransactionClient, userId: string, code: string): Promise<ConsumeResult> {
+    const row = await db.verification.findFirst({
       where: { identifier: supportCodeIdentifier(userId) },
       orderBy: { createdAt: 'desc' },
     });
@@ -102,15 +111,15 @@ export class SupportAccessService {
     if (sameHash(stored.hash, hashOf(code))) {
       // Deleting by id makes it single-use: of two requests racing with the
       // right code, only the one that deletes the row gets in.
-      const { count } = await this.prisma.verification.deleteMany({ where: { id: row.id } });
+      const { count } = await db.verification.deleteMany({ where: { id: row.id } });
       return count === 1 ? 'ok' : 'none';
     }
 
     const tries = stored.tries + 1;
     if (tries >= SUPPORT_CODE_TRIES) {
-      await this.prisma.verification.deleteMany({ where: { id: row.id } });
+      await db.verification.deleteMany({ where: { id: row.id } });
     } else {
-      await this.prisma.verification.updateMany({ where: { id: row.id }, data: { value: JSON.stringify({ ...stored, tries }) } });
+      await db.verification.updateMany({ where: { id: row.id }, data: { value: JSON.stringify({ ...stored, tries }) } });
     }
     return 'wrong';
   }

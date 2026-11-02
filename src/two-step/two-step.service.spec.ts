@@ -92,7 +92,7 @@ const fakePrisma = () => {
     user: table(),
     $transaction: vi.fn(async (fn: (tx: unknown) => unknown) => fn(db)),
   };
-  db.user.rows.push({ id: 'user-1', email: 'nadia@example.com', name: 'Nadia', preferredLanguage: 'EN' });
+  db.user.rows.push({ id: 'user-1', email: 'nadia@example.com', emailVerified: true, name: 'Nadia', preferredLanguage: 'EN' });
   return db;
 };
 
@@ -293,6 +293,12 @@ describe('TwoStepService set-up and turning off', () => {
     const { backupCodes } = await service.enable(user.id, totpAt(secret.replace(/ /g, ''), Date.now()));
     expect(backupCodes).toHaveLength(10);
     expect(prisma.twoFactorBackupCode.rows.every((row) => !backupCodes.includes(row.codeHash as string))).toBe(true);
+  });
+
+  it('needs a verified email before a customer can turn it on', async () => {
+    const { service, prisma } = setup();
+    (prisma as unknown as { user: { rows: Record<string, unknown>[] } }).user.rows[0].emailVerified = false;
+    await expect(service.startSetup(user, 'user', reauth)).rejects.toMatchObject({ response: { reason: 'EMAIL_NOT_VERIFIED' } });
   });
 
   it('wants the password before showing a new secret', async () => {

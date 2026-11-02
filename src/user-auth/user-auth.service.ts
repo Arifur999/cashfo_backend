@@ -388,6 +388,10 @@ export class UserAuthService {
       // The code goes with the link: a double submit uses it once.
       if (codeId && !(await this.codes.consume(tx, codeId))) throw resetRefusal('CODE_USED', CODE_MESSAGES.CODE_USED);
       await this.credentials.set(owner.id, newPassword, tx);
+      // A link from the email proves the address is the owner's. A phone
+      // verified before that may be someone else's -- whoever signed up with
+      // this address first -- and could reset the password again, so it goes.
+      if (!resetToken.codeProven) await tx.user.update({ where: { id: owner.id }, data: emailProvenBy(owner, now) });
       return owner;
     });
 
@@ -401,6 +405,13 @@ export class UserAuthService {
     const defaultBusinessId = await this.provisioning.ensureDefaultWorkspace(user.id);
     return this.signedInResponse(user, sessionId, client, defaultBusinessId, restored);
   }
+}
+
+// What an email-link reset changes beside the password: the email is
+// verified, and a phone verified before the email was is taken off.
+export function emailProvenBy(owner: { emailVerifiedAt: Date | null; phoneVerifiedAt: Date | null }, now: Date) {
+  const phoneBeforeEmail = !!owner.phoneVerifiedAt && (!owner.emailVerifiedAt || owner.phoneVerifiedAt < owner.emailVerifiedAt);
+  return { emailVerified: true, emailVerifiedAt: owner.emailVerifiedAt ?? now, ...(phoneBeforeEmail && { phone: null, phoneVerifiedAt: null }) };
 }
 
 // The reset link a password-reset code was sent for.

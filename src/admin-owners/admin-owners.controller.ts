@@ -105,8 +105,10 @@ export class AdminOwnersController {
     return this.adminOwnersService.activate(userId, admin.id, req.ip);
   }
 
-  // The roles that can suspend a customer can also let one back in.
-  @Roles(AdminRole.SUPER_ADMIN, AdminRole.SUPPORT_ADMIN)
+  // A temporary password opens the whole account, unlike "View as
+  // customer" (read-only, and only with the customer's code): super admins
+  // only. Support sends the customer to Forgot password instead.
+  @Roles(AdminRole.SUPER_ADMIN)
   @Post(':userId/reset-password')
   resetPassword(@Param('userId') userId: string, @CurrentAdmin() admin: RequestAdminUser, @Req() req: Request) {
     return this.adminOwnersService.resetPassword(userId, admin.id, req.ip);

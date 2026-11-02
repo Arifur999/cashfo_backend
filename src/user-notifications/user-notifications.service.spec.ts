@@ -1,5 +1,7 @@
 import { UserNotificationsService } from './user-notifications.service.js';
 
+const user = { id: 'u1', sessionId: 's1' } as never;
+
 type Switches = { remindBudget: boolean; remindLoans: boolean; remindSavings: boolean };
 
 const setup = ({
@@ -35,6 +37,8 @@ const setup = ({
     }),
   };
   const announcements = { forCustomer: vi.fn().mockResolvedValue([]) };
+  // A workspace with a PIN stays shut: no unlock comes with these reads.
+  const unlocks = { isShut: vi.fn((_user: unknown, workspace: { pinHash: string | null }) => !!workspace.pinHash) };
   const service = new UserNotificationsService(
     prisma as never,
     budgets as never,
@@ -42,14 +46,15 @@ const setup = ({
     {} as never,
     announcements as never,
     { configured: false } as never,
+    unlocks as never,
   );
-  return { service, prisma, budgets };
+  return { service, prisma, budgets, unlocks };
 };
 
 describe('UserNotificationsService budget reminders', () => {
   it("gives each one its category's Bangla name from the default expense categories, or null", async () => {
     const { service, prisma } = setup();
-    await service.feed('u1');
+    await service.feed(user);
 
     expect(prisma.defaultCategory.findMany).toHaveBeenCalledWith({
       where: { type: 'EXPENSE' },
@@ -71,18 +76,18 @@ describe('UserNotificationsService budget reminders', () => {
         { id: 'b2', type: 'BUSINESS', planId: null },
       ],
     });
-    await service.feed('u1');
+    await service.feed(user);
     expect(budgets.getOverview).toHaveBeenCalledTimes(2);
     expect(prisma.defaultCategory.findMany).toHaveBeenCalledTimes(1);
   });
 
   it('reads no names with budget reminders off, or with only group workspaces', async () => {
     const off = setup({ switches: { remindBudget: false, remindLoans: false, remindSavings: false } });
-    await off.service.feed('u1');
+    await off.service.feed(user);
     expect(off.prisma.defaultCategory.findMany).not.toHaveBeenCalled();
 
     const groupsOnly = setup({ workspaces: [{ id: 'g1', type: 'GROUP', planId: null }] });
-    await groupsOnly.service.feed('u1');
+    await groupsOnly.service.feed(user);
     expect(groupsOnly.prisma.defaultCategory.findMany).not.toHaveBeenCalled();
     expect(groupsOnly.budgets.getOverview).not.toHaveBeenCalled();
 
@@ -90,5 +95,21 @@ describe('UserNotificationsService budget reminders', () => {
     // after them happened.
     expect(off.prisma.userNotification.deleteMany).toHaveBeenCalled();
     expect(groupsOnly.prisma.userNotification.deleteMany).toHaveBeenCalled();
+  });
+});
+
+describe('UserNotificationsService and PIN-locked workspaces', () => {
+  it("leaves a locked workspace's reminder details out of the bell, keeping the rest", async () => {
+    const { service, prisma } = setup({ switches: { remindBudget: false, remindLoans: false, remindSavings: false } });
+    const loan = { id: 'n1', businessId: 'locked', type: 'LOAN_DUE', data: { name: 'Islami Bank', amount: '5000.00' }, readAt: null, createdAt: new Date() };
+    const budget = { id: 'n2', businessId: 'open', type: 'BUDGET', data: { category: 'Food' }, readAt: null, createdAt: new Date() };
+    const news = { id: 'n3', businessId: null, type: 'ANNOUNCEMENT', data: { title: 'Hello' }, readAt: null, createdAt: new Date() };
+    prisma.userNotification.findMany.mockResolvedValue([loan, budget, news]);
+    prisma.business.findMany.mockResolvedValueOnce([]).mockResolvedValueOnce([{ id: 'locked', pinHash: 'hash' }]);
+
+    const { data } = await service.feed(user);
+
+    expect(data).toEqual([{ ...loan, data: {}, locked: true }, budget, news]);
+    expect(prisma.business.findMany).toHaveBeenLastCalledWith({ where: { id: { in: ['locked', 'open'] }, pinHash: { not: null } }, select: { id: true, pinHash: true } });
   });
 });
