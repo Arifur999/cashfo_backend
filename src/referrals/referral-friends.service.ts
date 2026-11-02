@@ -7,7 +7,8 @@ import { SettingsService } from '../settings/settings.service.js';
 import type { FriendsQueryDto } from './dto/referral-pages.dto.js';
 import { EARNED_STATUSES, FRIEND_STANDINGS, standingWhere } from './referral-friends.js';
 import { MAIN_TAG } from './referral-links.service.js';
-import { displayPayoutId, isoWeekKey } from './referral-money.js';
+import { EARNING_SELECT, earningView } from './referral-earnings.service.js';
+import { isoWeekKey } from './referral-money.js';
 import { ReferralNotices } from './referral-notices.js';
 import { friendStanding, isBlockedSignup } from './referral-rules.js';
 
@@ -70,36 +71,9 @@ export class ReferralFriendsService {
     if (!row) throw new NotFoundException('Friend not found');
     const [[view], lines] = await Promise.all([
       this.views([row]),
-      this.prisma.referralCommission.findMany({
-        where: { referralId },
-        orderBy: { createdAt: 'desc' },
-        select: {
-          id: true,
-          kind: true,
-          status: true,
-          paidAmount: true,
-          amount: true,
-          availableAt: true,
-          createdAt: true,
-          payment: { select: { paidAt: true, plan: { select: { name: true } } } },
-          payout: { select: { number: true } },
-        },
-      }),
+      this.prisma.referralCommission.findMany({ where: { referralId }, orderBy: [{ createdAt: 'desc' }, { id: 'asc' }], select: EARNING_SELECT }),
     ]);
-    return {
-      ...view,
-      payments: lines.map((line) => ({
-        id: line.id,
-        paidAt: line.payment?.paidAt ?? line.createdAt,
-        planName: line.payment?.plan.name ?? null,
-        kind: line.kind,
-        paidAmount: fromPaisa(toPaisa(line.paidAmount)),
-        amount: fromPaisa(toPaisa(line.amount)),
-        status: line.status,
-        availableAt: line.availableAt,
-        payoutDisplayId: line.payout ? displayPayoutId(line.payout.number) : null,
-      })),
-    };
+    return { ...view, payments: lines.map(earningView) };
   }
 
   // "Send a reminder" to friends who joined but haven't bought: a row in
