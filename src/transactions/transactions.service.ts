@@ -581,6 +581,8 @@ export class TransactionsService {
   // `standing` is how many still stand (neither voided nor a reversal);
   // `totals` sums each standing transaction's debit side (its amount), so a
   // voided entry and its reversal both drop out, as in every other total.
+  // For transfers, `charges` adds up the charges paid with the standing ones
+  // (each its own expense, tied to its transfer).
   async summarizeTransactions(businessId: string, filters: ListTransactionsQueryDto) {
     const where = this.listWhere(businessId, filters);
     // AND rather than a spread, so a status or type the visitor filtered on
@@ -601,7 +603,25 @@ export class TransactionsService {
     ]);
 
     const money = (sum: { _sum: { amount: Prisma.Decimal | null } }) => new Prisma.Decimal(sum._sum.amount ?? 0).toFixed(2);
-    return { count, voided, standing, totals: { INCOME: money(income), EXPENSE: money(expense), TRANSFER: money(transfer) } };
+    const charges = filters.transactionType === 'TRANSFER' ? await this.chargesOfStanding(where) : null;
+    return {
+      count,
+      voided,
+      standing,
+      totals: { INCOME: money(income), EXPENSE: money(expense), TRANSFER: money(transfer) },
+      ...(charges !== null && { charges }),
+    };
+  }
+
+  // What the standing transactions `where` matches paid in charges.
+  private async chargesOfStanding(where: Prisma.TransactionWhereInput): Promise<string> {
+    const charged = await this.prisma.transaction.findMany({ where: { AND: [where, STANDING_TRANSACTION] }, select: { id: true } });
+    if (charged.length === 0) return '0.00';
+    const sum = await this.prisma.transactionEntry.aggregate({
+      where: { entryType: EntryType.DEBIT, transaction: { ...STANDING_TRANSACTION, chargeForId: { in: charged.map((row) => row.id) } } },
+      _sum: { amount: true },
+    });
+    return new Prisma.Decimal(sum._sum.amount ?? 0).toFixed(2);
   }
 
   // One filter for the list and its summary, so the figures always describe
@@ -630,11 +650,16 @@ export class TransactionsService {
       // Quick entries keep what the customer typed on the entry (its note
       // and category), not on the transaction's description.
       const contains = { contains: filters.search, mode: 'insensitive' } as const;
+      // An account's name finds what moved through it, and a figure (with or
+      // without its grouping commas) finds that amount.
+      const figure = filters.search.replace(/,/g, '').trim();
       where.OR = [
         { description: contains },
         { referenceNo: contains },
         { entries: { some: { note: contains } } },
         { entries: { some: { categoryId: contains } } },
+        { entries: { some: { account: { name: contains } } } },
+        ...(/^\d{1,12}(\.\d{1,2})?$/.test(figure) ? [{ entries: { some: { amount: new Prisma.Decimal(figure) } } }] : []),
       ];
     }
     return where;
