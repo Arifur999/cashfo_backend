@@ -1,7 +1,8 @@
-import { PayoutMethodType, PayoutStatus, ReferralStatus } from '@prisma/client';
+import { CommissionStatus, PayoutMethodType, PayoutStatus } from '@prisma/client';
 import { Transform, Type } from 'class-transformer';
-import { IsBoolean, IsIn, IsInt, IsISO8601, IsNotEmpty, IsString, Max, MaxLength, Min, MinLength, ValidateIf } from 'class-validator';
+import { ArrayMaxSize, IsArray, IsBoolean, IsIn, IsInt, IsISO8601, IsNotEmpty, IsString, Max, MaxLength, Min, MinLength, ValidateIf } from 'class-validator';
 import { IsMoney, trim, whenSent } from '../../common/dto.js';
+import { MAX_WITHDRAWAL_LINES } from '../referral-money.js';
 
 class AdminPageQuery {
   @ValidateIf(whenSent)
@@ -34,10 +35,20 @@ export class ListPayoutsQueryDto extends AdminPageQuery {
   method?: PayoutMethodType;
 }
 
-export class ListReferralsQueryDto extends AdminPageQuery {
+export class ListCommissionsQueryDto extends AdminPageQuery {
   @ValidateIf(whenSent)
-  @IsIn(Object.values(ReferralStatus))
-  status?: ReferralStatus;
+  @IsIn(Object.values(CommissionStatus))
+  status?: CommissionStatus;
+}
+
+export class ApprovePayoutDto {
+  // Lines of the request to hold back for a second look (UNDER_CHECK).
+  @ValidateIf(whenSent)
+  @IsArray()
+  @ArrayMaxSize(MAX_WITHDRAWAL_LINES)
+  @IsString({ each: true })
+  @MaxLength(64, { each: true })
+  excludedIds?: string[];
 }
 
 export class ReasonDto {

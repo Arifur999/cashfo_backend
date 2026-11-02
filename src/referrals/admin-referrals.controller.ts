@@ -9,7 +9,7 @@ import { AdminRole } from '../common/roles.js';
 import { UpdateReferralSettingsDto } from '../settings/dto/update-referral-settings.dto.js';
 import { SettingsService } from '../settings/settings.service.js';
 import { AdminReferralsService } from './admin-referrals.service.js';
-import { ListPayoutsQueryDto, ListReferralsQueryDto, MarkPayoutPaidDto, ReasonDto } from './dto/admin-referrals.dto.js';
+import { ApprovePayoutDto, ListCommissionsQueryDto, ListPayoutsQueryDto, MarkPayoutPaidDto, ReasonDto } from './dto/admin-referrals.dto.js';
 
 // Admin > Referrals & Payouts. Any admin may read; money and settings
 // writes are for super and finance admins, and each is audited.
@@ -62,8 +62,8 @@ export class AdminReferralsController {
   @Roles(AdminRole.SUPER_ADMIN, AdminRole.FINANCE_ADMIN)
   @Post('payouts/:id/approve')
   @HttpCode(200)
-  approve(@Param('id') id: string, @CurrentAdmin() admin: RequestAdminUser, @Req() req: Request) {
-    return this.service.approve(id, { adminId: admin.id, ipAddress: req.ip });
+  approve(@Param('id') id: string, @Body() dto: ApprovePayoutDto, @CurrentAdmin() admin: RequestAdminUser, @Req() req: Request) {
+    return this.service.approve(id, dto, { adminId: admin.id, ipAddress: req.ip });
   }
 
   @Roles(AdminRole.SUPER_ADMIN, AdminRole.FINANCE_ADMIN)
@@ -80,17 +80,24 @@ export class AdminReferralsController {
     return this.service.markPaid(id, dto, { adminId: admin.id, ipAddress: req.ip });
   }
 
-  // --- Every referral ---
+  // --- Every commission ---
 
-  @Get()
-  referrals(@Query() query: ListReferralsQueryDto) {
-    return this.service.listReferrals(query);
+  @Get('commissions')
+  commissions(@Query() query: ListCommissionsQueryDto) {
+    return this.service.listCommissions(query);
   }
 
   @Roles(AdminRole.SUPER_ADMIN, AdminRole.FINANCE_ADMIN)
-  @Post(':id/cancel')
+  @Post('commissions/:id/release')
+  @HttpCode(200)
+  release(@Param('id') id: string, @CurrentAdmin() admin: RequestAdminUser, @Req() req: Request) {
+    return this.service.releaseCommission(id, { adminId: admin.id, ipAddress: req.ip });
+  }
+
+  @Roles(AdminRole.SUPER_ADMIN, AdminRole.FINANCE_ADMIN)
+  @Post('commissions/:id/cancel')
   @HttpCode(200)
   cancel(@Param('id') id: string, @Body() dto: ReasonDto, @CurrentAdmin() admin: RequestAdminUser, @Req() req: Request) {
-    return this.service.cancelReferral(id, dto.reason, { adminId: admin.id, ipAddress: req.ip });
+    return this.service.cancelCommission(id, dto.reason, { adminId: admin.id, ipAddress: req.ip });
   }
 }
