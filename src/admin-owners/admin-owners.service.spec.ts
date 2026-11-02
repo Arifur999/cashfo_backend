@@ -1,4 +1,3 @@
-import { NotFoundException } from '@nestjs/common';
 import { AdminOwnersService } from './admin-owners.service.js';
 
 // A live workspace as Prisma includes it, plan and all.
