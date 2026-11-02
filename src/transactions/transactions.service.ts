@@ -327,6 +327,10 @@ export class TransactionsService {
     if (referralPayout > 0) {
       throw new BadRequestException('A referral earnings withdrawal cannot be voided.');
     }
+    const zakat = await client.zakatPayment.findUnique({ where: { transactionId: transaction.id }, select: { id: true } });
+    if (zakat) {
+      throw new BadRequestException('This is zakat you recorded giving. Delete it from the Zakat page.');
+    }
   }
 
   async getTransaction(businessId: string, transactionId: string) {
@@ -355,25 +359,27 @@ export class TransactionsService {
 
   // `voidable` on every transaction the API returns: whether voidTransaction()
   // would accept it -- still POSTED, not itself a reversal, and not a
-  // posting a savings goal, an asset or a referral payout keeps its own
-  // record of. The UI shows Void only where this is true.
+  // posting a savings goal, an asset, a referral payout or zakat given
+  // keeps its own record of. The UI shows Void only where this is true.
   private async withVoidable<T extends { id: string; status: string; reversalOfId: string | null; entries: { account: { accountSubtype: string | null } }[] }>(
     transactions: T[],
   ): Promise<(T & { voidable: boolean })[]> {
     const ids = transactions.map((t) => t.id);
-    const [savingsEntries, assets] =
+    const [savingsEntries, assets, zakat] =
       ids.length === 0
-        ? [[], []]
+        ? [[], [], []]
         : await Promise.all([
             this.prisma.savingsGoalEntry.findMany({ where: { transactionId: { in: ids } }, select: { transactionId: true } }),
             this.prisma.asset.findMany({
               where: { OR: [{ purchaseTransactionId: { in: ids } }, { soldTransactionId: { in: ids } }] },
               select: { purchaseTransactionId: true, soldTransactionId: true },
             }),
+            this.prisma.zakatPayment.findMany({ where: { transactionId: { in: ids } }, select: { transactionId: true } }),
           ]);
     const owned = new Set<string | null>([
       ...savingsEntries.map((e) => e.transactionId),
       ...assets.flatMap((a) => [a.purchaseTransactionId, a.soldTransactionId]),
+      ...zakat.map((z) => z.transactionId),
     ]);
     return transactions.map((t) => ({
       ...t,
