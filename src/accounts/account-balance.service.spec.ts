@@ -4,7 +4,8 @@ import { AccountBalanceService } from './account-balance.service.js';
 import type { LedgerFilters } from './account-balance.service.js';
 import { WalletsOverviewQueryDto } from './dto/wallets-overview-query.dto.js';
 
-type Entry = { id: string; accountId: string; entryType: 'DEBIT' | 'CREDIT'; amount: string; date: string };
+// cancelled: a voided entry, or the reversal that voided one.
+type Entry = { id: string; accountId: string; entryType: 'DEBIT' | 'CREDIT'; amount: string; date: string; cancelled?: boolean };
 type DateFilter = { lt?: Date; gte?: Date; lte?: Date };
 
 // Fixture order is posting order, so it doubles as createdAt.
@@ -26,8 +27,11 @@ const matches = (entry: Entry, where: Record<string, unknown>): boolean =>
   Object.entries(where).every(([key, value]) => {
     if (key === 'accountId' || key === 'entryType') return entry[key] === value;
     if (key === 'transaction') {
-      const { transactionDate, ...rest } = value as { transactionDate?: DateFilter };
+      const { transactionDate, status, reversalOfId, ...rest } = value as { transactionDate?: DateFilter; status?: string; reversalOfId?: null };
       if (Object.keys(rest).length > 0) throw new Error(`The fake ledger does not support ${JSON.stringify(rest)}`);
+      // The standing-only filter asks for POSTED and no reversal together.
+      if ((status === undefined) !== (reversalOfId === undefined)) throw new Error('The fake ledger reads status and reversalOfId together');
+      if (status === 'POSTED' && entry.cancelled) return false;
       return !transactionDate || matchesDate(new Date(entry.date), transactionDate);
     }
     throw new Error(`The fake ledger does not support filtering on ${key}`);
@@ -458,5 +462,27 @@ describe('AccountBalanceService.getLedger filters', () => {
     expect(second.pageOpeningBalance).toBe('700.00');
     expect(second.pageClosingBalance).toBe('654.50');
     expect(second.meta).toEqual({ page: 2, limit: 1, total: 2, totalPages: 2 });
+  });
+});
+
+describe('AccountBalanceService.getLedger standing only', () => {
+  it('works the balances out without a voided entry and its reversal', async () => {
+    const { service } = setup('ASSET', '100.00', [
+      debit('salary', '2026-09-30', '1000'),
+      credit('sent', '2026-10-02', '400', 'acc'),
+      debit('voided', '2026-10-03', '250'),
+      credit('reversal', '2026-10-20', '250'),
+      credit('rent', '2026-10-05', '300'),
+    ].map((entry) => (entry.id === 'voided' || entry.id === 'reversal' ? { ...entry, cancelled: true } : entry)));
+
+    const all = await ledger(service, { dateFrom: '2026-10-01' });
+    expect(all.ids).toEqual(['sent', 'voided', 'rent', 'reversal']);
+
+    const standing = await ledger(service, { dateFrom: '2026-10-01', standingOnly: true });
+    expect(standing.ids).toEqual(['sent', 'rent']);
+    expect(standing.balanceBroughtForward).toBe('1100.00');
+    expect(standing.running).toEqual(['700.00', '400.00']);
+    // The pair nets to zero, so the closing balance is the same either way.
+    expect(standing.closingBalance).toBe(all.closingBalance);
   });
 });

@@ -86,6 +86,13 @@ export class ListTransactionsQueryDto {
   @IsBoolean()
   withLoanBalance?: boolean;
 
+  // Only what still stands: a voided transaction and the reversal that
+  // voided it both drop out (Balance › Transfers, where Delete removes one).
+  @IsOptional()
+  @Transform(({ value }) => (value === 'true' || value === '1' ? true : value === 'false' || value === '0' ? false : value))
+  @IsBoolean()
+  standingOnly?: boolean;
+
   @IsOptional()
   @IsString()
   search?: string;

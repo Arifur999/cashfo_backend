@@ -1,5 +1,5 @@
 import { Transform, Type } from 'class-transformer';
-import { IsIn, IsInt, IsISO8601, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
+import { IsBoolean, IsIn, IsInt, IsISO8601, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
 import { trim } from '../../common/dto.js';
 import { LEDGER_KINDS, type LedgerKind } from '../ledger-kind.js';
 
@@ -34,6 +34,15 @@ export class LedgerQueryDto {
   @IsOptional()
   @IsIn(LEDGER_KINDS)
   kind?: LedgerKind;
+
+  // Work the ledger out from what still stands: a voided entry and its
+  // reversal leave the rows and the balances alike (Balance › Ledger, where
+  // a deleted transfer is gone). They net to zero, so the closing balance is
+  // the same either way.
+  @IsOptional()
+  @Transform(({ value }) => (value === 'true' || value === '1' ? true : value === 'false' || value === '0' ? false : value))
+  @IsBoolean()
+  standingOnly?: boolean;
 
   // A note, a reference, a name or an amount.
   @IsOptional()

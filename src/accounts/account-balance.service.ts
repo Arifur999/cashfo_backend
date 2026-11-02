@@ -17,6 +17,7 @@ export interface LedgerFilters {
   direction?: 'in' | 'out';
   kind?: LedgerKind;
   search?: string;
+  standingOnly?: boolean;
 }
 
 @Injectable()
@@ -116,14 +117,15 @@ export class AccountBalanceService {
     if (filters.dateTo) dateFilter.lte = new Date(filters.dateTo);
     const hasDateFilter = Object.keys(dateFilter).length > 0;
 
+    const standing = filters.standingOnly ? LIVE_TRANSACTION : {};
     const where: Prisma.TransactionEntryWhereInput = {
       accountId,
-      ...(hasDateFilter && { transaction: { transactionDate: dateFilter } }),
+      ...((hasDateFilter || filters.standingOnly) && { transaction: { ...standing, ...(hasDateFilter && { transactionDate: dateFilter }) } }),
     };
 
     const [priorMovement, entries] = await Promise.all([
       filters.dateFrom
-        ? this.netMovement({ accountId, transaction: { transactionDate: { lt: new Date(filters.dateFrom) } } }, debitPositive)
+        ? this.netMovement({ accountId, transaction: { ...standing, transactionDate: { lt: new Date(filters.dateFrom) } } }, debitPositive)
         : new Prisma.Decimal(0),
       this.prisma.transactionEntry.findMany({
         where,

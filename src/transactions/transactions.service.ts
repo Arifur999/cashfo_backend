@@ -423,7 +423,7 @@ export class TransactionsService {
       this.withVoidable(data),
       this.chargesFor(ids),
       filters.withLoanBalance ? this.loanBalancesAfter(businessId, data) : Promise.resolve(new Map<string, string>()),
-      filters.withBalanceAfter ? this.walletBalancesAfter(data, filters.accountId) : Promise.resolve(new Map<string, string>()),
+      filters.withBalanceAfter ? this.walletBalancesAfter(data, filters.accountId, 'auto', undefined, filters.standingOnly) : Promise.resolve(new Map<string, string>()),
     ]);
     // A transfer's two wallets just after it, the sending one after its
     // charge too (the charge is posted right after the transfer).
@@ -431,7 +431,10 @@ export class TransactionsService {
     const chargedAt = new Map<string, Moment>();
     for (const [id, charge] of charges) if (charge.moment) chargedAt.set(id, charge.moment);
     const [fromBalances, toBalances] = transfers.length
-      ? await Promise.all([this.walletBalancesAfter(transfers, undefined, 'from', chargedAt), this.walletBalancesAfter(transfers, undefined, 'to')])
+      ? await Promise.all([
+          this.walletBalancesAfter(transfers, undefined, 'from', chargedAt, filters.standingOnly),
+          this.walletBalancesAfter(transfers, undefined, 'to', undefined, filters.standingOnly),
+        ])
       : [new Map<string, string>(), new Map<string, string>()];
     const withExtras = rows.map((row) => ({
       ...row,
@@ -462,6 +465,8 @@ export class TransactionsService {
     accountId?: string,
     pick: 'auto' | 'from' | 'to' = 'auto',
     at?: Map<string, Moment>,
+    // Leave voided entries and their reversals out, as a standing-only list does.
+    standingOnly = false,
   ): Promise<Map<string, string>> {
     const target = new Map<string, { accountId: string; accountType: AccountType }>();
     for (const row of rows) {
@@ -483,7 +488,7 @@ export class TransactionsService {
     const [accounts, entries] = await Promise.all([
       this.prisma.account.findMany({ where: { id: { in: accountIds } }, select: { id: true, openingBalance: true } }),
       this.prisma.transactionEntry.findMany({
-        where: { accountId: { in: accountIds }, transaction: { transactionDate: { lte: newest } } },
+        where: { accountId: { in: accountIds }, transaction: { transactionDate: { lte: newest }, ...(standingOnly && STANDING_TRANSACTION) } },
         select: { accountId: true, entryType: true, amount: true, transaction: { select: { transactionDate: true, createdAt: true } } },
       }),
     ]);
@@ -646,6 +651,7 @@ export class TransactionsService {
     if (filters.excludeSavings) where.NOT = { entries: { some: { account: { accountSubtype: 'savings' } } } };
     // A loan entry's charge shows on the entry's row, not as a row of its own.
     if (filters.excludeCharges) where.chargeForId = null;
+    if (filters.standingOnly) Object.assign(where, STANDING_TRANSACTION);
     if (filters.search) {
       // Quick entries keep what the customer typed on the entry (its note
       // and category), not on the transaction's description.
