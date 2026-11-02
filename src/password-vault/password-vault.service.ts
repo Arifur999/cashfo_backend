@@ -4,8 +4,7 @@ import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
 import { AuthSessionsService } from '../auth/auth-sessions.service.js';
 import { CredentialsService } from '../auth/credentials.service.js';
-import { MAX_SENDS } from '../one-time-codes/one-time-codes.js';
-import { OneTimeCodesService, type CodeRecipient } from '../one-time-codes/one-time-codes.service.js';
+import { OneTimeCodesService } from '../one-time-codes/one-time-codes.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { RECENT_SIGN_IN_MS } from '../two-step/two-step-codes.js';
 import type { RequestUser } from '../user-auth/interfaces/request-user.interface.js';
@@ -18,7 +17,7 @@ import { UpdateVaultSettingsDto } from './dto/vault-settings.dto.js';
 import { securityCheckup, type Checkup } from './vault-checkup.js';
 import { decryptVaultSecret, encryptVaultSecret, isSealedVaultText, openVaultText, sealVaultText, vaultPasswordFingerprint } from './vault-crypto.js';
 import { VAULT_PASSWORD_MESSAGES, vaultPasswordProblem, type VaultPasswordProblem } from './vault-password-rule.js';
-import { effectiveLockSeconds, expiresInSeconds, unlockState, windowStartBefore, type UnlockState } from './vault-unlock-limit.js';
+import { effectiveLockSeconds, expiresInSeconds, UNLOCK_MAX_TRIES, unlockState, windowStartBefore, type UnlockState } from './vault-unlock-limit.js';
 
 type StoredEntry = { id: string; usernameOrEmail: string | null; holderName: string | null; notes: string | null; passwordCiphertext: string };
 
@@ -43,21 +42,16 @@ const staleChallenge = () =>
 
 const codeUsed = () => new BadRequestException({ statusCode: 400, error: 'Bad Request', message: 'This code was already used. Start again to get a new one.', reason: 'CODE_USED' });
 
-// The vault's unlock code goes to one sign-in: its pending code is found,
+// The vault's unlock code goes to one sign-in: its waiting code is found,
 // and replaced, by the session in its payload.
 const sameSignIn = (sessionId: string) => ({ payload: { path: ['sessionId'], equals: sessionId } });
 
-const tooManySends = (retryAfterSec: number) =>
-  new HttpException(
-    {
-      statusCode: 429,
-      error: 'Too Many Requests',
-      message: 'We sent the code five times already. Use the last one, or try again in a few minutes.',
-      reason: 'TOO_MANY_SENDS',
-      retryAfterSec,
-    },
-    HttpStatus.TOO_MANY_REQUESTS,
-  );
+// An unlock code is good only for the sign-in it went to, while the vault
+// password it followed is still the one set.
+const isOwnUnlockCode = (row: { payload: unknown }, sessionId: string, vaultPasswordHash: string) => {
+  const payload = row.payload as UnlockPayload | null;
+  return payload?.sessionId === sessionId && payload.ver === vaultPasswordFingerprint(vaultPasswordHash);
+};
 
 const weakPassword = (reason: VaultPasswordProblem) => new BadRequestException({ statusCode: 400, error: 'Bad Request', message: VAULT_PASSWORD_MESSAGES[reason], reason });
 
@@ -67,7 +61,7 @@ const lockedOut = (retryAfterSec: number) => {
     {
       statusCode: 429,
       error: 'Too Many Requests',
-      message: `Too many wrong vault passwords. Try again in ${minutes} minute${minutes === 1 ? '' : 's'}.`,
+      message: `Too many wrong tries. Try again in ${minutes} minute${minutes === 1 ? '' : 's'}.`,
       reason: 'VAULT_LOCKED_OUT',
       retryAfterSec,
     },
@@ -197,12 +191,25 @@ export class PasswordVaultService {
     return { success: true, deletedEntries: 0, entryCount };
   }
 
-  // Who a vault code (reset or unlock) goes to, and the vault password it
-  // is for; refused when no vault is set up.
-  private async codeRecipient(userId: string): Promise<CodeRecipient & { vaultPasswordHash: string }> {
+  // The vault's owner: who a vault code (reset or unlock) goes to, the
+  // vault password, its lock time and the wrong unlock tries; refused when
+  // no vault is set up.
+  private async codeRecipient(userId: string) {
     const user = await this.prisma.user.findUniqueOrThrow({
       where: { id: userId },
-      select: { id: true, name: true, email: true, emailVerified: true, phone: true, phoneVerifiedAt: true, preferredLanguage: true, vaultPasswordHash: true },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        emailVerified: true,
+        phone: true,
+        phoneVerifiedAt: true,
+        preferredLanguage: true,
+        vaultPasswordHash: true,
+        vaultLockMinutes: true,
+        vaultUnlockFailures: true,
+        vaultUnlockFailedAt: true,
+      },
     });
     if (!user.vaultPasswordHash) {
       throw new BadRequestException({ statusCode: 400, error: 'Bad Request', message: 'Set up a vault password first', reason: 'VAULT_NOT_SET_UP' });
@@ -254,39 +261,19 @@ export class PasswordVaultService {
   // tries -- passwords here and codes in verifyUnlock() -- are counted per
   // person (vault-unlock-limit.ts): ten in ten minutes, then a wait even for
   // the right ones. The right password sends a six-digit code, by email
-  // first (OtpSenders.emailFirst), and verifyUnlock() opens the vault with
-  // it. Asked again while this sign-in's code is still waiting, it answers
-  // that code (sent again once the 30-second wait is over), so a double
-  // press or a retry doesn't send a stream of emails.
+  // first (OtpSenders.emailFirst); asked again while this sign-in's code is
+  // waiting, it answers that one (OneTimeCodesService.issueOrReuse), so a
+  // double press or a retry sends no stream of emails.
   // VAULT_UNLOCK_CODE=off skips the code (an emergency switch for when no
   // code can be sent): the right password opens the vault, as it did before.
   async unlock(user: RequestUser, dto: UnlockVaultDto) {
-    const userId = user.id;
     const now = new Date();
-    const person = await this.prisma.user.findUniqueOrThrow({
-      where: { id: userId },
-      select: {
-        name: true,
-        email: true,
-        emailVerified: true,
-        phone: true,
-        phoneVerifiedAt: true,
-        preferredLanguage: true,
-        vaultPasswordHash: true,
-        vaultLockMinutes: true,
-        vaultUnlockFailures: true,
-        vaultUnlockFailedAt: true,
-      },
-    });
-    if (!person.vaultPasswordHash) {
-      throw new BadRequestException('Set up a vault password first');
-    }
+    const person = await this.codeRecipient(user.id);
     const before = unlockState(person, now);
     if (before.lockedOut) throw lockedOut(before.retryAfterSec);
 
-    const matches = await bcrypt.compare(dto.vaultPassword, person.vaultPasswordHash);
-    if (!matches) {
-      const after = await this.recordFailedUnlock(userId, now);
+    if (!(await bcrypt.compare(dto.vaultPassword, person.vaultPasswordHash))) {
+      const after = await this.recordFailedUnlock(user.id, now);
       if (after.lockedOut) throw lockedOut(after.retryAfterSec);
       throw new HttpException(
         { statusCode: 401, error: 'Unauthorized', message: 'Incorrect vault password', reason: 'VAULT_PASSWORD_WRONG', triesLeft: after.triesLeft },
@@ -294,79 +281,69 @@ export class PasswordVaultService {
       );
     }
     if (this.configService.get<string>('VAULT_UNLOCK_CODE') === 'off') {
-      await this.clearFailedUnlocks(userId, person);
-      return this.vaultToken(userId, person.vaultPasswordHash, person.vaultLockMinutes);
+      await this.clearFailedUnlocks(user.id, person);
+      return this.vaultToken(user.id, person.vaultPasswordHash, person.vaultLockMinutes);
     }
 
-    const recipient: CodeRecipient = { id: userId, ...person };
-    const ver = vaultPasswordFingerprint(person.vaultPasswordHash);
-    const pending = await this.codes.pending(userId, 'VAULT_UNLOCK', sameSignIn(user.sessionId), now);
-    if (pending && (pending.payload as unknown as UnlockPayload | null)?.ver === ver) {
-      if (pending.sends >= MAX_SENDS) {
-        // Sent five times already: no more emails until it runs out.
-        throw tooManySends(Math.max(1, Math.ceil((pending.expiresAt.getTime() - now.getTime()) / 1000)));
-      }
-      const same = await this.codes.again(recipient, pending, UNLOCK_ACTION, now);
-      if (same) return { codeRequired: true as const, ...same };
-    }
-    const payload: UnlockPayload = { sessionId: user.sessionId, ver };
-    const challenge = await this.codes.issue(recipient, 'VAULT_UNLOCK', { ...payload }, UNLOCK_ACTION, { emailFirst: true, replace: sameSignIn(user.sessionId) });
+    const payload: UnlockPayload = { sessionId: user.sessionId, ver: vaultPasswordFingerprint(person.vaultPasswordHash) };
+    const challenge = await this.codes.issueOrReuse(person, 'VAULT_UNLOCK', { ...payload }, UNLOCK_ACTION, {
+      emailFirst: true,
+      replace: sameSignIn(user.sessionId),
+      belongs: (row) => isOwnUnlockCode(row, user.sessionId, person.vaultPasswordHash),
+    });
     return { codeRequired: true as const, ...challenge };
   }
 
-  // A new unlock code (the old one stops working), half a minute after the
-  // last; only for the sign-in it was sent to, and while its vault password
-  // is still the one set.
+  // A new unlock code (the old one works until it is sent), half a minute
+  // after the last; only for the sign-in it went to, and while its vault
+  // password is still the one set.
   async resendUnlockCode(user: RequestUser, challengeId: string) {
     const person = await this.codeRecipient(user.id);
-    const row = await this.codes.peek(user.id, challengeId, 'VAULT_UNLOCK');
-    const payload = row.payload as unknown as UnlockPayload | null;
-    if (payload?.sessionId !== user.sessionId || payload.ver !== vaultPasswordFingerprint(person.vaultPasswordHash)) throw staleChallenge();
-    return this.codes.resend(person, challengeId, 'VAULT_UNLOCK', UNLOCK_ACTION);
+    return this.codes.resend(person, challengeId, 'VAULT_UNLOCK', UNLOCK_ACTION, {
+      emailFirst: true,
+      belongs: (row) => isOwnUnlockCode(row, user.sessionId, person.vaultPasswordHash),
+    });
   }
 
-  private async clearFailedUnlocks(userId: string, row: { vaultUnlockFailures: number; vaultUnlockFailedAt: Date | null }) {
-    if (row.vaultUnlockFailures !== 0 || row.vaultUnlockFailedAt) {
+  // The wrong tries start again (skipped when `row` shows there are none).
+  private async clearFailedUnlocks(userId: string, row?: { vaultUnlockFailures: number; vaultUnlockFailedAt: Date | null }) {
+    if (!row || row.vaultUnlockFailures !== 0 || row.vaultUnlockFailedAt) {
       await this.prisma.user.update({ where: { id: userId }, data: { vaultUnlockFailures: 0, vaultUnlockFailedAt: null } });
     }
   }
 
   // The second step: the code opens the vault, for this sign-in and only
-  // while the vault password is the one typed in step one. A wrong code
-  // counts as a wrong unlock try for the person as well as for the code
-  // (five per code), so asking for new codes doesn't buy more guesses, and
-  // a vault locked out by wrong tries won't open with a code sent before.
-  // An unlock lasts the person's lock time, capped by VAULT_TOKEN_EXPIRES_IN.
+  // while the vault password is the one typed in step one. Every try is
+  // counted against the person before the code is looked at (and cleared
+  // when it opens the vault), so codes share the ten wrong tries with
+  // passwords, tries sent all at once can't slip past the limit, and a
+  // locked-out vault won't open with a code sent before. An unlock lasts the
+  // person's lock time, capped by VAULT_TOKEN_EXPIRES_IN.
   async verifyUnlock(user: RequestUser, dto: VerifyVaultUnlockDto) {
-    const userId = user.id;
     const now = new Date();
-    const person = await this.prisma.user.findUniqueOrThrow({
-      where: { id: userId },
-      select: { vaultPasswordHash: true, vaultLockMinutes: true, vaultUnlockFailures: true, vaultUnlockFailedAt: true },
-    });
-    if (!person.vaultPasswordHash) {
-      throw new BadRequestException('Set up a vault password first');
-    }
+    const person = await this.codeRecipient(user.id);
     const before = unlockState(person, now);
     if (before.lockedOut) throw lockedOut(before.retryAfterSec);
+    const counted = await this.recordFailedUnlock(user.id, now);
+    if (counted.failures > UNLOCK_MAX_TRIES) throw lockedOut(counted.retryAfterSec);
 
-    let code: Awaited<ReturnType<OneTimeCodesService['verify']>>;
-    try {
-      code = await this.codes.verify(userId, dto.challengeId, 'VAULT_UNLOCK', dto.code);
-    } catch (error) {
-      const body = error instanceof HttpException ? (error.getResponse() as { reason?: string; attemptsLeft?: number }) : null;
-      if (body?.reason !== 'CODE_WRONG') throw error;
-      const after = await this.recordFailedUnlock(userId, now);
-      if (after.lockedOut) throw lockedOut(after.retryAfterSec);
-      throw new BadRequestException({ ...body, attemptsLeft: Math.min(body.attemptsLeft ?? after.triesLeft, after.triesLeft), triesLeft: after.triesLeft });
+    const result = await this.codes.check(user.id, dto.challengeId, 'VAULT_UNLOCK', dto.code);
+    if (!result.ok) {
+      if (counted.lockedOut) throw lockedOut(counted.retryAfterSec);
+      throw new BadRequestException({
+        statusCode: 400,
+        error: 'Bad Request',
+        message: 'That code is not right.',
+        reason: 'CODE_WRONG',
+        attemptsLeft: Math.min(result.attemptsLeft, counted.triesLeft),
+        triesLeft: counted.triesLeft,
+      });
     }
-    const payload = code.payload as unknown as UnlockPayload | null;
-    const ver = vaultPasswordFingerprint(person.vaultPasswordHash);
-    if (payload?.sessionId !== user.sessionId || payload.ver !== ver) throw staleChallenge();
-    if (!(await this.codes.consume(this.prisma, code.id))) throw codeUsed();
+    if (!isOwnUnlockCode(result.row, user.sessionId, person.vaultPasswordHash)) throw staleChallenge();
+    if (!(await this.codes.consume(this.prisma, result.row.id))) throw codeUsed();
 
-    await this.clearFailedUnlocks(userId, person);
-    return this.vaultToken(userId, person.vaultPasswordHash, person.vaultLockMinutes);
+    await this.clearFailedUnlocks(user.id);
+    return this.vaultToken(user.id, person.vaultPasswordHash, person.vaultLockMinutes);
   }
 
   // An open vault: a token for the person's lock time (capped by
