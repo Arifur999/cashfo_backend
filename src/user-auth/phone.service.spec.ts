@@ -6,7 +6,7 @@ const USER = { id: 'user-1', email: 'u@example.com', sessionId: 'sess-1' };
 const challenge = { challengeId: 'c-1', channel: 'SMS' };
 
 const setup = ({ person = {} as Record<string, unknown>, others = null as object | null, hasPassword = true, passwordOk = true, smsOn = true } = {}) => {
-  const me = { id: 'user-1', name: 'Rina', email: 'u@example.com', phone: '01712-345678', phoneVerifiedAt: null, preferredLanguage: 'EN', ...person };
+  const me = { id: 'user-1', name: 'Rina', email: 'u@example.com', emailVerified: true, phone: '01712-345678', phoneVerifiedAt: null, preferredLanguage: 'EN', ...person };
   const prisma = {
     user: {
       findUniqueOrThrow: vi.fn().mockResolvedValue(me),
@@ -57,6 +57,12 @@ describe('PhoneService.startVerify', () => {
     expect(codes.issue).toHaveBeenCalledWith(expect.objectContaining({ id: 'user-1' }), 'PHONE_VERIFY', { phone: '+8801712345678' }, expect.any(Object), {
       smsTo: '+8801712345678',
     });
+  });
+
+  it("needs a verified email first, so a sign-up with someone else's address cannot plant a phone", async () => {
+    const { service, codes } = setup({ person: { emailVerified: false } });
+    expect(await reasonOf(service.startVerify(USER, 'pw'))).toBe('EMAIL_NOT_VERIFIED');
+    expect(codes.issue).not.toHaveBeenCalled();
   });
 
   it('refuses a wrong or missing password, so a stolen session cannot add a phone', async () => {

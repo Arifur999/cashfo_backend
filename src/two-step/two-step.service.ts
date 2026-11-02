@@ -205,8 +205,16 @@ export class TwoStepService {
 
   // A fresh secret for the app, shown as a QR (otpauthUrl) and as a key to
   // type. Nothing changes for sign-in until enable() confirms a code from it.
+  // A customer turns it on only with a verified email, so someone who signed
+  // up with another person's address can't lock its owner out with their app.
   async startSetup(user: { id: string; email: string }, side: TwoStepSide, reauth: Reauth | null): Promise<{ secret: string; otpauthUrl: string }> {
     if (reauth) await this.confirmIdentity(user.id, reauth);
+    if (side === 'user') {
+      const owner = await this.prisma.user.findUnique({ where: { id: user.id }, select: { emailVerified: true } });
+      if (!owner?.emailVerified) {
+        throw new BadRequestException({ statusCode: 400, error: 'Bad Request', message: 'Verify your email first, then turn on two-step sign-in.', reason: 'EMAIL_NOT_VERIFIED' });
+      }
+    }
     const existing = await this.prisma.twoFactor.findUnique({ where: { userId: user.id }, select: { enabledAt: true } });
     if (existing?.enabledAt) {
       throw new ConflictException('Two-step sign-in is already on. Turn it off first to set it up again.');

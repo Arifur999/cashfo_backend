@@ -58,10 +58,13 @@ export class PhoneService {
 
   // The account password (a Google-only account: a sign-in in the last ten
   // minutes) first, so a stolen session can't put the thief's phone on the
-  // account; then a code to the number on the profile.
+  // account; then a code to the number on the profile. Only once the email
+  // is verified: someone who signed up with another person's address must
+  // not be able to plant a phone that later resets the password.
   async startVerify(user: RequestUser, password: string | undefined): Promise<Challenge> {
     const person = await this.person(user.id);
     if (person.phoneVerifiedAt) throw refuse('PHONE_ALREADY_VERIFIED', 'This number is already verified.');
+    if (!person.emailVerified) throw refuse('EMAIL_NOT_VERIFIED', 'Verify your email first, then your phone number.');
     const phone = canonicalPhone(person.phone);
     if (!person.phone) throw refuse('NO_PHONE', 'Add your phone number first.');
     if (!phone) throw refuse('PHONE_NOT_MOBILE', 'Use a Bangladeshi mobile number, like 01712-345678.');
@@ -151,10 +154,10 @@ export class PhoneService {
     return this.prisma.oneTimeCode.findFirst({ where: { id: challengeId, purpose: 'PHONE_PASSWORD_RESET', destination: phone } });
   }
 
-  private async person(userId: string): Promise<CodeRecipient> {
+  private async person(userId: string): Promise<CodeRecipient & { emailVerified: boolean }> {
     return this.prisma.user.findUniqueOrThrow({
       where: { id: userId },
-      select: { id: true, name: true, email: true, phone: true, phoneVerifiedAt: true, preferredLanguage: true },
+      select: { id: true, name: true, email: true, emailVerified: true, phone: true, phoneVerifiedAt: true, preferredLanguage: true },
     });
   }
 
