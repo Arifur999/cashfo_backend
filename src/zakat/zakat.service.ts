@@ -276,6 +276,8 @@ export class ZakatService {
       dueDate: due.date,
       hijriYear: due.hijriYear,
       daysLeft,
+      // What each Hijri choice in the settings comes to, for its label.
+      dateChoices: { RAMADAN: dueDateFor('RAMADAN', null, today), MUHARRAM: dueDateFor('MUHARRAM', null, today) },
       settings: {
         basis: profile.basis,
         dateMode: profile.dateMode,
