@@ -7,6 +7,7 @@ import { PrismaService } from '../prisma/prisma.service.js';
 import { isTwoStepPending, TwoStepService, type TwoStepPending } from '../two-step/two-step.service.js';
 import { LoginDto } from '../user-auth/dto/login.dto.js';
 import { UserAuthService } from '../user-auth/user-auth.service.js';
+import type { ProvisionOptions } from '../user-auth/user-provisioning.service.js';
 import type { TwoStepSignInDto } from './two-step-sign-in.dto.js';
 
 export type SignInAudience = 'admin' | 'user';
@@ -77,7 +78,7 @@ export class SignInService {
   async withSession(
     cookieHeader: string | undefined,
     client: ClientInfo,
-    referralCode?: string,
+    referral?: ProvisionOptions,
     trustedDevices?: string | string[],
   ): Promise<SignInResult | TwoStepPending> {
     const signedIn = await this.sessions.fromCookie(cookieHeader);
@@ -87,7 +88,7 @@ export class SignInService {
     if (await this.isAdmin({ id: signedIn.userId })) {
       return this.adminResult(await this.adminAuth.exchangeSession(cookieHeader, client, trustedDevices));
     }
-    return this.userResult(await this.userAuth.exchangeSession(cookieHeader, client, referralCode, trustedDevices));
+    return this.userResult(await this.userAuth.exchangeSession(cookieHeader, client, referral, trustedDevices));
   }
 
   // The second step, for both sides: a code (or backup code) for the

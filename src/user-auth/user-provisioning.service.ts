@@ -5,6 +5,7 @@ import { AccountsService } from '../accounts/accounts.service.js';
 import { dhakaMonthStart, dhakaToday } from '../common/dhaka.js';
 import { MailService } from '../mail/mail.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { referralLinkFor } from '../referrals/referral-links.service.js';
 import { looksLikeSamePerson } from '../referrals/referral-money.js';
 import type { ReferralSettings } from '../settings/referral-settings.js';
 import { SettingsService } from '../settings/settings.service.js';
@@ -14,6 +15,8 @@ export interface ProvisionOptions {
   // Someone else's shareable code from a signup link. Only counts the first
   // time an account is provisioned, i.e. at signup.
   referralCode?: string;
+  // The tag of the invite link it came through (&src=).
+  referralSource?: string;
 }
 
 // Everything an end user needs before the app issues them a token: a default
@@ -54,7 +57,7 @@ export class UserProvisioningService {
 
       await ensureReferralCode(tx, userId);
       if (options.referralCode && referralRules) {
-        await this.recordReferral(tx, userId, options.referralCode, referralRules);
+        await this.recordReferral(tx, userId, options.referralCode, options.referralSource, referralRules);
       }
 
       const business = await tx.business.create({
@@ -94,7 +97,13 @@ export class UserProvisioningService {
   // referral link must never block a signup. A sign-up with the referrer's
   // own phone or email, or past the referrer's monthly limit, is kept as
   // CANCELLED (the admin sees it; it earns nothing and gives no discount).
-  private async recordReferral(tx: Prisma.TransactionClient, userId: string, referralCode: string, rules: Pick<ReferralSettings, 'blockSelf' | 'maxPerMonth'>) {
+  private async recordReferral(
+    tx: Prisma.TransactionClient,
+    userId: string,
+    referralCode: string,
+    referralSource: string | undefined,
+    rules: Pick<ReferralSettings, 'blockSelf' | 'maxPerMonth'>,
+  ) {
     const code = referralCode.trim().toUpperCase();
     if (!code) return;
     const [referrer, friend] = await Promise.all([
@@ -119,6 +128,7 @@ export class UserProvisioningService {
         rewardAmount: 0,
         kind: 'COMMISSION',
         status: cancelReason ? 'CANCELLED' : 'JOINED',
+        linkId: await referralLinkFor(tx, referrer.id, referralSource),
         ...(cancelReason && { cancelReason, cancelledAt: new Date() }),
       },
     });

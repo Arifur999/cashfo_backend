@@ -29,7 +29,7 @@ export class SignInController {
   @Throttle({ default: { limit: 10, ttl: 60 * 1000 } })
   @Post('session/sign-in')
   withSession(@Req() req: Request, @Body() dto: SessionExchangeDto) {
-    return this.signIn.withSession(req.headers.cookie, clientOf(req), dto.referralCode, req.headers['x-trusted-device']);
+    return this.signIn.withSession(req.headers.cookie, clientOf(req), dto, req.headers['x-trusted-device']);
   }
 
   // The code after the password (or Google), for admins and customers
