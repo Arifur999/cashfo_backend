@@ -28,11 +28,13 @@ import {
   pricesPerVori,
   zakatPaisa,
 } from './zakat-rules.js';
+import { ZAKAT_CATEGORY } from '../budgets/app-categories.js';
 
 type Client = PrismaService | Prisma.TransactionClient;
 
-// The expense category zakat given goes under, made the first time.
-export const ZAKAT_CATEGORY = 'Zakat';
+// The expense category zakat given goes under, made the first time (kept
+// with the app's other category names).
+export { ZAKAT_CATEGORY };
 const MAX_EXTRAS = 100;
 const MAX_KEYS = 500;
 

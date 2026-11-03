@@ -1,4 +1,4 @@
-import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { BudgetCategoryType, Prisma, TransactionType } from '@prisma/client';
 import { dhakaToday } from '../common/dhaka.js';
 import { PrismaService } from '../prisma/prisma.service.js';
@@ -10,6 +10,7 @@ import { UpdateBudgetTargetDto } from './dto/update-budget-target.dto.js';
 import { UpdateIncomeGoalDto } from './dto/update-income-goal.dto.js';
 import { SaveMonthlyPlanDto } from './dto/save-monthly-plan.dto.js';
 import { BUDGET_CATEGORY_COLORS } from './budget-category-visuals.js';
+import { BUILT_IN_CHARGE_CATEGORIES, isReservedCategoryName, seedStarterCategories, ZAKAT_CATEGORY } from './app-categories.js';
 
 // Which side of the ledger a category's "spent"/"earned" figure is summed
 // against, and which Business column backs its "total target" -- the one
@@ -19,6 +20,10 @@ const TRANSACTION_TYPE_FOR: Record<BudgetCategoryType, TransactionType> = { EXPE
 
 // A month's bounds at UTC midnight, the way @db.Date transaction dates are stored.
 const monthBounds = (year: number, month: number) => ({ gte: new Date(Date.UTC(year, month - 1, 1)), lt: new Date(Date.UTC(year, month, 1)) });
+
+const RESERVED_MESSAGE = 'That name is used by the app for Zakat or transfer fees';
+const ZAKAT_KEPT_MESSAGE = 'The Zakat page keeps this category';
+const isZakat = (category: { type: BudgetCategoryType; name: string }) => category.type === 'EXPENSE' && category.name === ZAKAT_CATEGORY;
 
 // The first colour no category of the type uses yet, else the next in turn:
 // a category made from just a name still gets its own dot.
@@ -236,7 +241,9 @@ export class BudgetsService {
   // ---- Category Set ----
 
   // Both kinds of category, each with how many live transactions use it
-  // (by name, as entries carry it).
+  // (by name, as entries carry it). Zakat's is marked `system` (the Zakat
+  // page keeps it); the built-in charge categories in use, which have no
+  // row of their own, come as `automatic` rows.
   async listCategorySet(businessId: string) {
     const [categories, incomeCounts, expenseCounts] = await Promise.all([
       this.prisma.budgetCategory.findMany({ where: { businessId }, orderBy: [{ displayOrder: 'asc' }, { createdAt: 'asc' }] }),
@@ -252,11 +259,28 @@ export class BudgetsService {
       color: category.color,
       monthlyLimit: category.monthlyLimit ? new Prisma.Decimal(category.monthlyLimit).toFixed(2) : null,
       transactionCount: used[category.type].get(category.name) ?? 0,
+      system: isZakat(category) ? ('zakat' as const) : null,
     });
+    const own = new Set(categories.filter((category) => category.type === 'EXPENSE').map((category) => category.name));
     return {
       income: categories.filter((category) => category.type === 'INCOME').map(rowOf),
       expense: categories.filter((category) => category.type === 'EXPENSE').map(rowOf),
+      automatic: BUILT_IN_CHARGE_CATEGORIES.filter((name) => !own.has(name) && (expenseCounts.get(name) ?? 0) > 0).map((name) => ({
+        type: 'EXPENSE' as const,
+        name,
+        kind: 'charges' as const,
+        transactionCount: expenseCounts.get(name) ?? 0,
+      })),
     };
+  }
+
+  // Category Set's "Add the usual ones": the starter categories the
+  // workspace doesn't have yet (a workspace made before they were given).
+  async addStarterCategories(businessId: string) {
+    const business = await this.prisma.business.findUnique({ where: { id: businessId }, select: { type: true } });
+    if (!business) throw new NotFoundException('Workspace not found');
+    await seedStarterCategories(this.prisma, businessId, business.type);
+    return this.listCategorySet(businessId);
   }
 
   // How many live transactions of a type name each category.
@@ -282,6 +306,7 @@ export class BudgetsService {
   // colour left out is picked for it.
   async createCategory(businessId: string, dto: CreateBudgetCategoryDto) {
     const type = dto.type ?? BudgetCategoryType.EXPENSE;
+    if (isReservedCategoryName(dto.name)) throw new BadRequestException(RESERVED_MESSAGE);
 
     const existing = await this.prisma.budgetCategory.findUnique({ where: { businessId_type_name: { businessId, type, name: dto.name } } });
     if (existing) {
@@ -308,13 +333,23 @@ export class BudgetsService {
 
   async updateCategory(businessId: string, id: string, dto: UpdateBudgetCategoryDto) {
     const category = await this.requireCategory(businessId, id);
+    if (isZakat(category)) throw new BadRequestException(ZAKAT_KEPT_MESSAGE);
+    if (dto.name !== undefined && dto.name !== category.name && isReservedCategoryName(dto.name)) throw new BadRequestException(RESERVED_MESSAGE);
 
-    if (dto.name !== undefined) {
+    // A category's type changes only while no transaction uses it: its
+    // entries are filed under its name within one type.
+    const type = dto.type ?? category.type;
+    if (type !== category.type && (await this.useCount(businessId, category)) > 0) {
+      throw new BadRequestException('Transactions use this category, so its type stays the same');
+    }
+
+    if (dto.name !== undefined || type !== category.type) {
+      const name = dto.name ?? category.name;
       const clash = await this.prisma.budgetCategory.findUnique({
-        where: { businessId_type_name: { businessId, type: category.type, name: dto.name } },
+        where: { businessId_type_name: { businessId, type, name } },
       });
       if (clash && clash.id !== id) {
-        throw new ConflictException(`A ${category.type === 'INCOME' ? 'income' : 'budget'} category named "${dto.name}" already exists`);
+        throw new ConflictException(`A ${type === 'INCOME' ? 'income' : 'budget'} category named "${name}" already exists`);
       }
     }
 
@@ -333,6 +368,7 @@ export class BudgetsService {
         where: { id },
         data: {
           ...(dto.name !== undefined && { name: dto.name }),
+          ...(type !== category.type && { type, ...(type === BudgetCategoryType.INCOME && { monthlyLimit: null }) }),
           ...(dto.icon !== undefined && { icon: dto.icon }),
           ...(dto.color !== undefined && { color: dto.color }),
           // INCOME categories never get a limit -- see createCategory's
@@ -344,10 +380,43 @@ export class BudgetsService {
     });
   }
 
-  async deleteCategory(businessId: string, id: string) {
-    await this.requireCategory(businessId, id);
-    await this.prisma.budgetCategory.delete({ where: { id } });
-    return { id };
+  // A category in use is deleted only by moving its transactions to
+  // another category of its type first (all of them, voided ones too, so
+  // none is left naming a category that is gone), in one database
+  // transaction; an unused one simply goes.
+  async deleteCategory(businessId: string, id: string, moveTo?: string) {
+    const category = await this.requireCategory(businessId, id);
+    if (isZakat(category)) throw new BadRequestException(ZAKAT_KEPT_MESSAGE);
+    const inUse = (await this.useCount(businessId, category)) > 0;
+    if (!inUse) {
+      await this.prisma.budgetCategory.delete({ where: { id } });
+      return { id, moved: 0 };
+    }
+    const word = category.type === 'INCOME' ? 'income' : 'expense';
+    if (!moveTo) {
+      const others = await this.prisma.budgetCategory.count({ where: { businessId, type: category.type, id: { not: id } } });
+      throw new BadRequestException(others ? `Transactions use this category. Pick the ${word} category they move to.` : `This is the only ${word} category. Add another one first, then delete this.`);
+    }
+    const target = await this.prisma.budgetCategory.findUnique({ where: { id: moveTo } });
+    if (!target || target.businessId !== businessId || target.type !== category.type || target.id === id) {
+      throw new BadRequestException(`Pick another ${word} category to move them to`);
+    }
+    const moved = await this.prisma.$transaction(async (tx) => {
+      const result = await tx.transactionEntry.updateMany({
+        where: { categoryId: category.name, transaction: { businessId, transactionType: TRANSACTION_TYPE_FOR[category.type] } },
+        data: { categoryId: target.name },
+      });
+      await tx.budgetCategory.delete({ where: { id } });
+      return result.count;
+    });
+    return { id, moved };
+  }
+
+  // How many standing transactions file under a category.
+  private useCount(businessId: string, category: { name: string; type: BudgetCategoryType }): Promise<number> {
+    return this.prisma.transactionEntry.count({
+      where: { categoryId: category.name, transaction: { businessId, status: 'POSTED', reversalOfId: null, transactionType: TRANSACTION_TYPE_FOR[category.type] } },
+    });
   }
 
   private async requireCategory(businessId: string, id: string) {

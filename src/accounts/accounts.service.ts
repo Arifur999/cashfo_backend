@@ -1,5 +1,6 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { AccountType, Prisma, WorkspaceType } from '@prisma/client';
+import { seedStarterCategories } from '../budgets/app-categories.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { dayWindow, entryTotals, LIVE_TRANSACTION, periodFigures, type EntryTotals } from './account-figures.js';
 import { CreateAccountDto } from './dto/create-account.dto.js';
@@ -117,6 +118,9 @@ export class AccountsService {
         await client.account.update({ where: { id: newOwnId }, data: { parentId: newParentId } });
       }
     }
+
+    // And the categories its first income and expense can go under.
+    await seedStarterCategories(client, businessId, workspaceType);
   }
 
   // With dateFrom and/or dateTo (Dhaka calendar days, both included), every

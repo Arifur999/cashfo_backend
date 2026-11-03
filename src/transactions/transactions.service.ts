@@ -7,6 +7,7 @@ import { PrismaService } from '../prisma/prisma.service.js';
 import { CreateTransactionDto } from './dto/create-transaction.dto.js';
 import { CreateTransactionEntryDto } from './dto/create-transaction-entry.dto.js';
 import { ListTransactionsQueryDto } from './dto/list-transactions-query.dto.js';
+import { BUILT_IN_CHARGE_CATEGORIES, CHARGE_CATEGORY } from '../budgets/app-categories.js';
 
 // Still counts: neither a voided original nor the reversal that undid it.
 const STANDING_TRANSACTION = { status: 'POSTED', reversalOfId: null } satisfies Prisma.TransactionWhereInput;
@@ -21,12 +22,11 @@ type Moment = { transactionDate: Date; createdAt: Date };
 const atOrBefore = (a: Moment, b: Moment) =>
   a.transactionDate.getTime() < b.transactionDate.getTime() || (a.transactionDate.getTime() === b.transactionDate.getTime() && a.createdAt.getTime() <= b.createdAt.getTime());
 
-// The category a loan entry's charge is filed under (categories are names).
-export const CHARGE_CATEGORY = 'Bank charge';
-// The charge categories every workspace has without making them (the
+// The category a loan entry's charge is filed under (categories are names),
+// and the charge categories every workspace has without making them (the
 // Transfers popup offers them first); any other must be an expense category
-// of the workspace.
-export const BUILT_IN_CHARGE_CATEGORIES = [CHARGE_CATEGORY, 'Mobile banking fee', 'Service charge'];
+// of the workspace. Kept with the app's other category names.
+export { BUILT_IN_CHARGE_CATEGORIES, CHARGE_CATEGORY };
 
 @Injectable()
 export class TransactionsService {
