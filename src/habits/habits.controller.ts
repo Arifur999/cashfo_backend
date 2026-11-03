@@ -7,6 +7,7 @@ import { UserAuthGuard } from '../user-auth/guards/user-auth.guard.js';
 import type { RequestUser } from '../user-auth/interfaces/request-user.interface.js';
 import { CheckInHabitDto } from './dto/check-in-habit.dto.js';
 import { CreateHabitDto } from './dto/create-habit.dto.js';
+import { HabitMonthsQueryDto } from './dto/habit-months.dto.js';
 import { UpdateHabitDto } from './dto/update-habit.dto.js';
 import { HabitsService } from './habits.service.js';
 
@@ -38,6 +39,13 @@ export class HabitsController {
   @Get('month')
   getMonthLogs(@CurrentUser() user: RequestUser, @Query('month') month: string) {
     return this.habitsService.getMonthLogs(user.id, month);
+  }
+
+  // A run of months at once (Daily habits › Monthly report and its month
+  // list), at most 24.
+  @Get('months')
+  getMonthsLogs(@CurrentUser() user: RequestUser, @Query() query: HabitMonthsQueryDto) {
+    return this.habitsService.getMonthsLogs(user.id, query.from, query.to);
   }
 
   @Get()

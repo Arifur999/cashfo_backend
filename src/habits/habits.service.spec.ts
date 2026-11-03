@@ -158,3 +158,25 @@ describe('HabitsService.getToday', () => {
     expect(prisma.habitLog.findMany).toHaveBeenLastCalledWith({ where: { habitId: { in: ['h1'] }, completed: true }, select: { habitId: true, date: true } });
   });
 });
+
+describe('HabitsService.getMonthsLogs', () => {
+  const setupRange = () => {
+    const prisma = { habit: { findMany: vi.fn().mockResolvedValue([habit('h1')]) }, habitLog: { findMany: vi.fn().mockResolvedValue([]) } };
+    return { service: new HabitsService(prisma as never), prisma };
+  };
+
+  it('reads every log from the first month through the last', async () => {
+    const { service, prisma } = setupRange();
+    await service.getMonthsLogs('user-1', '2025-11', '2026-10');
+    expect(prisma.habitLog.findMany.mock.calls[0][0].where.date).toEqual({
+      gte: new Date('2025-11-01T00:00:00.000Z'),
+      lt: new Date('2026-11-01T00:00:00.000Z'),
+    });
+  });
+
+  it('refuses a run backwards or longer than two years', async () => {
+    const { service } = setupRange();
+    await expect(service.getMonthsLogs('user-1', '2026-10', '2026-09')).rejects.toThrow('from must not be after to');
+    await expect(service.getMonthsLogs('user-1', '2024-01', '2026-01')).rejects.toThrow('At most 24 months');
+  });
+});
