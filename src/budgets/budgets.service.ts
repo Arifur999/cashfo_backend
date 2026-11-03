@@ -120,13 +120,10 @@ export class BudgetsService {
     });
   }
 
-  // "earned" is never stored -- summed live the same way a category's
-  // "spent" is (see getOverview's comment), except here it's EVERY POSTED
-  // income transaction's categorized entry for the business in that
-  // row's month/year, regardless of which Income Category it's tagged
-  // with -- categoryId != null picks exactly one side of each income
-  // transaction's double-entry pair (the money-account side never carries
-  // one), so this never double-counts.
+  // "earned" is never stored -- summed live: EVERY standing income
+  // transaction of the business in that row's month/year, once each (its
+  // debit side, as the Transactions summary counts it), whatever its
+  // category or none.
   async listIncomeGoals(businessId: string) {
     const goals = await this.prisma.incomeGoal.findMany({
       where: { businessId },
@@ -140,7 +137,7 @@ export class BudgetsService {
         const result = await this.prisma.transactionEntry.aggregate({
           _sum: { amount: true },
           where: {
-            categoryId: { not: null },
+            entryType: 'DEBIT',
             transaction: { businessId, status: 'POSTED', reversalOfId: null, transactionType: 'INCOME', transactionDate: { gte: monthStart, lt: monthEnd } },
           },
         });
@@ -199,14 +196,14 @@ export class BudgetsService {
 
   // ---- Budget Planning: a month's income target and expense budget ----
 
-  // What came in and went out in a month: the categorised side of each
-  // POSTED income or expense (the money-account side never carries a
-  // category), so nothing is counted twice -- the same sum as earned above.
+  // What came in and went out in a month: every standing income and
+  // expense once (its debit side), with a category or without one -- the
+  // same sum as earned above and as the Transactions figures.
   async monthTotals(businessId: string, year: number, month: number) {
     const sum = (transactionType: TransactionType) =>
       this.prisma.transactionEntry.aggregate({
         _sum: { amount: true },
-        where: { categoryId: { not: null }, transaction: { businessId, status: 'POSTED', reversalOfId: null, transactionType, transactionDate: monthBounds(year, month) } },
+        where: { entryType: 'DEBIT', transaction: { businessId, status: 'POSTED', reversalOfId: null, transactionType, transactionDate: monthBounds(year, month) } },
       });
     const [income, expense] = await Promise.all([sum('INCOME'), sum('EXPENSE')]);
     return { earned: (income._sum.amount ?? new Prisma.Decimal(0)).toFixed(2), spent: (expense._sum.amount ?? new Prisma.Decimal(0)).toFixed(2) };
