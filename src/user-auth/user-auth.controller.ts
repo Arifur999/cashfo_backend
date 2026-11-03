@@ -8,6 +8,7 @@ import {
   ParseUUIDPipe,
   Patch,
   Post,
+  Put,
   Query,
   Req,
   UploadedFile,
@@ -26,6 +27,7 @@ import { LoginDto } from './dto/login.dto.js';
 import { LogoutDto } from './dto/logout.dto.js';
 import { RefreshDto } from './dto/refresh.dto.js';
 import { RegisterDto } from './dto/register.dto.js';
+import { RestoreAvatarDto } from './dto/restore-avatar.dto.js';
 import { SessionExchangeDto } from './dto/session-exchange.dto.js';
 import { CheckResetTokenDto } from './dto/check-reset-token.dto.js';
 import { ResetPasswordDto } from './dto/reset-password.dto.js';
@@ -169,6 +171,14 @@ export class UserAuthController {
     }
     const avatarUrl = await this.imgbbService.uploadImage(file.buffer, file.originalname);
     return this.userProfileService.updateAvatar(user.id, avatarUrl);
+  }
+
+  // "Undo" after changing or removing the photo: the one it had before,
+  // which the app still knows. Only our uploads and Google photos.
+  @UseGuards(UserAuthGuard)
+  @Put('avatar')
+  restoreAvatar(@CurrentUser() user: RequestUser, @Body() dto: RestoreAvatarDto) {
+    return this.userProfileService.updateAvatar(user.id, dto.url);
   }
 
   // "Remove photo": back to the initials.
