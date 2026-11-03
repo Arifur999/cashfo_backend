@@ -1522,6 +1522,9 @@ model Book {
   finishedAt DateTime?
   createdAt  DateTime   @default(now())
   updatedAt  DateTime   @updatedAt
+  // Put down for now (Reading now's "Pause"): still READING with its page
+  // kept, shown under Up next until it is resumed or read on.
+  pausedAt   DateTime?
   logs       BookLog[]
   notes      BookNote[]
 

@@ -1,6 +1,6 @@
 import { BookStatus } from '@prisma/client';
 import { Transform } from 'class-transformer';
-import { IsEnum, IsIn, IsInt, IsNotEmpty, IsString, Max, MaxLength, Min, ValidateIf } from 'class-validator';
+import { IsBoolean, IsEnum, IsIn, IsInt, IsNotEmpty, IsString, Max, MaxLength, Min, ValidateIf } from 'class-validator';
 import { BOOK_COLORS } from '../book-colors.js';
 import { trim, whenSent } from '../../common/dto.js';
 
@@ -39,4 +39,9 @@ export class UpdateBookDto {
   @ValidateIf(whenSent)
   @IsIn(BOOK_COLORS)
   color?: string;
+
+  // Put a book being read down for now (its page kept), or take it up again.
+  @ValidateIf(whenSent)
+  @IsBoolean()
+  paused?: boolean;
 }

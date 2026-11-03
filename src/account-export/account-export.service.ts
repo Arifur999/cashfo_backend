@@ -219,8 +219,8 @@ export class AccountExportService {
       {
         name: 'books.csv',
         data: toCsv(
-          ['Title', 'Author', 'Pages', 'Pages read', 'Status', 'Started', 'Finished', 'Added'],
-          books.map((b) => [b.title, b.author, b.totalPages, b.pagesRead, b.status, b.startedAt, b.finishedAt, b.createdAt]),
+          ['Title', 'Author', 'Pages', 'Pages read', 'Status', 'Paused', 'Started', 'Finished', 'Added'],
+          books.map((b) => [b.title, b.author, b.totalPages, b.pagesRead, b.status, b.pausedAt, b.startedAt, b.finishedAt, b.createdAt]),
         ),
       },
       { name: 'reading-log.csv', data: toCsv(['Date', 'Book', 'Pages'], books.flatMap((b) => b.logs.map((l) => [day(l.date), b.title, l.pages]))) },

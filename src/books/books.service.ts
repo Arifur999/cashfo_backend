@@ -32,6 +32,8 @@ export interface BookView {
   // Asia/Dhaka calendar year of finishedAt -- so the client never has to guess
   // the timezone when counting "finished this year".
   finishedYear: number | null;
+  // Paused while being read (still READING, its page kept).
+  pausedAt: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -105,6 +107,7 @@ function toView(book: Book): BookView {
     startedAt: book.startedAt?.toISOString() ?? null,
     finishedAt: book.finishedAt?.toISOString() ?? null,
     finishedYear: book.finishedAt ? dhakaYear(book.finishedAt) : null,
+    pausedAt: book.pausedAt?.toISOString() ?? null,
     createdAt: book.createdAt.toISOString(),
     updatedAt: book.updatedAt.toISOString(),
   };
@@ -122,11 +125,24 @@ function asShelfItem(book: Book): ShelfItem<BookStatus> {
 
 // The new column values for an edit of `current`. Pure, so it can be re-run on
 // a fresh read when a concurrent write is detected.
-function buildUpdate(current: Book, dto: UpdateBookDto, now: Date) {
+export function buildUpdate(current: Book, dto: UpdateBookDto, now: Date) {
   const title = dto.title !== undefined ? cleanRequiredText(dto.title, 'title', MAX_TITLE_LENGTH) : current.title;
   const author = dto.author !== undefined ? cleanOptionalText(dto.author, 'author', MAX_AUTHOR_LENGTH) : current.author;
   const totalPages = dto.totalPages ?? current.totalPages;
   const shelf = settleShelf(SHELVES, asShelfItem(current), { status: dto.status, progress: dto.pagesRead, total: totalPages }, now, MESSAGES);
+  if (dto.paused === true && shelf.status !== BookStatus.READING) throw new BadRequestException('Only a book being read can be paused');
+  // Paused only while being read: an explicit pause or resume, else reading
+  // on (a new page) takes it up again, and any other edit leaves it be.
+  const pausedAt =
+    shelf.status !== BookStatus.READING
+      ? null
+      : dto.paused !== undefined
+        ? dto.paused
+          ? (current.pausedAt ?? now)
+          : null
+        : shelf.progress !== current.pagesRead
+          ? null
+          : current.pausedAt;
   return {
     title,
     author,
@@ -136,6 +152,7 @@ function buildUpdate(current: Book, dto: UpdateBookDto, now: Date) {
     color: dto.color ?? current.color,
     startedAt: shelf.startedAt,
     finishedAt: shelf.doneAt,
+    pausedAt,
   };
 }
 

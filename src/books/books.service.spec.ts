@@ -1,4 +1,4 @@
-import { BooksService } from './books.service.js';
+import { BooksService, buildUpdate } from './books.service.js';
 
 describe('BooksService.year', () => {
   beforeEach(() => vi.useFakeTimers({ now: new Date('2026-11-03T08:00:00.000Z') }));
@@ -39,5 +39,45 @@ describe('BooksService.year', () => {
       years: [2026, 2025, 2024, 2023],
     });
     await expect(setup({ firstLog: '' }).service.year('user-1', 2026)).resolves.toMatchObject({ years: [2026] });
+  });
+});
+
+describe('buildUpdate: pausing a book', () => {
+  const now = new Date('2026-11-03T08:00:00.000Z');
+  const book = (more: Partial<{ status: 'WANT_TO_READ' | 'READING' | 'FINISHED'; pagesRead: number; pausedAt: Date | null }> = {}) =>
+    ({
+      id: 'b',
+      userId: 'user-1',
+      title: 'Deep Work',
+      author: '',
+      totalPages: 296,
+      pagesRead: 60,
+      status: 'READING',
+      color: 'walnut',
+      startedAt: new Date('2026-10-01T00:00:00.000Z'),
+      finishedAt: null,
+      pausedAt: null,
+      createdAt: now,
+      updatedAt: now,
+      ...more,
+    }) as never;
+
+  it('keeps the page while paused, and resumes', () => {
+    const paused = buildUpdate(book(), { paused: true }, now);
+    expect(paused).toMatchObject({ status: 'READING', pagesRead: 60, pausedAt: now });
+    const earlier = new Date('2026-11-01T00:00:00.000Z');
+    expect(buildUpdate(book({ pausedAt: earlier }), { paused: true }, now).pausedAt).toBe(earlier);
+    expect(buildUpdate(book({ pausedAt: earlier }), { paused: false }, now).pausedAt).toBeNull();
+  });
+
+  it('takes it up again on a new page, and stays paused through other edits', () => {
+    const earlier = new Date('2026-11-01T00:00:00.000Z');
+    expect(buildUpdate(book({ pausedAt: earlier }), { pagesRead: 80 }, now).pausedAt).toBeNull();
+    expect(buildUpdate(book({ pausedAt: earlier }), { title: 'Deep Work 2' }, now).pausedAt).toBe(earlier);
+    expect(buildUpdate(book({ pausedAt: earlier }), { status: 'FINISHED' }, now).pausedAt).toBeNull();
+  });
+
+  it('pauses only a book being read', () => {
+    expect(() => buildUpdate(book({ status: 'WANT_TO_READ', pagesRead: 0 }), { paused: true }, now)).toThrow('Only a book being read can be paused');
   });
 });
