@@ -178,10 +178,12 @@ export class SubscriptionsService {
     }
   }
 
-  // Unpaid checkouts past their time fail as "expired".
+  // Unpaid checkouts past their time fail as "expired". One whose money
+  // the customer sent has no end (expiresAt null); submittedAt: null is a
+  // second guard.
   async expirePendingPayments(now = new Date(), userId?: string) {
     const lapsed = await this.prisma.payment.findMany({
-      where: { status: 'PENDING', expiresAt: { lte: now }, ...(userId && { userId }) },
+      where: { status: 'PENDING', expiresAt: { lte: now }, submittedAt: null, ...(userId && { userId }) },
       select: { id: true, userId: true, amount: true, plan: { select: { name: true } } },
       take: SWEEP_BATCH,
     });

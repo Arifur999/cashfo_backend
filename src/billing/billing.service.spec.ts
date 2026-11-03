@@ -1,4 +1,4 @@
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
 import { BillingService } from './billing.service.js';
 
 const MONTHLY = {
@@ -35,12 +35,17 @@ const setup = ({
   usedBefore = 0,
   sub = FREE_SUB as Record<string, unknown>,
   openCheckouts = 0,
+  // The customer's open payment whose money they sent, and another payment
+  // that already has the TrxID.
+  sentOpen = null as { id: string } | null,
+  usedReference = null as { id: string } | null,
 } = {}) => {
   const tx = {
     $executeRaw: vi.fn().mockResolvedValue(0),
     coupon: { findUniqueOrThrow: vi.fn().mockResolvedValue({ timesRedeemed: (found?.timesRedeemed as number) ?? 0 }) },
     payment: {
       count: vi.fn().mockResolvedValue(openCheckouts),
+      findFirst: vi.fn((args: { where: Record<string, unknown> }) => Promise.resolve(args.where.submittedAt ? sentOpen : usedReference)),
       updateMany: vi.fn().mockResolvedValue({ count: 1 }),
       create: vi.fn((args: { data: Record<string, unknown> }) => Promise.resolve({ id: 'abcd1234-0000', expiresAt: new Date(), ...args.data })),
     },
@@ -137,7 +142,9 @@ describe('BillingService.checkout', () => {
     const error = await full.service.checkout('u-1', { planId: 'monthly', gateway: 'BKASH', couponCode: 'EID20' }).catch((e: unknown) => e);
     expect((error as BadRequestException).getResponse()).toMatchObject({ reason: 'USED_UP' });
     expect(full.tx.payment.create).not.toHaveBeenCalled();
-    expect(full.tx.payment.count).toHaveBeenCalledWith({ where: { couponId: 'c-1', status: 'PENDING', expiresAt: { gt: expect.any(Date) }, NOT: { userId: 'u-1' } } });
+    expect(full.tx.payment.count).toHaveBeenCalledWith({
+      where: { couponId: 'c-1', status: 'PENDING', OR: [{ expiresAt: null }, { expiresAt: { gt: expect.any(Date) } }], NOT: { userId: 'u-1' } },
+    });
 
     const room = setup({ found: coupon({ maxRedemptions: 10, timesRedeemed: 8 }), openCheckouts: 1 });
     await room.service.checkout('u-1', { planId: 'monthly', gateway: 'BKASH', couponCode: 'EID20' });
@@ -160,5 +167,86 @@ describe('BillingService.checkout', () => {
     const gone = setup();
     gone.prisma.subscriptionPlan.findUnique.mockResolvedValue({ ...MONTHLY, isActive: false });
     await expect(gone.service.checkout('u-1', { planId: 'monthly', gateway: 'BKASH' })).rejects.toBeInstanceOf(NotFoundException);
+  });
+});
+
+describe('BillingService.checkout with the details of the money sent', () => {
+  it('goes straight to checking: the number as digits, the TrxID in capitals, no end time', async () => {
+    const { service, tx } = setup({ found: null });
+    const result = await service.checkout('u-1', { planId: 'monthly', gateway: 'BKASH', payerAccount: '01711-482915', reference: '9kd7h2x4lm' });
+    expect(tx.payment.create.mock.calls[0][0].data).toMatchObject({
+      payerAccount: '01711482915',
+      gatewayReferenceId: '9KD7H2X4LM',
+      submittedAt: expect.any(Date),
+      expiresAt: null,
+    });
+    expect(result).toMatchObject({ payerAccount: '01711482915', reference: '9KD7H2X4LM' });
+  });
+
+  it('opens nothing new while a payment the customer sent is being checked', async () => {
+    const { service, tx } = setup({ found: null, sentOpen: { id: 'p-sent' } });
+    const error = await service.checkout('u-1', { planId: 'monthly', gateway: 'BKASH' }).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ConflictException);
+    expect((error as ConflictException).getResponse()).toMatchObject({ reason: 'PAYMENT_BEING_CHECKED', paymentId: 'p-sent' });
+    expect(tx.payment.updateMany).not.toHaveBeenCalled();
+    expect(tx.payment.create).not.toHaveBeenCalled();
+  });
+
+  it('refuses a TrxID already on another payment', async () => {
+    const { service, tx } = setup({ found: null, usedReference: { id: 'p-other' } });
+    const error = await service.checkout('u-1', { planId: 'monthly', gateway: 'NAGAD', payerAccount: '01711482915', reference: '7HX2K9QA' }).catch((e: unknown) => e);
+    expect((error as ConflictException).getResponse()).toMatchObject({ reason: 'REFERENCE_USED' });
+    expect(tx.payment.findFirst).toHaveBeenCalledWith({
+      where: { gatewayReferenceId: { equals: '7HX2K9QA', mode: 'insensitive' }, status: { in: ['PENDING', 'SUCCESS', 'REFUNDED'] } },
+      select: { id: true },
+    });
+    expect(tx.payment.create).not.toHaveBeenCalled();
+  });
+
+  it('names the field to fix, and takes no details for an online payment', async () => {
+    const { service, prisma } = setup({ found: null });
+    const error = await service.checkout('u-1', { planId: 'monthly', gateway: 'BKASH', payerAccount: '0171', reference: '9KD7H2X4LM' }).catch((e: unknown) => e);
+    expect((error as BadRequestException).getResponse()).toMatchObject({ field: 'payerAccount' });
+    await expect(service.checkout('u-1', { planId: 'monthly', gateway: 'CARD', payerAccount: '01711482915', reference: '9KD7H2X4LM' })).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+});
+
+describe('BillingService.submitDetails', () => {
+  it("fixes an open checkout's details and stops its clock", async () => {
+    const { service, prisma, tx } = setup();
+    const read = vi.spyOn(service, 'payment').mockResolvedValue({ id: 'p-1' } as never);
+    await service.submitDetails('u-1', 'p-1', { gateway: 'BANK', payerAccount: ' Khaled Mahmud ', reference: 'beftn-2611-0042' });
+    expect(tx.payment.findFirst).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ id: { not: 'p-1' } }) }));
+    expect(tx.payment.updateMany).toHaveBeenCalledWith({
+      where: { id: 'p-1', userId: 'u-1', status: 'PENDING', OR: [{ expiresAt: null }, { expiresAt: { gt: expect.any(Date) } }] },
+      data: { gateway: 'BANK', payerAccount: 'Khaled Mahmud', gatewayReferenceId: 'BEFTN-2611-0042', submittedAt: expect.any(Date), expiresAt: null },
+    });
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    expect(read).toHaveBeenCalledWith('u-1', 'p-1');
+  });
+
+  it('is a 404 for a checkout that is settled, lapsed or not theirs', async () => {
+    const { service, tx } = setup();
+    tx.payment.updateMany.mockResolvedValue({ count: 0 });
+    await expect(service.submitDetails('u-1', 'p-1', { gateway: 'BKASH', payerAccount: '01711482915', reference: '9KD7H2X4LM' })).rejects.toBeInstanceOf(
+      NotFoundException,
+    );
+  });
+});
+
+describe('BillingService.cancelCheckout', () => {
+  it('cancels only a checkout whose money was not sent', async () => {
+    const { service, prisma } = setup();
+    const payment = prisma.payment as unknown as { updateMany: ReturnType<typeof vi.fn>; count: ReturnType<typeof vi.fn> };
+    payment.updateMany = vi.fn().mockResolvedValue({ count: 0 });
+    payment.count = vi.fn().mockResolvedValue(1);
+    await expect(service.cancelCheckout('u-1', 'p-1')).rejects.toBeInstanceOf(ConflictException);
+    expect(payment.updateMany).toHaveBeenCalledWith(expect.objectContaining({ where: { id: 'p-1', userId: 'u-1', status: 'PENDING', submittedAt: null } }));
+
+    payment.count = vi.fn().mockResolvedValue(0);
+    await expect(service.cancelCheckout('u-1', 'p-1')).rejects.toBeInstanceOf(NotFoundException);
   });
 });

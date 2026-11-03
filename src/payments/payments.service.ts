@@ -228,6 +228,8 @@ export class PaymentsService {
         plan: { select: { id: true, name: true, slug: true, billingCycle: true, price: true } },
         invoice: true,
         refund: true,
+        // The customer's screenshot, without its bytes (proof()).
+        proof: { select: { mimeType: true, size: true, createdAt: true } },
       },
     });
     if (!payment) {
@@ -284,12 +286,18 @@ export class PaymentsService {
     };
   }
 
+  async proof(id: string) {
+    const proof = await this.prisma.paymentProof.findUnique({ where: { paymentId: id }, select: { mimeType: true, data: true } });
+    if (!proof) throw new NotFoundException('No screenshot for this payment');
+    return proof;
+  }
+
   // Confirms a customer's checkout: the plan, the period, the invoice and
   // the coupon's use, then the bell and a receipt.
   markPaid(id: string, dto: MarkPaidDto, adminId: string, ipAddress?: string) {
     return this.requireConfirmation().markPaid(
       id,
-      { reference: dto.gatewayReferenceId, paidAt: dto.paidAt ? new Date(dto.paidAt) : undefined, payerAccount: dto.payerAccount ?? null, note: dto.note ?? null },
+      { reference: dto.gatewayReferenceId, paidAt: dto.paidAt ? new Date(dto.paidAt) : undefined, payerAccount: dto.payerAccount || undefined, note: dto.note ?? null },
       { adminId, ipAddress },
     );
   }

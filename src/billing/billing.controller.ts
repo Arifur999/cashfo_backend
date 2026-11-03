@@ -9,21 +9,29 @@ import {
   HttpCode,
   NotFoundException,
   Param,
+  Patch,
   Post,
   Query,
   Req,
   StreamableFile,
+  UploadedFile,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { Throttle } from '@nestjs/throttler';
 import type { Request } from 'express';
 import { InvoicePdfService } from '../invoices/invoice-pdf.service.js';
+import { screenshotMulterOptions } from '../support/screenshot-upload.js';
 import { CurrentUser } from '../user-auth/decorators/current-user.decorator.js';
 import { UserAuthGuard } from '../user-auth/guards/user-auth.guard.js';
 import type { RequestUser } from '../user-auth/interfaces/request-user.interface.js';
 import { BillingService } from './billing.service.js';
-import { BillingPaymentsQueryDto, CheckoutDto, CouponPreviewDto, PlanChoiceDto } from './dto/checkout.dto.js';
+import { BillingPaymentsQueryDto, CheckoutDto, CouponPreviewDto, PaymentDetailsDto, PlanChoiceDto } from './dto/checkout.dto.js';
 import { PaymentGateways } from './gateways/payment-gateways.js';
 import { PaymentConfirmationService } from './payment-confirmation.service.js';
+
+const DETAILS_THROTTLE = { default: { limit: 10, ttl: 60 * 1000 } };
 
 // The customer's plan and payments. A "View as customer" session reads
 // only: UserAuthGuard refuses its writes.
@@ -50,6 +58,11 @@ export class BillingController {
     return this.billing.payments(user.id, query.page ?? 1, query.limit ?? 10);
   }
 
+  @Get('payments/:id')
+  payment(@CurrentUser() user: RequestUser, @Param('id') id: string) {
+    return this.billing.payment(user.id, id);
+  }
+
   // The customer's own invoice as a PDF; anyone else's is a 404.
   @Get('invoices/:id/pdf')
   @Header('Cache-Control', 'private, no-store')
@@ -73,6 +86,26 @@ export class BillingController {
   @Post('checkout')
   checkout(@CurrentUser() user: RequestUser, @Body() dto: CheckoutDto) {
     return this.billing.checkout(user.id, dto);
+  }
+
+  @Throttle(DETAILS_THROTTLE)
+  @Patch('checkout/:paymentId')
+  submitDetails(@CurrentUser() user: RequestUser, @Param('paymentId') paymentId: string, @Body() dto: PaymentDetailsDto) {
+    return this.billing.submitDetails(user.id, paymentId, dto);
+  }
+
+  // The screenshot of the money sent: a JPEG, PNG or WEBP up to 5 MB.
+  @Throttle(DETAILS_THROTTLE)
+  @Post('checkout/:paymentId/proof')
+  @HttpCode(200)
+  @UseInterceptors(FileInterceptor('screenshot', screenshotMulterOptions))
+  saveProof(@CurrentUser() user: RequestUser, @Param('paymentId') paymentId: string, @UploadedFile() screenshot?: Express.Multer.File) {
+    return this.billing.saveProof(user.id, paymentId, screenshot);
+  }
+
+  @Delete('checkout/:paymentId/proof')
+  removeProof(@CurrentUser() user: RequestUser, @Param('paymentId') paymentId: string) {
+    return this.billing.removeProof(user.id, paymentId);
   }
 
   @Delete('checkout/:paymentId')
