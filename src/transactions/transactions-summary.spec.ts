@@ -135,4 +135,14 @@ describe('TransactionsService.summarizeTransactions', () => {
     }
     expect(totalFilters.map((parts) => parts[2])).toEqual([{ transactionType: 'INCOME' }, { transactionType: 'EXPENSE' }, { transactionType: 'TRANSFER' }]);
   });
+
+  it('keeps only what files under no category, beside the other filters', async () => {
+    const { service, prisma } = setup();
+    prisma.transaction.count.mockImplementation(() => Promise.resolve(0));
+    await service.listTransactions('biz-1', { ...filters({ accountId: 'cash' }), uncategorised: true, page: 1, limit: 5 });
+    expect(prisma.transaction.count.mock.calls[0][0].where).toMatchObject({
+      entries: { some: { accountId: 'cash' } },
+      AND: [{ entries: { none: { categoryId: { not: null } } } }],
+    });
+  });
 });

@@ -652,6 +652,7 @@ export class TransactionsService {
     // A loan entry's charge shows on the entry's row, not as a row of its own.
     if (filters.excludeCharges) where.chargeForId = null;
     if (filters.standingOnly) Object.assign(where, STANDING_TRANSACTION);
+    if (filters.uncategorised) where.AND = [...(Array.isArray(where.AND) ? where.AND : where.AND ? [where.AND] : []), { entries: { none: { categoryId: { not: null } } } }];
     if (filters.search) {
       // Quick entries keep what the customer typed on the entry (its note
       // and category), not on the transaction's description.
