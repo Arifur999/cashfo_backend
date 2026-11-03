@@ -59,6 +59,7 @@ describe('NotesService', () => {
         deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
       },
       $transaction: vi.fn().mockResolvedValue([]),
+      user: { findUnique: vi.fn().mockResolvedValue({ preferredLanguage: 'EN' }) },
     };
     return { service: new NotesService(prisma as never), prisma };
   };
@@ -74,6 +75,11 @@ describe('NotesService', () => {
       'Study',
       'Personal',
     ]);
+
+    const bangla = setup(null);
+    bangla.prisma.user.findUnique.mockResolvedValue({ preferredLanguage: 'BN' });
+    await bangla.service.start('user-1');
+    expect(bangla.prisma.noteCategory.createMany.mock.calls[0][0].data[0]).toEqual({ userId: 'user-1', name: 'কাজ', color: 'blue' });
 
     const later = setup({ id: 'settings-1' });
     await later.service.overview('user-1');

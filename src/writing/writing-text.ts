@@ -7,13 +7,14 @@ export const NOTE_COLORS = ['white', 'yellow', 'green', 'blue', 'pink', 'purple'
 // A category's dot (the board's palette, in the order "Add" hands them out).
 export const CATEGORY_COLORS = ['blue', 'rose', 'amber', 'violet', 'teal', 'green', 'slate'] as const;
 
-// What a new writer starts with; deleting them all never brings them back.
-export const STARTER_CATEGORIES: { name: string; color: (typeof CATEGORY_COLORS)[number] }[] = [
-  { name: 'Work', color: 'blue' },
-  { name: 'Family', color: 'rose' },
-  { name: 'Business', color: 'amber' },
-  { name: 'Study', color: 'violet' },
-  { name: 'Personal', color: 'teal' },
+// What a new writer starts with, in their language (they are the writer's
+// own names from then on); deleting them all never brings them back.
+export const STARTER_CATEGORIES: { en: string; bn: string; color: (typeof CATEGORY_COLORS)[number] }[] = [
+  { en: 'Work', bn: 'কাজ', color: 'blue' },
+  { en: 'Family', bn: 'পরিবার', color: 'rose' },
+  { en: 'Business', bn: 'ব্যবসা', color: 'amber' },
+  { en: 'Study', bn: 'পড়াশোনা', color: 'violet' },
+  { en: 'Personal', bn: 'ব্যক্তিগত', color: 'teal' },
 ];
 
 export const NOTE_TITLE_MAX = 120;

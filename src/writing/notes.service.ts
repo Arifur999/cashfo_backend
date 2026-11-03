@@ -142,10 +142,14 @@ export class NotesService {
   // nothing.
   async start(userId: string): Promise<void> {
     if (await this.prisma.writingSettings.findUnique({ where: { userId }, select: { id: true } })) return;
+    const user = await this.prisma.user.findUnique({ where: { id: userId }, select: { preferredLanguage: true } });
+    const bangla = user?.preferredLanguage === 'BN';
     try {
       await this.prisma.$transaction([
         this.prisma.writingSettings.create({ data: { userId } }),
-        this.prisma.noteCategory.createMany({ data: STARTER_CATEGORIES.map((category) => ({ userId, ...category })) }),
+        this.prisma.noteCategory.createMany({
+          data: STARTER_CATEGORIES.map((category) => ({ userId, name: bangla ? category.bn : category.en, color: category.color })),
+        }),
       ]);
     } catch (error) {
       if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') return;
