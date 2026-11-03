@@ -3,6 +3,7 @@ import type { Request } from 'express';
 import { UsageEventsService } from '../analytics/usage-events.service.js';
 import { USAGE_EVENTS } from '../analytics/usage-events.js';
 import type { RequestUser } from '../user-auth/interfaces/request-user.interface.js';
+import { ActiveMonthsQueryDto } from './dto/active-months-query.dto.js';
 import { CategoryBreakdownQueryDto } from './dto/category-breakdown-query.dto.js';
 import { GeneralLedgerQueryDto } from './dto/general-ledger-query.dto.js';
 import { MonthlyBreakdownQueryDto } from './dto/monthly-breakdown-query.dto.js';
@@ -52,11 +53,12 @@ export class ReportsController {
     return this.reportsService.getMonthlyBreakdown(businessId, query);
   }
 
-  // The months with any income or expense (Overview's period picker); not
-  // a report view of its own, so no usage event.
+  // The months with anything to show, for a period picker: income and
+  // expense (Overview), one account (?accountId=, its ledger) or transfers
+  // (?scope=transfers). Not a report view of its own, so no usage event.
   @Get('reports/active-months')
-  activeMonths(@Param('businessId') businessId: string) {
-    return this.reportsService.getActiveMonths(businessId);
+  activeMonths(@Param('businessId') businessId: string, @Query() query: ActiveMonthsQueryDto) {
+    return this.reportsService.getActiveMonths(businessId, query);
   }
 
   @Get('reports/income-vs-savings')

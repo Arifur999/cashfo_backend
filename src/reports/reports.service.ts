@@ -3,6 +3,8 @@ import { AccountType, Prisma } from '@prisma/client';
 import { isDebitPositive } from '../accounts/account-balance.service.js';
 import { dhakaMonthRange } from '../common/dhaka.js';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { activeMonthsWhere } from './active-months.js';
+import type { ActiveMonthsQueryDto } from './dto/active-months-query.dto.js';
 import { CategoryBreakdownQueryDto } from './dto/category-breakdown-query.dto.js';
 import { GeneralLedgerQueryDto } from './dto/general-ledger-query.dto.js';
 import { MonthlyBreakdownQueryDto } from './dto/monthly-breakdown-query.dto.js';
@@ -252,10 +254,10 @@ export class ReportsService {
   // the empty months and list the years that have any. The same "live" rule
   // as the breakdowns (POSTED, not a reversal). transactionDate is a date
   // (@db.Date), so one group per day, folded into months here.
-  async getActiveMonths(businessId: string) {
+  async getActiveMonths(businessId: string, query: ActiveMonthsQueryDto = {}) {
     const days = await this.prisma.transaction.groupBy({
       by: ['transactionDate'],
-      where: { businessId, status: 'POSTED', reversalOfId: null, transactionType: { in: ['INCOME', 'EXPENSE'] } },
+      where: activeMonthsWhere(businessId, query),
       _count: { _all: true },
     });
     return foldIntoMonths(days.map((row) => ({ date: row.transactionDate, count: row._count._all })));
