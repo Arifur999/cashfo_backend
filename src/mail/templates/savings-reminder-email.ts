@@ -21,7 +21,7 @@ export interface SavingsReminderEmail {
 // month from now". Sent in the reader's language.
 export function renderSavingsReminderEmail(locale: 'en' | 'bn', email: SavingsReminderEmail, platformName: string): { subject: string; html: string; text: string } {
   const en = locale === 'en';
-  const taka = (amount: string) => `৳ ${amount}`;
+  const taka = (amount: string) => `${en ? 'TK' : '৳'} ${amount}`;
   const subject = en ? `Reminder: ${email.goalName}` : `মনে করিয়ে দিচ্ছি: ${email.goalName}`;
   const greeting = en ? `Hi ${email.name},` : `প্রিয় ${email.name},`;
   const lead =

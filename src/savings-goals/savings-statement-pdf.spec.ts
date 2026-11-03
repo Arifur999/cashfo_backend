@@ -3,10 +3,10 @@ import { dayLabel, renderStatementPdf, statementFileName, statementRowText, taka
 
 describe('takaLabel', () => {
   it('groups in lakhs and shows paisa only when there are some', () => {
-    expect(takaLabel('1250000.00')).toBe('Tk 12,50,000');
-    expect(takaLabel('2699.10')).toBe('Tk 2,699.10');
-    expect(takaLabel(0)).toBe('Tk 0');
-    expect(takaLabel(-500)).toBe('-Tk 500');
+    expect(takaLabel('1250000.00')).toBe('TK 12,50,000');
+    expect(takaLabel('2699.10')).toBe('TK 2,699.10');
+    expect(takaLabel(0)).toBe('TK 0');
+    expect(takaLabel(-500)).toBe('-TK 500');
   });
 });
 

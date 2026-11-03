@@ -18,7 +18,7 @@ export function renderBillingReceiptEmail(locale: 'en' | 'bn', receipt: ReceiptE
   const subject = en ? `Payment received: ${receipt.invoiceNumber}` : `পেমেন্ট পেয়েছি: ${receipt.invoiceNumber}`;
   const greeting = en ? `Hi ${receipt.name},` : `প্রিয় ${receipt.name},`;
   const body = en
-    ? `We received your payment of ৳ ${receipt.amount} for ${receipt.planName}.`
+    ? `We received your payment of TK ${receipt.amount} for ${receipt.planName}.`
     : `${receipt.planName}-এর জন্য আপনার ৳ ${receipt.amount} পেমেন্ট আমরা পেয়েছি।`;
   const until = receipt.paidUntil ? (en ? `Your plan runs until ${receipt.paidUntil}.` : `আপনার প্ল্যান ${receipt.paidUntil} পর্যন্ত চলবে।`) : '';
   const invoice = en ? `Invoice: ${receipt.invoiceNumber}` : `ইনভয়েস: ${receipt.invoiceNumber}`;

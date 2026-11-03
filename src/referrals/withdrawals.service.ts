@@ -179,7 +179,7 @@ export class WithdrawalsService {
     }
     const amountPaisa = lines.reduce((sum, line) => sum + toPaisa(line.amount), 0);
     if (amountPaisa < settings.minWithdrawal * 100) {
-      throw refuse('BELOW_MINIMUM', `The smallest withdrawal is ৳ ${formatTaka(settings.minWithdrawal * 100)}`, {
+      throw refuse('BELOW_MINIMUM', `The smallest withdrawal is TK ${formatTaka(settings.minWithdrawal * 100)}`, {
         minWithdrawal: fromPaisa(settings.minWithdrawal * 100),
       });
     }
@@ -209,7 +209,7 @@ export class WithdrawalsService {
   private actionText(amountPaisa: number, method: MethodSnapshot) {
     const where = destinationLabel(method);
     return {
-      en: `withdraw ৳ ${formatTaka(amountPaisa, 'en')} to ${where}`,
+      en: `withdraw TK ${formatTaka(amountPaisa, 'en')} to ${where}`,
       bn: `${where.replace(METHOD_NAMES[method.type], BN_METHOD[method.type])}-এ ৳ ${formatTaka(amountPaisa, 'bn')} তোলা`,
     };
   }
