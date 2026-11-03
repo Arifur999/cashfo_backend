@@ -97,12 +97,26 @@ describe('beforeFire', () => {
 
 describe('challenges', () => {
   const createdAt = new Date('2026-10-20T10:00:00.000Z');
+  const sheet = (totalDays: number, more: { startsOn?: Date; endedOnDay?: number } = {}) => ({
+    createdAt,
+    startsOn: more.startsOn ?? null,
+    totalDays,
+    endedOnDay: more.endedOnDay ?? null,
+  });
 
   it('counts days from the day it was created, and stops once it is over', () => {
-    expect(challengeDay(createdAt, 21, '2026-10-20')).toBe(1);
-    expect(challengeDay(createdAt, 21, '2026-10-22')).toBe(3);
-    expect(challengeDay(createdAt, 3, '2026-10-23')).toBeNull();
-    expect(challengeDay(createdAt, 21, '2026-10-19')).toBeNull();
+    expect(challengeDay(sheet(21), '2026-10-20')).toBe(1);
+    expect(challengeDay(sheet(21), '2026-10-22')).toBe(3);
+    expect(challengeDay(sheet(3), '2026-10-23')).toBeNull();
+    expect(challengeDay(sheet(21), '2026-10-19')).toBeNull();
+  });
+
+  it('counts from its start date, and stops after the day it was ended', () => {
+    const tomorrow = sheet(21, { startsOn: new Date('2026-10-21T00:00:00.000Z') });
+    expect(challengeDay(tomorrow, '2026-10-20')).toBeNull();
+    expect(challengeDay(tomorrow, '2026-10-21')).toBe(1);
+    expect(challengeDay(sheet(21, { endedOnDay: 2 }), '2026-10-21')).toBe(2);
+    expect(challengeDay(sheet(21, { endedOnDay: 2 }), '2026-10-22')).toBeNull();
   });
 
   it('is done for the day once every item is ticked, or the day itself', () => {

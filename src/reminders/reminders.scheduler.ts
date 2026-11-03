@@ -149,7 +149,17 @@ export class RemindersScheduler implements OnApplicationBootstrap, OnModuleDestr
       this.prisma.habitLog.findMany({ where: { habitId: { in: idsOf('HABIT') }, date: { in: days }, completed: true }, select: { habitId: true, date: true } }),
       this.prisma.habitMonthTracker.findMany({
         where: { id: { in: idsOf('CHALLENGE') }, category: 'Others' },
-        select: { id: true, userId: true, name: true, totalDays: true, items: true, createdAt: true, checks: { select: { day: true, item: true } } },
+        select: {
+          id: true,
+          userId: true,
+          name: true,
+          totalDays: true,
+          items: true,
+          createdAt: true,
+          startsOn: true,
+          endedOnDay: true,
+          checks: { select: { day: true, item: true } },
+        },
       }),
       this.prisma.book.findMany({ where: { id: { in: idsOf('BOOK') } }, select: { id: true, userId: true, title: true } }),
       this.prisma.skill.findMany({ where: { id: { in: idsOf('SKILL') } }, select: { id: true, userId: true, name: true } }),
@@ -184,7 +194,16 @@ export class RemindersScheduler implements OnApplicationBootstrap, OnModuleDestr
       doneHabit: Set<string>;
       trackerById: Map<
         string,
-        { userId: string; name: string | null; totalDays: number | null; items: string[]; createdAt: Date; checks: { day: number; item: string }[] }
+        {
+          userId: string;
+          name: string | null;
+          totalDays: number | null;
+          items: string[];
+          createdAt: Date;
+          startsOn: Date | null;
+          endedOnDay: number | null;
+          checks: { day: number; item: string }[];
+        }
       >;
       bookById: Map<string, { userId: string; title: string }>;
       skillById: Map<string, { userId: string; name: string }>;
@@ -199,7 +218,7 @@ export class RemindersScheduler implements OnApplicationBootstrap, OnModuleDestr
       case 'CHALLENGE': {
         const tracker = found.trackerById.get(row.targetKey);
         if (!tracker || tracker.userId !== row.userId) return null;
-        const n = challengeDay(tracker.createdAt, tracker.totalDays, fire.day);
+        const n = challengeDay(tracker, fire.day);
         if (n === null) return null;
         const ticked = tracker.checks.filter((check) => check.day === n).map((check) => check.item);
         if (challengeDone(tracker.items, ticked)) return null;

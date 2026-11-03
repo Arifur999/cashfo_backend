@@ -1,6 +1,6 @@
 import { BadRequestException, ConflictException, Injectable, InternalServerErrorException, NotFoundException } from '@nestjs/common';
 import { Prisma, type PrayerStatus } from '@prisma/client';
-import { dhakaToday } from '../common/dhaka.js';
+import { dhakaDateKey, dhakaToday } from '../common/dhaka.js';
 import { createWithinCap } from '../common/user-cap.js';
 import { cleanRequiredText, UNSAFE_TEXT } from '../common/text.js';
 import { PrismaService } from '../prisma/prisma.service.js';
@@ -52,6 +52,22 @@ function configFor(category: string): TrackerConfig | null {
 
 export function daysInMonth(month: number, year: number): number {
   return new Date(Date.UTC(year, month, 0)).getUTCDate();
+}
+
+// A challenge's day 1 ("YYYY-MM-DD"): its start date, or for a row from
+// before that was kept, the UTC date of createdAt as the app counted it.
+export function challengeStart(tracker: { startsOn: Date | null; createdAt: Date }): string {
+  return (tracker.startsOn ?? tracker.createdAt).toISOString().slice(0, 10);
+}
+
+const DAY_MS = 86_400_000;
+const shiftKey = (key: string, days: number): string => new Date(Date.parse(`${key}T00:00:00.000Z`) + days * DAY_MS).toISOString().slice(0, 10);
+const dateOnly = (key: string): Date => new Date(`${key}T00:00:00.000Z`);
+
+// Today's day number on a challenge (Dhaka calendar): 0 or less before it
+// begins, past its days once it is over.
+export function challengeTodayDay(tracker: { startsOn: Date | null; createdAt: Date }, today: string = dhakaDateKey(new Date())): number {
+  return Math.round((Date.parse(`${today}T00:00:00.000Z`) - Date.parse(`${challengeStart(tracker)}T00:00:00.000Z`)) / DAY_MS) + 1;
 }
 
 // A sheet's real number of days: Ramadan/Others store it directly, a
@@ -135,6 +151,9 @@ export interface HabitTrackerView {
   createdAt: string;
   // Ramadan only: missed fasts made up since ("I kept one").
   fastsMadeUp: number;
+  // Others only: the date day 1 falls on, and the day it was ended early.
+  startsOn: string | null;
+  endedOnDay: number | null;
 }
 
 @Injectable()
@@ -212,7 +231,7 @@ export class HabitTrackersService {
       (tx) => tx.habitMonthTracker.count({ where: { userId, category: 'Others' } }),
       (tx) =>
         tx.habitMonthTracker.create({
-          data: { userId, category: 'Others', month: null, year: null, name, totalDays: dto.totalDays, items: [] },
+          data: { userId, category: 'Others', month: null, year: null, name, totalDays: dto.totalDays, items: [], startsOn: dateOnly(shiftKey(dhakaDateKey(new Date()), dto.startsTomorrow ? 1 : 0)) },
           include: VIEW_INCLUDE,
         }),
     );
@@ -231,6 +250,10 @@ export class HabitTrackersService {
     }
     if (dto.day > sheetDays(tracker)) {
       throw new BadRequestException(`Day ${dto.day} is outside this sheet`);
+    }
+
+    if (dto.checked && tracker.endedOnDay !== null && dto.day > tracker.endedOnDay) {
+      throw new BadRequestException(`This challenge was ended on day ${tracker.endedOnDay}`);
     }
 
     if (dto.checked) {
@@ -293,6 +316,35 @@ export class HabitTrackersService {
     }
     await this.prisma.habitMonthTracker.update({ where: { id }, data: { fastsMadeUp: count } });
     return this.get(userId, id);
+  }
+
+  // "End challenge": a challenge going on stops at today's day, which moves
+  // it to Not completed; the days after it are never reached.
+  async endChallenge(userId: string, id: string): Promise<HabitTrackerView> {
+    const tracker = await this.requireChallenge(userId, id);
+    if (tracker.endedOnDay !== null) throw new BadRequestException('This challenge was already ended');
+    const day = challengeTodayDay(tracker);
+    if (day < 1) throw new BadRequestException("This challenge hasn't begun yet. Delete it instead.");
+    if (day > sheetDays(tracker)) throw new BadRequestException('This challenge is already over');
+    // Only while it is still going: a second End from another tab is a no-op.
+    await this.prisma.habitMonthTracker.updateMany({ where: { id, endedOnDay: null }, data: { endedOnDay: day } });
+    return this.get(userId, id);
+  }
+
+  // "Restart": the same challenge from day 1 today, its ticks cleared.
+  async restartChallenge(userId: string, id: string): Promise<HabitTrackerView> {
+    await this.requireChallenge(userId, id);
+    await this.prisma.$transaction([
+      this.prisma.habitMonthCheck.deleteMany({ where: { trackerId: id } }),
+      this.prisma.habitMonthTracker.update({ where: { id }, data: { startsOn: dateOnly(dhakaDateKey(new Date())), endedOnDay: null } }),
+    ]);
+    return this.get(userId, id);
+  }
+
+  private async requireChallenge(userId: string, id: string) {
+    const tracker = await this.requireTracker(userId, id);
+    if (configFor(tracker.category)?.kind !== 'custom') throw new BadRequestException('Only a challenge can be ended or restarted');
+    return tracker;
   }
 
   // Ramadan › Today's "Get ready" steps for one Ramadan.
@@ -438,6 +490,8 @@ export class HabitTrackersService {
     paraLogs: { day: number; paras: number }[];
     createdAt: Date;
     fastsMadeUp: number;
+    startsOn: Date | null;
+    endedOnDay: number | null;
   }): HabitTrackerView {
     // Ramadan/Others sheets are just Day 1..N -- no start date is known, so
     // there's no "today" or elapsed-days notion for them, only Namaz's real
@@ -459,6 +513,8 @@ export class HabitTrackersService {
       paras: tracker.paraLogs,
       createdAt: tracker.createdAt.toISOString(),
       fastsMadeUp: tracker.fastsMadeUp,
+      startsOn: configFor(tracker.category)?.kind === 'custom' ? challengeStart(tracker) : null,
+      endedOnDay: tracker.endedOnDay,
     };
   }
 

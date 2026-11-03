@@ -78,6 +78,16 @@ export class HabitTrackersController {
     return this.habitTrackersService.setParas(user.id, id, dto);
   }
 
+  @Post(':id/end')
+  endChallenge(@CurrentUser() user: RequestUser, @Param('id', ParseUUIDPipe) id: string) {
+    return this.habitTrackersService.endChallenge(user.id, id);
+  }
+
+  @Post(':id/restart')
+  restartChallenge(@CurrentUser() user: RequestUser, @Param('id', ParseUUIDPipe) id: string) {
+    return this.habitTrackersService.restartChallenge(user.id, id);
+  }
+
   @Put(':id/fasts-made-up')
   setFastsMadeUp(@CurrentUser() user: RequestUser, @Param('id', ParseUUIDPipe) id: string, @Body() dto: SetFastsMadeUpDto) {
     return this.habitTrackersService.setFastsMadeUp(user.id, id, dto.count);

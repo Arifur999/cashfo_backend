@@ -170,8 +170,19 @@ export class AccountExportService {
       {
         name: 'month-sheets.csv',
         data: toCsv(
-          ['Sheet', 'Kind', 'Month', 'Year', 'Days', 'Items', 'Fasts made up', 'Created'],
-          sheets.map((t) => [sheetName(t), t.category, t.month, t.year, t.totalDays, t.items.join('; '), t.category === 'Ramadan' ? t.fastsMadeUp : null, t.createdAt]),
+          ['Sheet', 'Kind', 'Month', 'Year', 'Days', 'Items', 'Fasts made up', 'Starts on', 'Ended on day', 'Created'],
+          sheets.map((t) => [
+            sheetName(t),
+            t.category,
+            t.month,
+            t.year,
+            t.totalDays,
+            t.items.join('; '),
+            t.category === 'Ramadan' ? t.fastsMadeUp : null,
+            t.startsOn ? t.startsOn.toISOString().slice(0, 10) : null,
+            t.endedOnDay,
+            t.createdAt,
+          ]),
         ),
       },
       {
