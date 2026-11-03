@@ -45,6 +45,8 @@ interface Ledger {
   entries: EntryRow[];
   holdings: Map<string, Holdings>;
   accountNames: Map<string, string>;
+  // Account numbers, for the account a goal keeps its money in.
+  accountNumbers: Map<string, string | null>;
 }
 
 const decimal = (value: Prisma.Decimal.Value) => new Prisma.Decimal(value);
@@ -460,6 +462,10 @@ export class SavingsGoalsService {
     if (startAmount.greaterThan(dto.targetAmount)) {
       throw new BadRequestException("Already saved can't be more than the target.");
     }
+    // The account it keeps its money in; what was already saved is there
+    // too unless the request says where else.
+    const keptIn = dto.accountId ?? dto.startAccountId ?? null;
+    if (keptIn) await this.requireOpenSavingsAccount(businessId, keptIn);
     const today = dhakaDateOnly(new Date());
     const reached = startAmount.greaterThanOrEqualTo(dto.targetAmount);
     const data = {
@@ -472,6 +478,7 @@ export class SavingsGoalsService {
       reminderChannel: dto.reminderDate ? (dto.reminderChannel ?? 'EMAIL') : dto.reminderChannel,
       description: dto.description,
       startAmount,
+      accountId: keptIn,
       ...(reached && { status: 'COMPLETED' as const, reachedAt: today }),
     };
     if (startAmount.isZero()) return this.prisma.savingsGoal.create({ data });
@@ -480,7 +487,7 @@ export class SavingsGoalsService {
     // into the savings wallet that holds it: a real posting, so the wallet's
     // balance shows it, against the workspace's hidden "saved before"
     // equity account (no cash account paid it in).
-    const accountId = dto.startAccountId as string;
+    const accountId = (dto.startAccountId ?? dto.accountId) as string;
     return this.transactionsService.withLocks([`account:${accountId}`], async (tx) => {
       const wallet = await this.requireSavingsAccount(businessId, accountId, tx);
       if (wallet.status !== 'ACTIVE') throw new BadRequestException('Pick a savings wallet that is not archived.');
@@ -509,6 +516,9 @@ export class SavingsGoalsService {
 
   async update(businessId: string, id: string, dto: UpdateSavingsGoalDto) {
     const existing = await this.requireGoal(businessId, id);
+    // Another account to keep the money in: the next deposits go there; what
+    // is saved stays where it is.
+    if (dto.accountId !== undefined) await this.requireOpenSavingsAccount(businessId, dto.accountId);
     // A new reminder day gets its own email, also after an earlier one went.
     const newReminder = dto.reminderDate !== undefined && (dto.reminderDate ? new Date(dto.reminderDate).getTime() : null) !== (existing.reminderDate?.getTime() ?? null);
     const updated = await this.prisma.savingsGoal.update({
@@ -521,6 +531,7 @@ export class SavingsGoalsService {
         ...(dto.reminderDate !== undefined && { reminderDate: dto.reminderDate ? new Date(dto.reminderDate) : null }),
         ...(dto.reminderChannel !== undefined && { reminderChannel: dto.reminderChannel }),
         ...(dto.description !== undefined && { description: dto.description }),
+        ...(dto.accountId !== undefined && { accountId: dto.accountId }),
         ...(newReminder && { reminderSentFor: null }),
       },
     });
@@ -575,9 +586,13 @@ export class SavingsGoalsService {
   // Transaction engine every other money movement in this app uses (see
   // QuickEntriesService.createTransfer(), which this mirrors exactly).
   async addContribution(businessId: string, goalId: string, dto: AddContributionDto, userId: string) {
-    await this.requireGoal(businessId, goalId);
+    const target = await this.requireGoal(businessId, goalId);
     const fromAccount = await this.requireMoneyAccount(businessId, dto.moneyAccountId);
-    const savingsAccount = await this.requireSavingsAccount(businessId, dto.toAccountId);
+    // Every deposit goes into the account the goal keeps its money in,
+    // unless an older app names one.
+    const toAccountId = dto.toAccountId ?? target.accountId;
+    if (!toAccountId) throw new BadRequestException('Pick the savings account this money goes into.');
+    const savingsAccount = await this.requireSavingsAccount(businessId, toAccountId);
 
     // The posting and the goal's entry commit together -- a failure between
     // them can no longer move the money without crediting the goal. The goal
@@ -602,6 +617,8 @@ export class SavingsGoalsService {
         userId,
         tx,
       );
+      // An older goal with no account yet keeps its money where this went.
+      if (!goal.accountId) await tx.savingsGoal.update({ where: { id: goalId }, data: { accountId: savingsAccount.id } });
 
       return tx.savingsGoalEntry.create({
         data: {
@@ -878,12 +895,21 @@ export class SavingsGoalsService {
   }
 
   // Every entry of a workspace, its goals' holdings, and the account names
-  // they need -- one read, so a list of goals costs the same as one.
+  // they need (the savings accounts' too, which a goal may keep its money in
+  // before any deposit) -- one read, so a list of goals costs the same as one.
   private async ledger(businessId: string, client: Prisma.TransactionClient = this.prisma): Promise<Ledger> {
     const entries = await client.savingsGoalEntry.findMany({ where: { businessId }, select: ENTRY_SELECT });
     const accountIds = [...new Set(entries.flatMap((e) => [e.moneyAccountId, e.savingsAccountId]).filter((v): v is string => !!v))];
-    const accounts = accountIds.length ? await client.account.findMany({ where: { id: { in: accountIds } }, select: { id: true, name: true } }) : [];
-    return { entries, holdings: goalHoldings(entries as HoldingEntry[]), accountNames: new Map(accounts.map((a) => [a.id, a.name])) };
+    const accounts = await client.account.findMany({
+      where: { businessId, OR: [{ id: { in: accountIds } }, { accountType: 'ASSET', accountSubtype: 'savings' }] },
+      select: { id: true, name: true, accountNumber: true },
+    });
+    return {
+      entries,
+      holdings: goalHoldings(entries as HoldingEntry[]),
+      accountNames: new Map(accounts.map((a) => [a.id, a.name])),
+      accountNumbers: new Map(accounts.map((a) => [a.id, a.accountNumber])),
+    };
   }
 
   // Which wallets each entry's money was in: its own wallet, or for an old
@@ -962,6 +988,8 @@ export class SavingsGoalsService {
       addedThisMonth: addedThisMonth.toFixed(2),
       entryCount: mine.length,
       holdings,
+      // The savings account it keeps its money in (Keep the money in).
+      account: goal.accountId ? { id: goal.accountId, name: ledger.accountNames.get(goal.accountId) ?? null, accountNumber: ledger.accountNumbers.get(goal.accountId) ?? null } : null,
       lastWithdrawal: last ? { date: last.date, accountName: last.moneyAccountId ? (ledger.accountNames.get(last.moneyAccountId) ?? null) : null } : null,
     };
   }
@@ -1015,6 +1043,13 @@ export class SavingsGoalsService {
         currentBalance: 0,
       },
     });
+  }
+
+  // A savings account a goal can keep its money in: not archived.
+  private async requireOpenSavingsAccount(businessId: string, accountId: string): Promise<Account> {
+    const account = await this.requireSavingsAccount(businessId, accountId);
+    if (account.status !== 'ACTIVE') throw new BadRequestException('Pick a savings account that is not archived.');
+    return account;
   }
 
   private async requireSavingsAccount(businessId: string, accountId: string, client: Prisma.TransactionClient = this.prisma): Promise<Account> {

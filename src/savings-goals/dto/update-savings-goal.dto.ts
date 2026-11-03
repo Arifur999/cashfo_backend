@@ -39,4 +39,11 @@ export class UpdateSavingsGoalDto {
   @IsOptional()
   @IsString()
   description?: string;
+
+  // Another savings account to keep the money in: the next deposits go
+  // there, what is saved stays where it is.
+  @ValidateIf(whenSent)
+  @IsString()
+  @IsNotEmpty()
+  accountId?: string;
 }
