@@ -67,6 +67,7 @@ export async function purgeUser(tx: Prisma.TransactionClient, userId: string, em
   await tx.journalEntry.deleteMany({ where: { userId } });
   await tx.noteCategory.deleteMany({ where: { userId } });
   await tx.writingSettings.deleteMany({ where: { userId } });
+  await tx.ramadanPrep.deleteMany({ where: { userId } });
   await tx.reminder.deleteMany({ where: { userId } });
   await tx.userNotification.deleteMany({ where: { userId } });
   await tx.pushSubscription.deleteMany({ where: { userId } });

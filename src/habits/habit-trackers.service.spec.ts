@@ -99,3 +99,29 @@ describe('HabitTrackersService.remove: Namaz and Ramadan sheets, as before', () 
     expect(prisma.habitMonthTracker.deleteMany).not.toHaveBeenCalled();
   });
 });
+
+describe('HabitTrackersService: made-up fasts and the Get ready list', () => {
+  const setupRamadan = (category: 'Namaz' | 'Ramadan' = 'Ramadan') => {
+    const tracker = { ...sheet(category), fastsMadeUp: 0, checks: [], paraLogs: [] };
+    const prisma = {
+      habitMonthTracker: { findUnique: vi.fn().mockResolvedValue(tracker), findFirst: vi.fn().mockResolvedValue(tracker), update: vi.fn().mockResolvedValue(tracker) },
+      ramadanPrep: { findUnique: vi.fn().mockResolvedValue(null), upsert: vi.fn() },
+    };
+    return { service: new HabitTrackersService(prisma as never), prisma };
+  };
+
+  it('keeps made-up fasts on a Ramadan sheet only, never more than its days', async () => {
+    const { service, prisma } = setupRamadan();
+    await service.setFastsMadeUp('user-1', 'trk-1', 2);
+    expect(prisma.habitMonthTracker.update).toHaveBeenCalledWith({ where: { id: 'trk-1' }, data: { fastsMadeUp: 2 } });
+    await expect(service.setFastsMadeUp('user-1', 'trk-1', 31)).rejects.toThrow('At most 30 fasts');
+    await expect(setupRamadan('Namaz').service.setFastsMadeUp('user-1', 'trk-1', 1)).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('reads an empty list before any tick, and keeps each step once', async () => {
+    const { service, prisma } = setupRamadan();
+    await expect(service.getRamadanPrep('user-1', 2027)).resolves.toEqual({ year: 2027, items: [] });
+    await expect(service.saveRamadanPrep('user-1', 2027, ['quran', 'quran', 'intention'])).resolves.toEqual({ year: 2027, items: ['quran', 'intention'] });
+    expect(prisma.ramadanPrep.upsert.mock.calls[0][0].create).toEqual({ userId: 'user-1', year: 2027, items: ['quran', 'intention'] });
+  });
+});

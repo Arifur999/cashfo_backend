@@ -129,7 +129,7 @@ export class AccountExportService {
   // The Habit Tracker: every row is the person's own (userId), or hangs off
   // one of their habits, sheets, books or skills.
   private async habitSheets(userId: string): Promise<ZipEntry[]> {
-    const [habits, habitLogs, sheets, todos, repeats, books, bookNotes, bookGoals, skills, skillGoals, prayer, qaza] = await Promise.all([
+    const [habits, habitLogs, sheets, todos, repeats, books, bookNotes, bookGoals, skills, skillGoals, prayer, qaza, ramadanPreps] = await Promise.all([
       this.prisma.habit.findMany({ where: { userId }, orderBy: { createdAt: 'asc' } }),
       this.prisma.habitLog.findMany({ where: { habit: { userId } }, orderBy: [{ date: 'asc' }], include: { habit: { select: { name: true } } } }),
       this.prisma.habitMonthTracker.findMany({
@@ -146,6 +146,7 @@ export class AccountExportService {
       this.prisma.skillGoal.findMany({ where: { userId }, orderBy: { year: 'asc' } }),
       this.prisma.prayerSettings.findUnique({ where: { userId } }),
       this.prisma.qazaLog.findMany({ where: { userId }, orderBy: [{ date: 'asc' }, { createdAt: 'asc' }] }),
+      this.prisma.ramadanPrep.findMany({ where: { userId }, orderBy: { year: 'asc' } }),
     ]);
 
     // An hours skill keeps its target, progress and log in minutes.
@@ -169,8 +170,8 @@ export class AccountExportService {
       {
         name: 'month-sheets.csv',
         data: toCsv(
-          ['Sheet', 'Kind', 'Month', 'Year', 'Days', 'Items', 'Created'],
-          sheets.map((t) => [sheetName(t), t.category, t.month, t.year, t.totalDays, t.items.join('; '), t.createdAt]),
+          ['Sheet', 'Kind', 'Month', 'Year', 'Days', 'Items', 'Fasts made up', 'Created'],
+          sheets.map((t) => [sheetName(t), t.category, t.month, t.year, t.totalDays, t.items.join('; '), t.category === 'Ramadan' ? t.fastsMadeUp : null, t.createdAt]),
         ),
       },
       {
@@ -181,6 +182,7 @@ export class AccountExportService {
         ),
       },
       { name: 'ramadan-paras.csv', data: toCsv(['Sheet', 'Day', 'Paras'], sheets.flatMap((t) => t.paraLogs.map((p) => [sheetName(t), p.day, p.paras]))) },
+      { name: 'ramadan-get-ready.csv', data: toCsv(['Ramadan of', 'Steps done'], ramadanPreps.map((r) => [r.year, r.items.join('; ')])) },
       {
         name: 'prayer-settings.csv',
         data: toCsv(

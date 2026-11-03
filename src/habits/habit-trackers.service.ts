@@ -133,6 +133,8 @@ export interface HabitTrackerView {
   paras: { day: number; paras: number }[];
   // When the sheet was created: a challenge counts its days from here.
   createdAt: string;
+  // Ramadan only: missed fasts made up since ("I kept one").
+  fastsMadeUp: number;
 }
 
 @Injectable()
@@ -279,6 +281,32 @@ export class HabitTrackersService {
     return { day: dto.day, paras: dto.paras, quranTicked: item };
   }
 
+  // Ramadan: how many of the sheet's missed fasts were made up since; never
+  // more than the sheet's days.
+  async setFastsMadeUp(userId: string, id: string, count: number): Promise<HabitTrackerView> {
+    const tracker = await this.requireTracker(userId, id);
+    if (configFor(tracker.category)?.kind !== 'ramadan') {
+      throw new BadRequestException('Only a Ramadan sheet keeps made-up fasts');
+    }
+    if (count > sheetDays(tracker)) {
+      throw new BadRequestException(`At most ${sheetDays(tracker)} fasts`);
+    }
+    await this.prisma.habitMonthTracker.update({ where: { id }, data: { fastsMadeUp: count } });
+    return this.get(userId, id);
+  }
+
+  // Ramadan › Today's "Get ready" steps for one Ramadan.
+  async getRamadanPrep(userId: string, year: number): Promise<{ year: number; items: string[] }> {
+    const row = await this.prisma.ramadanPrep.findUnique({ where: { userId_year: { userId, year } }, select: { items: true } });
+    return { year, items: row?.items ?? [] };
+  }
+
+  async saveRamadanPrep(userId: string, year: number, items: string[]): Promise<{ year: number; items: string[] }> {
+    const unique = [...new Set(items)];
+    await this.prisma.ramadanPrep.upsert({ where: { userId_year: { userId, year } }, create: { userId, year, items: unique }, update: { items: unique } });
+    return { year, items: unique };
+  }
+
   // Add a habit column (Ramadan). Names are NFC-normalised and trimmed,
   // unique ignoring case, at most MAX_ITEMS per sheet.
   async addItem(userId: string, id: string, dto: AddTrackerItemDto): Promise<HabitTrackerView> {
@@ -409,6 +437,7 @@ export class HabitTrackersService {
     checks: { day: number; item: string; status: PrayerStatus }[];
     paraLogs: { day: number; paras: number }[];
     createdAt: Date;
+    fastsMadeUp: number;
   }): HabitTrackerView {
     // Ramadan/Others sheets are just Day 1..N -- no start date is known, so
     // there's no "today" or elapsed-days notion for them, only Namaz's real
@@ -429,6 +458,7 @@ export class HabitTrackersService {
       checks: tracker.checks.filter((c) => tracker.items.includes(c.item)),
       paras: tracker.paraLogs,
       createdAt: tracker.createdAt.toISOString(),
+      fastsMadeUp: tracker.fastsMadeUp,
     };
   }
 

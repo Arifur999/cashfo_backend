@@ -9,6 +9,7 @@ import { AddTrackerItemDto } from './dto/add-tracker-item.dto.js';
 import { CreateCustomTrackerDto } from './dto/create-custom-tracker.dto.js';
 import { CreateHabitTrackerDto } from './dto/create-habit-tracker.dto.js';
 import { CreateRamadanTrackerDto } from './dto/create-ramadan-tracker.dto.js';
+import { RamadanPrepQueryDto, SaveRamadanPrepDto, SetFastsMadeUpDto } from './dto/ramadan-prep.dto.js';
 import { SetHabitTrackerCheckDto } from './dto/set-habit-tracker-check.dto.js';
 import { SetRamadanParasDto } from './dto/set-ramadan-paras.dto.js';
 import { HabitTrackersService } from './habit-trackers.service.js';
@@ -47,6 +48,17 @@ export class HabitTrackersController {
     return this.habitTrackersService.createCustom(user.id, dto);
   }
 
+  // Ramadan › Today's "Get ready" list. Static segments, before :id.
+  @Get('ramadan-prep')
+  getRamadanPrep(@CurrentUser() user: RequestUser, @Query() query: RamadanPrepQueryDto) {
+    return this.habitTrackersService.getRamadanPrep(user.id, query.year);
+  }
+
+  @Put('ramadan-prep')
+  saveRamadanPrep(@CurrentUser() user: RequestUser, @Body() dto: SaveRamadanPrepDto) {
+    return this.habitTrackersService.saveRamadanPrep(user.id, dto.year, dto.items);
+  }
+
   @Get(':id')
   get(@CurrentUser() user: RequestUser, @Param('id', ParseUUIDPipe) id: string) {
     return this.habitTrackersService.get(user.id, id);
@@ -64,6 +76,11 @@ export class HabitTrackersController {
   @Put(':id/paras')
   setParas(@CurrentUser() user: RequestUser, @Param('id', ParseUUIDPipe) id: string, @Body() dto: SetRamadanParasDto) {
     return this.habitTrackersService.setParas(user.id, id, dto);
+  }
+
+  @Put(':id/fasts-made-up')
+  setFastsMadeUp(@CurrentUser() user: RequestUser, @Param('id', ParseUUIDPipe) id: string, @Body() dto: SetFastsMadeUpDto) {
+    return this.habitTrackersService.setFastsMadeUp(user.id, id, dto.count);
   }
 
   @Post(':id/items')
