@@ -4,6 +4,10 @@ import { SavingsGoalsService } from './savings-goals.service.js';
 import type { AddContributionDto } from './dto/add-contribution.dto.js';
 import type { CreateSavingsGoalDto } from './dto/create-savings-goal.dto.js';
 
+// The private helpers a test stands in for.
+type Internals = { maybeMarkCompleted: (value: unknown) => Promise<unknown>; requireMoneyAccount: () => Promise<unknown> };
+const internals = (service: SavingsGoalsService) => service as unknown as Internals;
+
 const ACCOUNTS: Record<string, Record<string, unknown>> = {
   dps: { id: 'dps', businessId: 'biz-1', accountType: 'ASSET', accountSubtype: 'savings', status: 'ACTIVE' },
   fdr: { id: 'fdr', businessId: 'biz-1', accountType: 'ASSET', accountSubtype: 'savings', status: 'ARCHIVED' },
@@ -30,7 +34,7 @@ const setup = (goalAccountId: string | null = null) => {
     createTransaction: vi.fn(() => Promise.resolve({ id: 'txn-1' })),
   };
   const service = new SavingsGoalsService(prisma as never, transactions as never, {} as never);
-  vi.spyOn(service as never, 'maybeMarkCompleted').mockImplementation(((value: unknown) => Promise.resolve(value)) as never);
+  vi.spyOn(internals(service), 'maybeMarkCompleted').mockImplementation((value) => Promise.resolve(value));
   return { service, prisma, tx, transactions };
 };
 
@@ -54,7 +58,7 @@ describe('SavingsGoalsService and the account a goal keeps its money in', () => 
 
   it('puts a deposit that names no account into the goal’s own', async () => {
     const { service, tx, transactions } = setup('dps');
-    vi.spyOn(service as never, 'requireMoneyAccount').mockResolvedValue(ACCOUNTS.cash as never);
+    vi.spyOn(internals(service), 'requireMoneyAccount').mockResolvedValue(ACCOUNTS.cash);
     await service.addContribution('biz-1', 'goal-1', deposit(), 'u-1');
     expect(transactions.createTransaction).toHaveBeenCalledWith(
       'biz-1',
@@ -67,14 +71,14 @@ describe('SavingsGoalsService and the account a goal keeps its money in', () => 
 
   it('gives an older goal with no account the one its first deposit went into', async () => {
     const { service, tx } = setup(null);
-    vi.spyOn(service as never, 'requireMoneyAccount').mockResolvedValue(ACCOUNTS.cash as never);
+    vi.spyOn(internals(service), 'requireMoneyAccount').mockResolvedValue(ACCOUNTS.cash);
     await service.addContribution('biz-1', 'goal-1', deposit({ toAccountId: 'dps' }), 'u-1');
     expect(tx.savingsGoal.update).toHaveBeenCalledWith({ where: { id: 'goal-1' }, data: { accountId: 'dps' } });
   });
 
   it('asks where the money goes when neither the goal nor the request says', async () => {
     const { service } = setup(null);
-    vi.spyOn(service as never, 'requireMoneyAccount').mockResolvedValue(ACCOUNTS.cash as never);
+    vi.spyOn(internals(service), 'requireMoneyAccount').mockResolvedValue(ACCOUNTS.cash);
     await expect(service.addContribution('biz-1', 'goal-1', deposit(), 'u-1')).rejects.toThrow('Pick the savings account');
   });
 });
