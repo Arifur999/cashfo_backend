@@ -157,3 +157,35 @@ describe('PaymentConfirmationService.markFailed', () => {
     await expect(service.markFailed('pay-1', 'Money never arrived', { adminId: 'a' })).rejects.toBeInstanceOf(ConflictException);
   });
 });
+
+describe("PaymentConfirmationService keeps the customer's details", () => {
+  it('Mark paid without a payer number keeps the one the customer sent', async () => {
+    const { service, tx } = setup();
+    await service.markPaid('pay-1', { reference: '9KD7H2X4LM', paidAt: PAID_AT, payerAccount: null }, { adminId: 'admin-1' });
+    expect(tx.payment.updateMany.mock.calls[0][0].data.payerAccount).toBeUndefined();
+  });
+});
+
+describe('PaymentConfirmationService.reopen', () => {
+  it('opens a failed payment again: with the clock, or with none once its money was sent', async () => {
+    const unsent = setup({ current: 'FAILED' });
+    unsent.tx.payment.findUnique.mockResolvedValue({ status: 'FAILED', userId: 'u-nadia', submittedAt: null });
+    (unsent.tx.payment as Record<string, unknown>).count = vi.fn().mockResolvedValue(0);
+    await unsent.service.reopen('pay-1', { adminId: 'admin-1' });
+    expect(unsent.tx.payment.updateMany.mock.calls[0][0].data.expiresAt).toBeInstanceOf(Date);
+
+    const sent = setup({ current: 'FAILED' });
+    sent.tx.payment.findUnique.mockResolvedValue({ status: 'FAILED', userId: 'u-nadia', submittedAt: PAID_AT });
+    (sent.tx.payment as Record<string, unknown>).count = vi.fn().mockResolvedValue(0);
+    await sent.service.reopen('pay-1', { adminId: 'admin-1' });
+    expect(sent.tx.payment.updateMany.mock.calls[0][0].data.expiresAt).toBeNull();
+  });
+
+  it("refuses while the customer's other payment is being checked, and replaces nothing", async () => {
+    const { service, tx } = setup({ current: 'FAILED' });
+    tx.payment.findUnique.mockResolvedValue({ status: 'FAILED', userId: 'u-nadia', submittedAt: null });
+    (tx.payment as Record<string, unknown>).count = vi.fn().mockResolvedValue(1);
+    await expect(service.reopen('pay-1', { adminId: 'admin-1' })).rejects.toThrow('another payment being checked');
+    expect(tx.payment.updateMany).not.toHaveBeenCalled();
+  });
+});

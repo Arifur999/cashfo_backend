@@ -13,7 +13,8 @@ export interface MarkPaidInput {
   // The gateway's transaction id (the bKash/Nagad TrxID).
   reference: string;
   paidAt?: Date;
-  // The number the money came from.
+  // The number the money came from; left out keeps the one the customer
+  // sent with their details.
   payerAccount?: string | null;
   note?: string | null;
 }
@@ -56,7 +57,7 @@ export class PaymentConfirmationService {
           status: PaymentStatus.SUCCESS,
           paidAt,
           gatewayReferenceId: input.reference,
-          payerAccount: input.payerAccount ?? null,
+          payerAccount: input.payerAccount || undefined,
           markedPaidBy: actor?.adminId ?? null,
           failureReason: null,
         },
@@ -171,17 +172,27 @@ export class PaymentConfirmationService {
     return { payment: row };
   }
 
-  // Retry: a failed payment's checkout opens again for the checkout hours.
-  // The customer's other open checkout, if any, gives way to it.
+  // Retry: a failed payment's checkout opens again for the checkout hours
+  // (one whose money the customer sent waits for an admin again). The
+  // customer's other open checkout, if any, gives way to it -- unless its
+  // money was sent too.
   async reopen(id: string, actor: Actor) {
     const { billingCheckoutHours } = await this.settingsService.getCached();
     return this.prisma.$transaction(async (tx) => {
-      const payment = await tx.payment.findUnique({ where: { id }, select: { status: true, userId: true } });
+      const payment = await tx.payment.findUnique({ where: { id }, select: { status: true, userId: true, submittedAt: true } });
       if (!payment) throw new NotFoundException('Payment not found');
-      if (payment.userId) await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`billing:${payment.userId}`}))`;
+      if (payment.userId) {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`billing:${payment.userId}`}))`;
+        const sent = await tx.payment.count({ where: { userId: payment.userId, status: PaymentStatus.PENDING, submittedAt: { not: null }, id: { not: id } } });
+        if (sent > 0) throw new BadRequestException('This customer has another payment being checked. Settle that one first');
+      }
       const claimed = await tx.payment.updateMany({
         where: { id, status: PaymentStatus.FAILED },
-        data: { status: PaymentStatus.PENDING, failureReason: null, expiresAt: new Date(Date.now() + billingCheckoutHours * HOUR_MS) },
+        data: {
+          status: PaymentStatus.PENDING,
+          failureReason: null,
+          expiresAt: payment.submittedAt ? null : new Date(Date.now() + billingCheckoutHours * HOUR_MS),
+        },
       });
       if (claimed.count === 0) throw new BadRequestException('Only failed payments can be retried');
       if (payment.userId) {
