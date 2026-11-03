@@ -18,7 +18,7 @@ export function renderInvoiceEmail(locale: 'en' | 'bn', invoice: InvoiceEmail, p
   const subject = en ? `Your invoice ${invoice.invoiceNumber}` : `আপনার ইনভয়েস ${invoice.invoiceNumber}`;
   const greeting = en ? `Hi ${invoice.name},` : `প্রিয় ${invoice.name},`;
   const body = en
-    ? `Your invoice ${invoice.invoiceNumber} for ${invoice.planName} (৳ ${invoice.amount}, issued ${invoice.issuedOn}) is attached as a PDF.`
+    ? `Your invoice ${invoice.invoiceNumber} for ${invoice.planName} (TK ${invoice.amount}, issued ${invoice.issuedOn}) is attached as a PDF.`
     : `${invoice.planName}-এর ইনভয়েস ${invoice.invoiceNumber} (৳ ${invoice.amount}, ${invoice.issuedOn} তারিখে দেওয়া) PDF হিসেবে সংযুক্ত করা হলো।`;
   const keep = en ? 'Keep it for your records.' : 'আপনার রেকর্ডের জন্য রেখে দিন।';
   const action = en ? 'See your plan and payments' : 'আপনার প্ল্যান ও পেমেন্ট দেখুন';

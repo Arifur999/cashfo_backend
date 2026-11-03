@@ -21,15 +21,15 @@ export function renderCommissionEarnedEmail(
   platformName: string,
 ): { subject: string; html: string; text: string } {
   const en = locale === 'en';
-  const subject = en ? `You earned ৳ ${email.amount} from ${email.friendName}` : `${email.friendName}-এর কাছ থেকে আপনি ৳ ${email.amount} আয় করেছেন`;
+  const subject = en ? `You earned TK ${email.amount} from ${email.friendName}` : `${email.friendName}-এর কাছ থেকে আপনি ৳ ${email.amount} আয় করেছেন`;
   const greeting = en ? `Hi ${email.name},` : `প্রিয় ${email.name},`;
   const lines = [
     email.renewal
       ? en
-        ? `${email.friendName} renewed their plan, and your commission is ৳ ${email.amount}.`
+        ? `${email.friendName} renewed their plan, and your commission is TK ${email.amount}.`
         : `${email.friendName} তাঁর প্ল্যান নবায়ন করেছেন, আপনার কমিশন ৳ ${email.amount}।`
       : en
-        ? `${email.friendName} bought a plan with your invite, and your commission is ৳ ${email.amount}.`
+        ? `${email.friendName} bought a plan with your invite, and your commission is TK ${email.amount}.`
         : `${email.friendName} আপনার আমন্ত্রণে প্ল্যান কিনেছেন, আপনার কমিশন ৳ ${email.amount}।`,
     en ? `It is ready to withdraw on ${email.readyOn}, after the refund window.` : `রিফান্ডের সময় শেষ হলে ${email.readyOn} তারিখে এটি তোলা যাবে।`,
   ];
