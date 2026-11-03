@@ -32,6 +32,8 @@ export interface BookView {
   // Asia/Dhaka calendar year of finishedAt -- so the client never has to guess
   // the timezone when counting "finished this year".
   finishedYear: number | null;
+  // Paused while being read (still READING, its page kept).
+  pausedAt: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -55,6 +57,22 @@ export interface BooksOverview {
   // The notes on each book being read, oldest first, by book id.
   notes: Record<string, BookNoteView[]>;
 }
+
+// Library › Dashboard: one year's reading, month by month (Asia/Dhaka
+// months), in all and in each book, that year's goal, and every year from
+// the first one with reading in it to this one (newest first).
+export interface BookYearView {
+  year: number;
+  goalTarget: number | null;
+  years: number[];
+  // Pages read in each month, January first.
+  months: number[];
+  // The same for each book read that year, by book id.
+  bookMonths: Record<string, number[]>;
+}
+
+// The oldest year the dashboard offers, however far back the first log is.
+const MAX_YEARS = 30;
 
 function toNoteView(note: BookNote): BookNoteView {
   return { id: note.id, bookId: note.bookId, page: note.page, text: note.text, createdAt: note.createdAt.toISOString() };
@@ -89,6 +107,7 @@ function toView(book: Book): BookView {
     startedAt: book.startedAt?.toISOString() ?? null,
     finishedAt: book.finishedAt?.toISOString() ?? null,
     finishedYear: book.finishedAt ? dhakaYear(book.finishedAt) : null,
+    pausedAt: book.pausedAt?.toISOString() ?? null,
     createdAt: book.createdAt.toISOString(),
     updatedAt: book.updatedAt.toISOString(),
   };
@@ -106,11 +125,24 @@ function asShelfItem(book: Book): ShelfItem<BookStatus> {
 
 // The new column values for an edit of `current`. Pure, so it can be re-run on
 // a fresh read when a concurrent write is detected.
-function buildUpdate(current: Book, dto: UpdateBookDto, now: Date) {
+export function buildUpdate(current: Book, dto: UpdateBookDto, now: Date) {
   const title = dto.title !== undefined ? cleanRequiredText(dto.title, 'title', MAX_TITLE_LENGTH) : current.title;
   const author = dto.author !== undefined ? cleanOptionalText(dto.author, 'author', MAX_AUTHOR_LENGTH) : current.author;
   const totalPages = dto.totalPages ?? current.totalPages;
   const shelf = settleShelf(SHELVES, asShelfItem(current), { status: dto.status, progress: dto.pagesRead, total: totalPages }, now, MESSAGES);
+  if (dto.paused === true && shelf.status !== BookStatus.READING) throw new BadRequestException('Only a book being read can be paused');
+  // Paused only while being read: an explicit pause or resume, else reading
+  // on (a new page) takes it up again, and any other edit leaves it be.
+  const pausedAt =
+    shelf.status !== BookStatus.READING
+      ? null
+      : dto.paused !== undefined
+        ? dto.paused
+          ? (current.pausedAt ?? now)
+          : null
+        : shelf.progress !== current.pagesRead
+          ? null
+          : current.pausedAt;
   return {
     title,
     author,
@@ -120,6 +152,7 @@ function buildUpdate(current: Book, dto: UpdateBookDto, now: Date) {
     color: dto.color ?? current.color,
     startedAt: shelf.startedAt,
     finishedAt: shelf.doneAt,
+    pausedAt,
   };
 }
 
@@ -152,6 +185,36 @@ export class BooksService {
       pagesToday: Object.fromEntries(todayLogs.map((log) => [log.bookId, log.pages])),
       notes: Object.fromEntries(reading.map((id) => [id, notes.filter((note) => note.bookId === id).map(toNoteView)])),
     };
+  }
+
+  async year(userId: string, year: number): Promise<BookYearView> {
+    // BookLog.date is the Dhaka day at UTC midnight, so UTC months are Dhaka's.
+    const logs = await this.prisma.bookLog.findMany({
+      where: { userId, date: { gte: new Date(Date.UTC(year, 0, 1)), lt: new Date(Date.UTC(year + 1, 0, 1)) } },
+      select: { bookId: true, date: true, pages: true },
+    });
+    const goal = await this.prisma.bookGoal.findUnique({ where: { userId_year: { userId, year } } });
+    const firstLog = await this.prisma.bookLog.aggregate({ where: { userId }, _min: { date: true } });
+    const firstBook = await this.prisma.book.aggregate({ where: { userId }, _min: { startedAt: true, finishedAt: true } });
+
+    const months = Array<number>(12).fill(0);
+    const bookMonths: Record<string, number[]> = {};
+    for (const log of logs) {
+      const month = log.date.getUTCMonth();
+      months[month] += log.pages;
+      (bookMonths[log.bookId] ??= Array<number>(12).fill(0))[month] += log.pages;
+    }
+
+    const current = dhakaYear(new Date());
+    const starts = [
+      firstLog._min.date?.getUTCFullYear(),
+      firstBook._min.startedAt && dhakaYear(firstBook._min.startedAt),
+      firstBook._min.finishedAt && dhakaYear(firstBook._min.finishedAt),
+    ];
+    const newest = Math.max(current, year);
+    const oldest = Math.max(newest - MAX_YEARS + 1, Math.min(year, current, ...starts.filter((y): y is number => typeof y === 'number')));
+    const years = Array.from({ length: newest - oldest + 1 }, (_, i) => newest - i);
+    return { year, goalTarget: goal?.target ?? null, years, months, bookMonths };
   }
 
   async create(userId: string, dto: CreateBookDto): Promise<BookView> {

@@ -931,6 +931,11 @@ model User {
   todoRepeats             TodoRepeat[]
   prayerSettings          PrayerSettings?
   qazaLogs                QazaLog[]
+  notes                   Note[]
+  noteCategories          NoteCategory[]
+  journalEntries          JournalEntry[]
+  writingSettings         WritingSettings?
+  ramadanPreps            RamadanPrep[]
   // Every Referral row this user created by inviting someone else (as the
   // referrer), vs. the single Referral row recording that this user was
   // THEMSELVES referred by someone else's code at registration.
@@ -1379,31 +1384,41 @@ model HabitLog {
 // the user creates by picking a month + year ("Create Month") or, for
 // Ramadan, just a year ("Create Ramadan").
 model HabitMonthTracker {
-  id        String            @id @default(uuid())
-  userId    String
-  user      User              @relation(fields: [userId], references: [id])
-  category  String
+  id          String            @id @default(uuid())
+  userId      String
+  user        User              @relation(fields: [userId], references: [id])
+  category    String
   // Namaz: the Gregorian month, 1-12. Ramadan: always 9 (the Hijri month
   // number, HabitTrackersService's RAMADAN_MONTH) -- `year` is then the
   // Gregorian year the user typed, so one Ramadan per typed year. (A
   // Gregorian year can rarely contain two Ramadans, e.g. 2030 -- known limit.)
   // Others ("Create Challenge") has no calendar date at all -- both are null.
-  month     Int?
-  year      Int?
+  month       Int?
+  year        Int?
   // Others only: the free-form challenge name the user typed (e.g. "Reading",
   // "No Sugar"). Null for Namaz/Ramadan, which have no name of their own.
-  name      String?
+  name        String?
   // Number of days on the sheet when it is NOT a Gregorian month: Ramadan
   // stores 29 or 30, Others stores whatever day-count goal the user typed
   // (chosen at creation). Null for Namaz, whose day count is the real length
   // of that Gregorian month.
-  totalDays Int?
+  totalDays   Int?
   // Column set. Namaz snapshots its fixed five prayers at creation; Ramadan
   // and Others start empty/["Roza"] and the user adds/removes the rest by hand.
-  items     String[]
-  createdAt DateTime          @default(now())
-  checks    HabitMonthCheck[]
-  paraLogs  RamadanParaLog[]
+  items       String[]
+  createdAt   DateTime          @default(now())
+  // Ramadan only: the fasts missed on this sheet that were made up after it
+  // (Ramadan › Today's "I kept one").
+  fastsMadeUp Int               @default(0)
+  // Others only: the Dhaka date day 1 falls on (today or tomorrow, as it was
+  // started; Restart moves it to today). Rows from before it was kept carry
+  // the UTC date of createdAt, the day the app always counted from.
+  startsOn    DateTime?         @db.Date
+  // Others only: the day a challenge was ended early ("End challenge"); the
+  // days after it are never reached and take no ticks.
+  endedOnDay  Int?
+  checks      HabitMonthCheck[]
+  paraLogs    RamadanParaLog[]
 
   // month/year are NULL for every Others tracker, and Postgres never treats
   // two NULLs as equal, so this constraint is a no-op for Others (any number
@@ -1411,6 +1426,19 @@ model HabitMonthTracker {
   // Namaz sheet per month" / "one Ramadan per year" as before.
   @@unique([userId, category, month, year])
   @@index([userId, category])
+}
+
+// Ramadan › Today's "Get ready" list for one Ramadan (year: the Gregorian
+// year it begins in, as its sheet is keyed): the steps ticked off.
+model RamadanPrep {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  year      Int
+  items     String[] @default([])
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, year])
 }
 
 // Ramadan: how many paras of the Quran were read on one day of the sheet. A
@@ -1515,6 +1543,9 @@ model Book {
   finishedAt DateTime?
   createdAt  DateTime   @default(now())
   updatedAt  DateTime   @updatedAt
+  // Put down for now (Reading now's "Pause"): still READING with its page
+  // kept, shown under Up next until it is resumed or read on.
+  pausedAt   DateTime?
   logs       BookLog[]
   notes      BookNote[]
 
@@ -1710,6 +1741,98 @@ model TodoRepeat {
   items         TodoItem[]
 
   @@index([userId])
+}
+
+// Habit Tracker > Write > Notes (the NotesHome board): quick notes and
+// ideas, personal like the rest of the Habit Tracker (no workspace).
+enum NoteKind {
+  NOTE
+  IDEA
+}
+
+model Note {
+  id         String        @id @default(uuid())
+  userId     String
+  user       User          @relation(fields: [userId], references: [id])
+  kind       NoteKind      @default(NOTE)
+  // Empty when the note has none: a quick note is just its text.
+  title      String        @default("")
+  body       String
+  categoryId String?
+  category   NoteCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  // Lowercase, without the "#".
+  tags       String[]      @default([])
+  // The card's tint by name (white, yellow, green, blue, pink, purple).
+  color      String        @default("white")
+  pinned     Boolean       @default(false)
+  archived   Boolean       @default(false)
+  createdAt  DateTime      @default(now())
+  updatedAt  DateTime      @updatedAt
+
+  @@index([userId, archived])
+}
+
+// The categories notes and journal entries share (Work, Family, ...).
+// Deleting one keeps its notes and entries, without a category.
+model NoteCategory {
+  id             String         @id @default(uuid())
+  userId         String
+  user           User           @relation(fields: [userId], references: [id])
+  name           String
+  // By name: blue, rose, amber, violet, teal, green, slate.
+  color          String
+  createdAt      DateTime       @default(now())
+  notes          Note[]
+  journalEntries JournalEntry[]
+
+  @@index([userId])
+}
+
+// Habit Tracker > Write > Journal (the JournalHome board): one entry a day,
+// a short daily journal or a free diary page.
+enum JournalKind {
+  DAILY
+  DIARY
+}
+
+model JournalEntry {
+  id          String        @id @default(uuid())
+  userId      String
+  user        User          @relation(fields: [userId], references: [id])
+  date        DateTime      @db.Date
+  kind        JournalKind   @default(DAILY)
+  // 0 Great, 1 Good, 2 Okay, 3 Low, 4 Hard.
+  mood        Int
+  // The daily journal's three prompts; a diary page has only the body.
+  wentWell    String        @default("")
+  gratefulFor String        @default("")
+  tomorrow    String        @default("")
+  body        String        @default("")
+  categoryId  String?
+  category    NoteCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  // The #tags written in it, lowercase, kept for search.
+  tags        String[]      @default([])
+  // Shown and searched only after the diary PIN is entered on this sign-in.
+  isPrivate   Boolean       @default(false)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  @@unique([userId, date])
+}
+
+// One person's Write settings. The row exists once the starter categories
+// were added, so deleting them all never brings them back. The diary PIN
+// (bcrypt) guards private journal entries; wrong PINs are counted like the
+// vault's (ten in ten minutes, then a wait).
+model WritingSettings {
+  id           String    @id @default(uuid())
+  userId       String    @unique
+  user         User      @relation(fields: [userId], references: [id])
+  diaryPinHash String?
+  pinFailures  Int       @default(0)
+  pinFailedAt  DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
 }
 
 model Business {

@@ -118,14 +118,19 @@ export function todoDays(now: Date, minutes = WINDOW_MINUTES): string[] {
   return [...days, shiftDay(days[days.length - 1], 1)];
 }
 
-// A challenge's day number on a Dhaka day, counted from the day it was
-// created (day 1) as the app counts it (challengeDisplay.ts: the UTC date of
-// createdAt). Null once the challenge is over.
-export function challengeDay(createdAt: Date, totalDays: number | null, day: string): number | null {
-  const start = createdAt.toISOString().slice(0, 10);
+// A challenge's day number on a Dhaka day, counted from its day 1 (its
+// start date; for an older row the UTC date of createdAt, as the app counts
+// it). Null before it begins, once it is over, and after the day it was
+// ended early.
+export function challengeDay(
+  sheet: { createdAt: Date; startsOn: Date | null; totalDays: number | null; endedOnDay: number | null },
+  day: string,
+): number | null {
+  const start = (sheet.startsOn ?? sheet.createdAt).toISOString().slice(0, 10);
   const n = Math.round((new Date(`${day}T00:00:00.000Z`).getTime() - new Date(`${start}T00:00:00.000Z`).getTime()) / DAY_MS) + 1;
   if (n < 1) return null;
-  if (totalDays !== null && n > totalDays) return null;
+  if (sheet.totalDays !== null && n > sheet.totalDays) return null;
+  if (sheet.endedOnDay !== null && n > sheet.endedOnDay) return null;
   return n;
 }
 

@@ -99,3 +99,101 @@ describe('HabitTrackersService.remove: Namaz and Ramadan sheets, as before', () 
     expect(prisma.habitMonthTracker.deleteMany).not.toHaveBeenCalled();
   });
 });
+
+describe('HabitTrackersService: made-up fasts and the Get ready list', () => {
+  const setupRamadan = (category: 'Namaz' | 'Ramadan' = 'Ramadan') => {
+    const tracker = { ...sheet(category), fastsMadeUp: 0, checks: [], paraLogs: [] };
+    const prisma = {
+      habitMonthTracker: { findUnique: vi.fn().mockResolvedValue(tracker), findFirst: vi.fn().mockResolvedValue(tracker), update: vi.fn().mockResolvedValue(tracker) },
+      ramadanPrep: { findUnique: vi.fn().mockResolvedValue(null), upsert: vi.fn() },
+    };
+    return { service: new HabitTrackersService(prisma as never), prisma };
+  };
+
+  it('keeps made-up fasts on a Ramadan sheet only, never more than its days', async () => {
+    const { service, prisma } = setupRamadan();
+    await service.setFastsMadeUp('user-1', 'trk-1', 2);
+    expect(prisma.habitMonthTracker.update).toHaveBeenCalledWith({ where: { id: 'trk-1' }, data: { fastsMadeUp: 2 } });
+    await expect(service.setFastsMadeUp('user-1', 'trk-1', 31)).rejects.toThrow('At most 30 fasts');
+    await expect(setupRamadan('Namaz').service.setFastsMadeUp('user-1', 'trk-1', 1)).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('reads an empty list before any tick, and keeps each step once', async () => {
+    const { service, prisma } = setupRamadan();
+    await expect(service.getRamadanPrep('user-1', 2027)).resolves.toEqual({ year: 2027, items: [] });
+    await expect(service.saveRamadanPrep('user-1', 2027, ['quran', 'quran', 'intention'])).resolves.toEqual({ year: 2027, items: ['quran', 'intention'] });
+    expect(prisma.ramadanPrep.upsert.mock.calls[0][0].create).toEqual({ userId: 'user-1', year: 2027, items: ['quran', 'intention'] });
+  });
+});
+
+describe('HabitTrackersService: a challenge starts, ends early and restarts', () => {
+  // 02:00 on 4 November in Dhaka (still 3 November in UTC).
+  beforeEach(() => vi.useFakeTimers({ now: new Date('2026-11-03T20:00:00.000Z') }));
+  afterEach(() => vi.useRealTimers());
+
+  const challenge = (more: { startsOn?: string; endedOnDay?: number | null; category?: 'Others' | 'Ramadan' } = {}) => ({
+    ...sheet(more.category ?? 'Others'),
+    startsOn: new Date(`${more.startsOn ?? '2026-11-01'}T00:00:00.000Z`),
+    endedOnDay: more.endedOnDay ?? null,
+    fastsMadeUp: 0,
+    checks: [],
+    paraLogs: [],
+  });
+  const setupChallenge = (tracker = challenge()) => {
+    const prisma = {
+      habitMonthTracker: {
+        findUnique: vi.fn().mockResolvedValue(tracker),
+        findFirst: vi.fn().mockResolvedValue(tracker),
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+        update: vi.fn().mockReturnValue('update'),
+        count: vi.fn().mockResolvedValue(0),
+        create: vi.fn().mockResolvedValue(tracker),
+      },
+      habitMonthCheck: { deleteMany: vi.fn().mockReturnValue('clear'), createMany: vi.fn() },
+      $executeRaw: vi.fn(),
+      $transaction: vi.fn((work: unknown) => (typeof work === 'function' ? work(prisma) : Promise.all(work as unknown[]))),
+    };
+    return { service: new HabitTrackersService(prisma as never), prisma };
+  };
+
+  it('starts on the Dhaka day it is made, or the day after', async () => {
+    const { service, prisma } = setupChallenge();
+    await service.createCustom('user-1', { name: 'No Sugar', totalDays: 21 });
+    expect(prisma.habitMonthTracker.create.mock.calls[0][0].data.startsOn).toEqual(new Date('2026-11-04T00:00:00.000Z'));
+    await service.createCustom('user-1', { name: 'No Sugar', totalDays: 21, startsTomorrow: true });
+    expect(prisma.habitMonthTracker.create.mock.calls[1][0].data.startsOn).toEqual(new Date('2026-11-05T00:00:00.000Z'));
+  });
+
+  it('ends on the day it has reached, once', async () => {
+    const { service, prisma } = setupChallenge();
+    const view = await service.endChallenge('user-1', 'trk-1');
+    expect(prisma.habitMonthTracker.updateMany).toHaveBeenCalledWith({ where: { id: 'trk-1', endedOnDay: null }, data: { endedOnDay: 4 } });
+    expect(view.startsOn).toBe('2026-11-01');
+    await expect(setupChallenge(challenge({ endedOnDay: 2 })).service.endChallenge('user-1', 'trk-1')).rejects.toThrow('already ended');
+    await expect(setupChallenge(challenge({ startsOn: '2026-11-05' })).service.endChallenge('user-1', 'trk-1')).rejects.toThrow("hasn't begun");
+    await expect(setupChallenge(challenge({ startsOn: '2026-09-01' })).service.endChallenge('user-1', 'trk-1')).rejects.toThrow('already over');
+    await expect(setupChallenge(challenge({ category: 'Ramadan' })).service.endChallenge('user-1', 'trk-1')).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('restarts from today with its ticks cleared', async () => {
+    const { service, prisma } = setupChallenge(challenge({ endedOnDay: 3 }));
+    await service.restartChallenge('user-1', 'trk-1');
+    expect(prisma.habitMonthCheck.deleteMany).toHaveBeenCalledWith({ where: { trackerId: 'trk-1' } });
+    expect(prisma.habitMonthTracker.update).toHaveBeenCalledWith({ where: { id: 'trk-1' }, data: { startsOn: new Date('2026-11-04T00:00:00.000Z'), endedOnDay: null } });
+    expect(prisma.$transaction).toHaveBeenCalledWith(['clear', 'update']);
+  });
+
+  it('takes no tick after the day it was ended, but can still clear one', async () => {
+    const { service, prisma } = setupChallenge(challenge({ endedOnDay: 3 }));
+    await expect(service.setCheck('user-1', 'trk-1', { day: 4, item: 'Walk', checked: true })).rejects.toThrow('ended on day 3');
+    await service.setCheck('user-1', 'trk-1', { day: 3, item: 'Walk', checked: true });
+    expect(prisma.habitMonthCheck.createMany).toHaveBeenCalledTimes(1);
+    await service.setCheck('user-1', 'trk-1', { day: 4, item: 'Walk', checked: false });
+    expect(prisma.habitMonthCheck.deleteMany).toHaveBeenCalledWith({ where: { trackerId: 'trk-1', day: 4, item: 'Walk' } });
+  });
+
+  it('reads an older challenge from the UTC date it was created', async () => {
+    const { service } = setupChallenge({ ...challenge(), startsOn: null as never, createdAt: new Date('2026-10-30T22:00:00.000Z') });
+    await expect(service.endChallenge('user-1', 'trk-1')).resolves.toMatchObject({ startsOn: '2026-10-30' });
+  });
+});

@@ -1,9 +1,10 @@
-import { Body, Controller, Delete, Get, Param, ParseUUIDPipe, Patch, Post, Put, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, ParseUUIDPipe, Patch, Post, Put, Query, UseGuards } from '@nestjs/common';
 import { CurrentUser } from '../user-auth/decorators/current-user.decorator.js';
 import { UserAuthGuard } from '../user-auth/guards/user-auth.guard.js';
 import { SetYearlyGoalDto } from '../common/yearly-goal.js';
 import type { RequestUser } from '../user-auth/interfaces/request-user.interface.js';
 import { BooksService } from './books.service.js';
+import { BookYearQueryDto } from './dto/book-year.dto.js';
 import { CreateBookDto } from './dto/create-book.dto.js';
 import { CreateBookNoteDto } from './dto/create-book-note.dto.js';
 import { UpdateBookDto } from './dto/update-book.dto.js';
@@ -26,6 +27,12 @@ export class BooksController {
   }
 
   // Static segments, declared before the :id routes below.
+  // Library › Dashboard: one year's pages, month by month.
+  @Get('year')
+  year(@CurrentUser() user: RequestUser, @Query() query: BookYearQueryDto) {
+    return this.booksService.year(user.id, query.year);
+  }
+
   @Put('goal')
   setGoal(@CurrentUser() user: RequestUser, @Body() dto: SetYearlyGoalDto) {
     return this.booksService.setGoal(user.id, dto);

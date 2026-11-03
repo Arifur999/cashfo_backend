@@ -129,7 +129,7 @@ export class AccountExportService {
   // The Habit Tracker: every row is the person's own (userId), or hangs off
   // one of their habits, sheets, books or skills.
   private async habitSheets(userId: string): Promise<ZipEntry[]> {
-    const [habits, habitLogs, sheets, todos, repeats, books, bookNotes, bookGoals, skills, skillGoals, prayer, qaza] = await Promise.all([
+    const [habits, habitLogs, sheets, todos, repeats, books, bookNotes, bookGoals, skills, skillGoals, prayer, qaza, ramadanPreps] = await Promise.all([
       this.prisma.habit.findMany({ where: { userId }, orderBy: { createdAt: 'asc' } }),
       this.prisma.habitLog.findMany({ where: { habit: { userId } }, orderBy: [{ date: 'asc' }], include: { habit: { select: { name: true } } } }),
       this.prisma.habitMonthTracker.findMany({
@@ -146,6 +146,7 @@ export class AccountExportService {
       this.prisma.skillGoal.findMany({ where: { userId }, orderBy: { year: 'asc' } }),
       this.prisma.prayerSettings.findUnique({ where: { userId } }),
       this.prisma.qazaLog.findMany({ where: { userId }, orderBy: [{ date: 'asc' }, { createdAt: 'asc' }] }),
+      this.prisma.ramadanPrep.findMany({ where: { userId }, orderBy: { year: 'asc' } }),
     ]);
 
     // An hours skill keeps its target, progress and log in minutes.
@@ -169,8 +170,19 @@ export class AccountExportService {
       {
         name: 'month-sheets.csv',
         data: toCsv(
-          ['Sheet', 'Kind', 'Month', 'Year', 'Days', 'Items', 'Created'],
-          sheets.map((t) => [sheetName(t), t.category, t.month, t.year, t.totalDays, t.items.join('; '), t.createdAt]),
+          ['Sheet', 'Kind', 'Month', 'Year', 'Days', 'Items', 'Fasts made up', 'Starts on', 'Ended on day', 'Created'],
+          sheets.map((t) => [
+            sheetName(t),
+            t.category,
+            t.month,
+            t.year,
+            t.totalDays,
+            t.items.join('; '),
+            t.category === 'Ramadan' ? t.fastsMadeUp : null,
+            t.startsOn ? t.startsOn.toISOString().slice(0, 10) : null,
+            t.endedOnDay,
+            t.createdAt,
+          ]),
         ),
       },
       {
@@ -181,6 +193,7 @@ export class AccountExportService {
         ),
       },
       { name: 'ramadan-paras.csv', data: toCsv(['Sheet', 'Day', 'Paras'], sheets.flatMap((t) => t.paraLogs.map((p) => [sheetName(t), p.day, p.paras]))) },
+      { name: 'ramadan-get-ready.csv', data: toCsv(['Ramadan of', 'Steps done'], ramadanPreps.map((r) => [r.year, r.items.join('; ')])) },
       {
         name: 'prayer-settings.csv',
         data: toCsv(
@@ -206,8 +219,8 @@ export class AccountExportService {
       {
         name: 'books.csv',
         data: toCsv(
-          ['Title', 'Author', 'Pages', 'Pages read', 'Status', 'Started', 'Finished', 'Added'],
-          books.map((b) => [b.title, b.author, b.totalPages, b.pagesRead, b.status, b.startedAt, b.finishedAt, b.createdAt]),
+          ['Title', 'Author', 'Pages', 'Pages read', 'Status', 'Paused', 'Started', 'Finished', 'Added'],
+          books.map((b) => [b.title, b.author, b.totalPages, b.pagesRead, b.status, b.pausedAt, b.startedAt, b.finishedAt, b.createdAt]),
         ),
       },
       { name: 'reading-log.csv', data: toCsv(['Date', 'Book', 'Pages'], books.flatMap((b) => b.logs.map((l) => [day(l.date), b.title, l.pages]))) },
@@ -222,6 +235,33 @@ export class AccountExportService {
       },
       { name: 'skill-log.csv', data: toCsv(['Date', 'Skill', 'Amount', 'Counted in'], skills.flatMap((k) => k.logs.map((l) => [day(l.date), k.name, l.amount, countedIn(k.unit)]))) },
       { name: 'skill-goals.csv', data: toCsv(['Year', 'Skills'], skillGoals.map((g) => [g.year, g.target])) },
+      ...(await this.writingSheets(userId)),
+    ];
+  }
+
+  // Habit Tracker > Write: notes and the journal, private entries too (they
+  // are the person's own; "Private" says which).
+  private async writingSheets(userId: string): Promise<ZipEntry[]> {
+    const [notes, entries] = await Promise.all([
+      this.prisma.note.findMany({ where: { userId }, orderBy: { createdAt: 'asc' }, include: { category: { select: { name: true } } } }),
+      this.prisma.journalEntry.findMany({ where: { userId }, orderBy: { date: 'asc' }, include: { category: { select: { name: true } } } }),
+    ]);
+    const MOODS = ['Great', 'Good', 'Okay', 'Low', 'Hard'];
+    return [
+      {
+        name: 'notes.csv',
+        data: toCsv(
+          ['Kind', 'Title', 'Note', 'Category', 'Tags', 'Pinned', 'Archived', 'Written'],
+          notes.map((n) => [n.kind, n.title, n.body, n.category?.name, n.tags.join(' '), n.pinned, n.archived, n.createdAt]),
+        ),
+      },
+      {
+        name: 'journal.csv',
+        data: toCsv(
+          ['Date', 'Kind', 'Mood', 'What went well', 'Grateful for', 'Tomorrow I will', 'Entry', 'Category', 'Tags', 'Private'],
+          entries.map((e) => [day(e.date), e.kind, MOODS[e.mood], e.wentWell, e.gratefulFor, e.tomorrow, e.body, e.category?.name, e.tags.join(' '), e.isPrivate]),
+        ),
+      },
     ];
   }
 

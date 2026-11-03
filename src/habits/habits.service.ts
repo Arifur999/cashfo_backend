@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { Habit, type WeekStart } from '@prisma/client';
 import { dhakaDateKey } from '../common/dhaka.js';
 import { PrismaService } from '../prisma/prisma.service.js';
@@ -7,6 +7,9 @@ import { CreateHabitDto } from './dto/create-habit.dto.js';
 import { UpdateHabitDto } from './dto/update-habit.dto.js';
 import { completionRate } from './habit-rate.js';
 import { bestStreak, currentStreak } from './streak.js';
+
+// The most months one GET /api/habits/months reads.
+const MAX_LOG_MONTHS = 24;
 
 function toDateKey(date: Date): string {
   return date.toISOString().slice(0, 10);
@@ -168,6 +171,26 @@ export class HabitsService {
     const from = new Date(`${month}-01`);
     const to = new Date(from);
     to.setUTCMonth(to.getUTCMonth() + 1);
+    const logs = await this.prisma.habitLog.findMany({
+      where: { habitId: { in: habits.map((h) => h.id) }, date: { gte: from, lt: to } },
+      select: { habitId: true, date: true, completed: true, value: true },
+    });
+    return { habits, logs };
+  }
+
+  // The same, for a run of months from `fromMonth` through `toMonth`.
+  async getMonthsLogs(
+    userId: string,
+    fromMonth: string,
+    toMonth: string,
+  ): Promise<{ habits: Habit[]; logs: { habitId: string; date: Date; completed: boolean; value: number | null }[] }> {
+    const from = new Date(`${fromMonth}-01T00:00:00.000Z`);
+    const to = new Date(`${toMonth}-01T00:00:00.000Z`);
+    to.setUTCMonth(to.getUTCMonth() + 1);
+    const months = (to.getUTCFullYear() - from.getUTCFullYear()) * 12 + to.getUTCMonth() - from.getUTCMonth();
+    if (months < 1) throw new BadRequestException('from must not be after to');
+    if (months > MAX_LOG_MONTHS) throw new BadRequestException(`At most ${MAX_LOG_MONTHS} months at a time`);
+    const habits = await this.listHabits(userId, true);
     const logs = await this.prisma.habitLog.findMany({
       where: { habitId: { in: habits.map((h) => h.id) }, date: { gte: from, lt: to } },
       select: { habitId: true, date: true, completed: true, value: true },
