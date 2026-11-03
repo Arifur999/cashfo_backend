@@ -30,7 +30,7 @@ const money = (value: { toString(): string }) => fromPaisa(toPaisa(value));
 // One of the customer's payments, as the history and the checkout show it.
 const PAYMENT_ROW_INCLUDE = {
   plan: { select: { name: true, billingCycle: true } },
-  invoice: { select: { id: true, invoiceNumber: true } },
+  invoice: { select: { id: true, invoiceNumber: true, emailedAt: true } },
   refund: { select: { amount: true, status: true, createdAt: true } },
 } satisfies Prisma.PaymentInclude;
 
@@ -77,11 +77,10 @@ export class BillingService {
   ) {}
 
   async plans(userId: string) {
-    const [plans, sub, settings, user] = await Promise.all([
+    const [plans, sub, settings] = await Promise.all([
       this.prisma.subscriptionPlan.findMany({ where: { isActive: true }, orderBy: { displayOrder: 'asc' } }),
       this.subscriptions.ensure(userId),
       this.settingsService.getCached(),
-      this.prisma.user.findUnique({ where: { id: userId }, select: { phone: true } }),
     ]);
     return {
       plans: plans.map((plan) => ({
@@ -100,12 +99,10 @@ export class BillingService {
       // Checkout: whether a real gateway takes payments online, and where
       // the money goes when the customer sends it themselves -- or, until
       // an admin sets those, the admin's own instructions ({amount},
-      // {method}, {reference} still to fill). The customer's phone is the
-      // reference they write so we know the money is theirs.
+      // {method}, {reference} still to fill).
       onlineCheckout: this.gateways.anyConfigured(),
       paymentAccounts: offeredAccounts(settings.billingPaymentAccounts),
       manualInstructions: { en: settings.billingManualInstructionsEn, bn: settings.billingManualInstructionsBn },
-      customerPhone: user?.phone ?? null,
     };
   }
 
