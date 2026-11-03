@@ -5,14 +5,14 @@ import { isWinAnsiText, PdfDocument, type PdfColor, textWidth, wrapText } from '
 // money came from and where it sits now. English only: the PDF fonts have
 // no Bangla, so the app offers Print for a statement with Bangla names.
 
-export type StatementRowKind = 'ALREADY_SAVED' | 'ADDED' | 'MOVED_IN' | 'MOVED_OUT' | 'WITHDRAWN';
+export type StatementRowKind = 'ALREADY_SAVED' | 'ADDED' | 'MOVED_IN' | 'MOVED_OUT' | 'WITHDRAWN' | 'ACCOUNT_CHANGED';
 
 export interface StatementPdfInput {
   platformName: string;
   person: { name: string; email: string };
   goal: { name: string; targetAmount: string; targetDate: Date; startDate: string; status: string };
   today: string;
-  rows: { date: Date; kind: StatementRowKind; from: string | null; to: string | null; notes: string | null; moneyIn: string | null; moneyOut: string | null; balance: string }[];
+  rows: { date: Date; kind: StatementRowKind; from: string | null; to: string | null; notes: string | null; moneyIn: string | null; moneyOut: string | null; balance: string; moved?: string | null }[];
   totals: { opening: string; moneyIn: string; moneyOut: string; balance: string };
   sources: { kind: 'ACCOUNT' | 'ALREADY_SAVED' | 'GOAL'; name: string | null; amount: string }[];
   now: { name: string | null; amount: string }[];
@@ -53,6 +53,9 @@ export function statementRowText(row: StatementPdfInput['rows'][number], goalNam
       return { details: `Moved in from another goal${note}`, from: `${shown(row.from)} (goal)`, to: shown(goalName) };
     case 'MOVED_OUT':
       return { details: `Moved out to another goal${note}`, from: shown(goalName), to: `${shown(row.to)} (goal)` };
+    case 'ACCOUNT_CHANGED':
+      // The money changed savings account; the balance stays the same.
+      return { details: `Moved to another savings account${row.moved ? ` (${takaLabel(row.moved)})` : ''}${note}`, from: shown(row.from), to: shown(row.to) };
     default:
       return { details: `Withdrawn to main balance${note}`, from: shown(row.from), to: shown(row.to) };
   }
