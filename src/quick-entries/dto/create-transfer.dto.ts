@@ -33,7 +33,9 @@ export class CreateTransferDto {
   @IsDateString()
   date: string;
 
+  // The popup's Description box holds 500 characters.
   @IsOptional()
   @IsString()
+  @MaxLength(500)
   description?: string;
 }
