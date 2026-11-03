@@ -2307,6 +2307,12 @@ enum SavingsEntryType {
   // any amount up to what is saved; older ones were the whole amount,
   // spent as an Expense. Taking everything out marks the goal WITHDRAWN.
   WITHDRAWAL
+  // The goal moved to another savings account and took its money along:
+  // real money moved from one Savings Wallet (moneyAccountId) to the goal's
+  // new one (savingsAccountId), backed by a Transfer Transaction
+  // (transactionId). One entry per wallet it left, sharing a groupId. The
+  // goal's saved amount stays the same.
+  ACCOUNT_CHANGE
 }
 
 // moneyAccountId/relatedGoalId/transactionId are deliberately plain string

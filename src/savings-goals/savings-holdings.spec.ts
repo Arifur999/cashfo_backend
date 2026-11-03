@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { goalHoldings, splitLargestFirst, type HoldingEntry } from './savings-holdings.js';
+import { entrySign, goalHoldings, splitLargestFirst, type HoldingEntry } from './savings-holdings.js';
 import { Prisma } from '@prisma/client';
 
 let seq = 0;
 const entry = (over: Partial<HoldingEntry> & Pick<HoldingEntry, 'savingsGoalId' | 'type' | 'amount'>): HoldingEntry => {
   seq += 1;
-  return { id: `e${String(seq).padStart(3, '0')}`, date: new Date('2026-10-01'), createdAt: new Date(2026, 9, 1, 0, 0, seq), savingsAccountId: null, groupId: null, ...over };
+  return { id: `e${String(seq).padStart(3, '0')}`, date: new Date('2026-10-01'), createdAt: new Date(2026, 9, 1, 0, 0, seq), savingsAccountId: null, moneyAccountId: null, groupId: null, ...over };
 };
 const plain = (holdings: Map<string, Prisma.Decimal> | undefined) => Object.fromEntries([...(holdings ?? new Map())].map(([k, v]) => [k, v.toNumber()]));
 
@@ -92,5 +92,25 @@ describe('goalHoldings', () => {
     const later = entry({ savingsGoalId: 'g', type: 'WITHDRAWAL', amount: 100, date: new Date('2026-10-09') });
     const first = entry({ savingsGoalId: 'g', type: 'CONTRIBUTION', amount: 100, savingsAccountId: 'dps', date: new Date('2026-10-02') });
     expect(plain(goalHoldings([later, first]).get('g'))).toEqual({});
+  });
+  it('carries the money of an account change from the wallet it left to the new one', () => {
+    const parts = new Map();
+    const change = entry({ savingsGoalId: 'g', type: 'ACCOUNT_CHANGE', amount: 300, moneyAccountId: 'dps', savingsAccountId: 'fdr', date: new Date('2026-10-05') });
+    const byGoal = goalHoldings(
+      [
+        entry({ savingsGoalId: 'g', type: 'CONTRIBUTION', amount: 300, savingsAccountId: 'dps' }),
+        entry({ savingsGoalId: 'g', type: 'CONTRIBUTION', amount: 50, savingsAccountId: 'fdr' }),
+        change,
+      ],
+      parts,
+    );
+    expect(plain(byGoal.get('g'))).toEqual({ fdr: 350 });
+    expect(parts.get(change.id).map((p: { walletId: string; amount: Prisma.Decimal }) => [p.walletId, p.amount.toNumber()])).toEqual([['dps', 300]]);
+  });
+});
+
+describe('entrySign', () => {
+  it('adds money in, takes money out, and leaves an account change at zero', () => {
+    expect([entrySign('CONTRIBUTION'), entrySign('TRANSFER_IN'), entrySign('TRANSFER_OUT'), entrySign('WITHDRAWAL'), entrySign('ACCOUNT_CHANGE')]).toEqual([1, 1, -1, -1, 0]);
   });
 });
