@@ -2,7 +2,7 @@
 // Helvetica fonts, lines and filled rectangles, nothing else. The standard
 // fonts are built into every PDF reader, so nothing is embedded and no
 // library is needed. They only know WinAnsi (Windows-1252), so text is
-// mapped to it first: the taka sign becomes "Tk" and anything else it
+// mapped to it first: the taka sign becomes "TK" and anything else it
 // can't show (Bangla, emoji) becomes "?" instead of breaking the file.
 
 export type PdfFont = 'regular' | 'bold';
@@ -46,7 +46,7 @@ const WIN_ANSI_HIGH: Record<number, number> = {
 };
 
 // Stand-ins for characters people type that WinAnsi lacks.
-const SUBSTITUTES: Record<string, string> = { '৳': 'Tk', '−': '-', ' ': ' ', ' ': ' ', ' ': ' ' };
+const SUBSTITUTES: Record<string, string> = { '৳': 'TK', '−': '-', ' ': ' ', ' ': ' ', ' ': ' ' };
 
 // The WinAnsi byte for one character, or null when it has none.
 export function winAnsiByte(char: string): number | null {
