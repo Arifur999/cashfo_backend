@@ -8,6 +8,7 @@ import { MailService } from '../mail/mail.service.js';
 import { renderSavingsReminderEmail } from '../mail/templates/savings-reminder-email.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { dateReminderDue, monthlyReminderMonth, perMonthFromNow, REMINDER_GRACE_DAYS } from './savings-reminders.js';
+import { entrySign } from './savings-holdings.js';
 
 const HALF_HOUR = 30 * 60 * 1000;
 // At most this many emails a run.
@@ -113,7 +114,7 @@ export class SavingsRemindersService implements OnModuleInit {
     const grouped = await this.prisma.savingsGoalEntry.groupBy({ by: ['type'], where: { savingsGoalId: goalId }, _sum: { amount: true } });
     return grouped.reduce((total, row) => {
       const amount = new Prisma.Decimal(row._sum.amount ?? 0);
-      return row.type === 'TRANSFER_OUT' || row.type === 'WITHDRAWAL' ? total.minus(amount) : total.plus(amount);
+      return total.plus(amount.times(entrySign(row.type)));
     }, new Prisma.Decimal(0));
   }
 }

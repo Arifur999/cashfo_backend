@@ -3,7 +3,8 @@ import { Prisma, type SavingsEntryType } from '@prisma/client';
 // Which savings wallet each goal's money sits in, worked out from the goal
 // entries alone: money added lands in the wallet it was kept in, a move
 // between goals carries its wallets with it (the wallet balance stays the
-// same), and a withdrawal leaves the wallets it came out of.
+// same), a withdrawal leaves the wallets it came out of, and an account
+// change carries the money from the wallet it left to the goal's new one.
 //
 // Entries made before the savings wallets were tracked per goal have no
 // wallet on a move or a withdrawal: those take from the goal's largest
@@ -18,6 +19,7 @@ export interface HoldingEntry {
   date: Date;
   createdAt: Date;
   savingsAccountId: string | null;
+  moneyAccountId: string | null;
   groupId: string | null;
 }
 
@@ -31,6 +33,13 @@ export interface WalletPart {
 export type Holdings = Map<string, Prisma.Decimal>;
 
 const ZERO = new Prisma.Decimal(0);
+
+// What an entry does to a goal's saved amount: money in, money out, or
+// money that only changed wallet (an account change).
+export function entrySign(type: SavingsEntryType): 1 | -1 | 0 {
+  if (type === 'ACCOUNT_CHANGE') return 0;
+  return type === 'TRANSFER_OUT' || type === 'WITHDRAWAL' ? -1 : 1;
+}
 
 const byAmountThenId = (a: [string, Prisma.Decimal], b: [string, Prisma.Decimal]) => b[1].comparedTo(a[1]) || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0);
 
@@ -129,6 +138,14 @@ export function goalHoldings(entries: readonly HoldingEntry[], parts?: Map<strin
           placed.push({ walletId: '', amount: rest });
         }
         record(placed);
+        break;
+      }
+      case 'ACCOUNT_CHANGE': {
+        // What it took from the wallet it left lands in the new one.
+        const taken = take(holdings, entry.moneyAccountId, amount);
+        const carried = taken.reduce((total, part) => total.plus(part.amount), ZERO);
+        if (carried.greaterThan(0)) add(holdings, entry.savingsAccountId ?? '', carried);
+        record(taken);
         break;
       }
     }

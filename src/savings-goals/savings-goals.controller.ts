@@ -86,8 +86,8 @@ export class SavingsGoalsController {
 
   @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
   @Patch(':id')
-  update(@Param('businessId') businessId: string, @Param('id') id: string, @Body() dto: UpdateSavingsGoalDto) {
-    return this.savingsGoalsService.update(businessId, id, dto);
+  update(@Param('businessId') businessId: string, @Param('id') id: string, @Body() dto: UpdateSavingsGoalDto, @CurrentUser() user: RequestUser) {
+    return this.savingsGoalsService.update(businessId, id, dto, user.id);
   }
 
   @Get(':id/statement')

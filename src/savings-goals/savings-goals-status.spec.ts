@@ -41,33 +41,33 @@ const update = (dto: Partial<UpdateSavingsGoalDto>) => dto as UpdateSavingsGoalD
 describe('SavingsGoalsService.update and the goal status', () => {
   it('reopens a completed goal whose target is raised above what is saved', async () => {
     const { service, goal } = setup('COMPLETED', 50000, [{ type: 'CONTRIBUTION', amount: 50000 }]);
-    const result = await service.update('biz-1', 'goal-1', update({ targetAmount: 80000 }));
+    const result = await service.update('biz-1', 'goal-1', update({ targetAmount: 80000 }), 'user-1');
     expect(goal.status).toBe('ACTIVE');
     expect(result.status).toBe('ACTIVE');
   });
 
   it('completes an active goal whose target is lowered to what is saved', async () => {
     const { service, goal } = setup('ACTIVE', 80000, [{ type: 'CONTRIBUTION', amount: 50000 }]);
-    await service.update('biz-1', 'goal-1', update({ targetAmount: 50000 }));
+    await service.update('biz-1', 'goal-1', update({ targetAmount: 50000 }), 'user-1');
     expect(goal.status).toBe('COMPLETED');
   });
 
   // Marked complete by hand, below its target: a rename leaves it so.
   it("leaves the status alone when the target doesn't change", async () => {
     const { service, goal } = setup('COMPLETED', 80000, [{ type: 'CONTRIBUTION', amount: 20000 }]);
-    await service.update('biz-1', 'goal-1', update({ name: 'Umrah' }));
+    await service.update('biz-1', 'goal-1', update({ name: 'Umrah' }), 'user-1');
     expect(goal.status).toBe('COMPLETED');
   });
 
   it('never reopens a withdrawn goal', async () => {
     const { service, goal } = setup('WITHDRAWN', 50000, [{ type: 'CONTRIBUTION', amount: 50000 }, { type: 'WITHDRAWAL', amount: 50000 }]);
-    await service.update('biz-1', 'goal-1', update({ targetAmount: 90000 }));
+    await service.update('biz-1', 'goal-1', update({ targetAmount: 90000 }), 'user-1');
     expect(goal.status).toBe('WITHDRAWN');
   });
 
   it('counts moves out of the goal against what is saved', async () => {
     const { service, goal } = setup('COMPLETED', 50000, [{ type: 'CONTRIBUTION', amount: 60000 }, { type: 'TRANSFER_OUT', amount: 15000 }]);
-    await service.update('biz-1', 'goal-1', update({ targetAmount: 50000 }));
+    await service.update('biz-1', 'goal-1', update({ targetAmount: 50000 }), 'user-1');
     expect(goal.status).toBe('ACTIVE');
   });
 });

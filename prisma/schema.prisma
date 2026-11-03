@@ -1964,6 +1964,8 @@ model Account {
   createdAt       DateTime           @default(now())
   updatedAt       DateTime           @updatedAt
   entries         TransactionEntry[]
+  // The savings goals that keep their money here (a savings account).
+  keptGoals       SavingsGoal[]      @relation("SavingsGoalAccount")
 
   @@index([businessId, accountType])
   @@index([businessId, parentId])
@@ -2258,11 +2260,18 @@ model SavingsGoal {
   // of the last monthly reminder, so neither is sent twice.
   reminderSentFor        DateTime?
   monthlyReminderSentFor String?
+  // The savings account the goal keeps its money in ("Keep the money in"):
+  // every deposit goes here. Money moved in from another goal can sit in
+  // other accounts too (its holdings). Null for an older goal with no
+  // deposits yet, or once its account is deleted.
+  accountId              String?
+  account                Account?                @relation("SavingsGoalAccount", fields: [accountId], references: [id], onDelete: SetNull)
   createdAt              DateTime                @default(now())
   updatedAt              DateTime                @updatedAt
   entries                SavingsGoalEntry[]
 
   @@index([businessId])
+  @@index([accountId])
 }
 
 enum SavingsGoalStatus {
@@ -2298,6 +2307,12 @@ enum SavingsEntryType {
   // any amount up to what is saved; older ones were the whole amount,
   // spent as an Expense. Taking everything out marks the goal WITHDRAWN.
   WITHDRAWAL
+  // The goal moved to another savings account and took its money along:
+  // real money moved from one Savings Wallet (moneyAccountId) to the goal's
+  // new one (savingsAccountId), backed by a Transfer Transaction
+  // (transactionId). One entry per wallet it left, sharing a groupId. The
+  // goal's saved amount stays the same.
+  ACCOUNT_CHANGE
 }
 
 // moneyAccountId/relatedGoalId/transactionId are deliberately plain string

@@ -14,7 +14,7 @@ import { UpdateSavingsGoalStatusDto } from './dto/update-savings-goal-status.dto
 import { UpdateSavingsPlanDto } from './dto/update-savings-plan.dto.js';
 import { WithdrawSavingsGoalDto } from './dto/withdraw-savings-goal.dto.js';
 import { WithdrawToBalanceDto } from './dto/withdraw-to-balance.dto.js';
-import { goalHoldings, splitLargestFirst, type HoldingEntry, type Holdings, type WalletPart } from './savings-holdings.js';
+import { entrySign, goalHoldings, splitLargestFirst, type HoldingEntry, type Holdings, type WalletPart } from './savings-holdings.js';
 import { planPace } from './savings-plan.js';
 import { renderStatementPdf, statementFileName, type StatementRowKind } from './savings-statement-pdf.js';
 
@@ -45,6 +45,8 @@ interface Ledger {
   entries: EntryRow[];
   holdings: Map<string, Holdings>;
   accountNames: Map<string, string>;
+  // Account numbers, for the account a goal keeps its money in.
+  accountNumbers: Map<string, string | null>;
 }
 
 const decimal = (value: Prisma.Decimal.Value) => new Prisma.Decimal(value);
@@ -231,7 +233,8 @@ export class SavingsGoalsService {
 
   // One savings wallet's goal history, newest first: money added for a goal
   // (and from where), moves between goals that changed which goal its money
-  // counts toward, and withdrawals out of it.
+  // counts toward, goals that moved here or away with their money, and
+  // withdrawals out of it.
   async listWalletHistory(businessId: string, accountId: string) {
     await this.requireSavingsAccount(businessId, accountId);
     const [goals, ledger] = await Promise.all([this.prisma.savingsGoal.findMany({ where: { businessId }, select: { id: true, name: true } }), this.ledger(businessId)]);
@@ -241,7 +244,7 @@ export class SavingsGoalsService {
     const rows: {
       id: string;
       date: Date;
-      kind: 'ALREADY_SAVED' | 'ADDED' | 'MOVED' | 'WITHDRAWN';
+      kind: 'ALREADY_SAVED' | 'ADDED' | 'MOVED' | 'WITHDRAWN' | 'ACCOUNT_IN' | 'ACCOUNT_OUT';
       goalName: string;
       otherGoalName: string | null;
       accountName: string | null;
@@ -250,6 +253,32 @@ export class SavingsGoalsService {
     }[] = [];
     const seenGroups = new Set<string>();
     for (const entry of ledger.entries) {
+      if (entry.type === 'ACCOUNT_CHANGE') {
+        // A goal that changed account: its money left one wallet for the
+        // other, listed once on each side (accountName: the other wallet).
+        const away = entry.moneyAccountId === accountId;
+        if (!away && entry.savingsAccountId !== accountId) continue;
+        const moved = sum(parts.get(entry.id) ?? []);
+        if (moved.lessThanOrEqualTo(0)) continue;
+        const key = `${entry.groupId ?? entry.id}|${entry.type}|${away ? 'out' : 'in'}`;
+        const row = rows.find((r) => r.id === key);
+        if (row) {
+          row.amount = decimal(row.amount).plus(moved).toFixed(2);
+          continue;
+        }
+        const other = away ? entry.savingsAccountId : entry.moneyAccountId;
+        rows.push({
+          id: key,
+          date: entry.date,
+          kind: away ? 'ACCOUNT_OUT' : 'ACCOUNT_IN',
+          goalName: goalName.get(entry.savingsGoalId) ?? '',
+          otherGoalName: null,
+          accountName: other ? (ledger.accountNames.get(other) ?? null) : null,
+          amount: moved.toFixed(2),
+          notes: entry.notes,
+        });
+        continue;
+      }
       const here = (parts.get(entry.id) ?? []).filter((part) => part.walletId === accountId);
       if (here.length === 0 || entry.type === 'TRANSFER_IN') continue;
       const amount = sum(here);
@@ -397,6 +426,11 @@ export class SavingsGoalsService {
       .map((group) => {
         const first = group[0];
         const amount = sum(group);
+        // An account change moves the money but leaves the balance as it is.
+        if (first.type === 'ACCOUNT_CHANGE') {
+          const left = [...new Set(group.map((e) => accountName(e.moneyAccountId)).filter((name): name is string => !!name))];
+          return { date: first.date, kind: 'ACCOUNT_CHANGED' as StatementRowKind, from: left.join(', ') || null, to: accountName(first.savingsAccountId), notes: first.notes, moneyIn: null, moneyOut: null, balance: balance.toFixed(2), moved: amount.toFixed(2) };
+        }
         const incoming = first.type === 'CONTRIBUTION' || first.type === 'TRANSFER_IN';
         balance = incoming ? balance.plus(amount) : balance.minus(amount);
         if (incoming) moneyIn = moneyIn.plus(amount);
@@ -415,6 +449,7 @@ export class SavingsGoalsService {
           moneyIn: incoming ? amount.toFixed(2) : null,
           moneyOut: incoming ? null : amount.toFixed(2),
           balance: balance.toFixed(2),
+          moved: null,
         };
       });
 
@@ -460,6 +495,10 @@ export class SavingsGoalsService {
     if (startAmount.greaterThan(dto.targetAmount)) {
       throw new BadRequestException("Already saved can't be more than the target.");
     }
+    // The account it keeps its money in; what was already saved is there
+    // too unless the request says where else.
+    const keptIn = dto.accountId ?? dto.startAccountId ?? null;
+    if (keptIn) await this.requireOpenSavingsAccount(businessId, keptIn);
     const today = dhakaDateOnly(new Date());
     const reached = startAmount.greaterThanOrEqualTo(dto.targetAmount);
     const data = {
@@ -472,6 +511,7 @@ export class SavingsGoalsService {
       reminderChannel: dto.reminderDate ? (dto.reminderChannel ?? 'EMAIL') : dto.reminderChannel,
       description: dto.description,
       startAmount,
+      accountId: keptIn,
       ...(reached && { status: 'COMPLETED' as const, reachedAt: today }),
     };
     if (startAmount.isZero()) return this.prisma.savingsGoal.create({ data });
@@ -480,7 +520,7 @@ export class SavingsGoalsService {
     // into the savings wallet that holds it: a real posting, so the wallet's
     // balance shows it, against the workspace's hidden "saved before"
     // equity account (no cash account paid it in).
-    const accountId = dto.startAccountId as string;
+    const accountId = (dto.startAccountId ?? dto.accountId) as string;
     return this.transactionsService.withLocks([`account:${accountId}`], async (tx) => {
       const wallet = await this.requireSavingsAccount(businessId, accountId, tx);
       if (wallet.status !== 'ACTIVE') throw new BadRequestException('Pick a savings wallet that is not archived.');
@@ -507,26 +547,82 @@ export class SavingsGoalsService {
     });
   }
 
-  async update(businessId: string, id: string, dto: UpdateSavingsGoalDto) {
+  async update(businessId: string, id: string, dto: UpdateSavingsGoalDto, userId: string) {
     const existing = await this.requireGoal(businessId, id);
+    // Another account to keep the money in: the next deposits go there, and
+    // what is saved moves there too.
+    if (dto.accountId !== undefined) await this.requireOpenSavingsAccount(businessId, dto.accountId);
     // A new reminder day gets its own email, also after an earlier one went.
     const newReminder = dto.reminderDate !== undefined && (dto.reminderDate ? new Date(dto.reminderDate).getTime() : null) !== (existing.reminderDate?.getTime() ?? null);
-    const updated = await this.prisma.savingsGoal.update({
-      where: { id },
-      data: {
-        ...(dto.name !== undefined && { name: dto.name }),
-        ...(dto.targetAmount !== undefined && { targetAmount: dto.targetAmount }),
-        ...(dto.targetDate !== undefined && { targetDate: new Date(dto.targetDate) }),
-        ...(dto.durationMonths !== undefined && { durationMonths: dto.durationMonths }),
-        ...(dto.reminderDate !== undefined && { reminderDate: dto.reminderDate ? new Date(dto.reminderDate) : null }),
-        ...(dto.reminderChannel !== undefined && { reminderChannel: dto.reminderChannel }),
-        ...(dto.description !== undefined && { description: dto.description }),
-        ...(newReminder && { reminderSentFor: null }),
-      },
-    });
+    const data: Prisma.SavingsGoalUncheckedUpdateInput = {
+      ...(dto.name !== undefined && { name: dto.name }),
+      ...(dto.targetAmount !== undefined && { targetAmount: dto.targetAmount }),
+      ...(dto.targetDate !== undefined && { targetDate: new Date(dto.targetDate) }),
+      ...(dto.durationMonths !== undefined && { durationMonths: dto.durationMonths }),
+      ...(dto.reminderDate !== undefined && { reminderDate: dto.reminderDate ? new Date(dto.reminderDate) : null }),
+      ...(dto.reminderChannel !== undefined && { reminderChannel: dto.reminderChannel }),
+      ...(dto.description !== undefined && { description: dto.description }),
+      ...(dto.accountId !== undefined && { accountId: dto.accountId }),
+      ...(newReminder && { reminderSentFor: null }),
+    };
+    const updated =
+      dto.accountId !== undefined && dto.accountId !== existing.accountId
+        ? await this.moveToAccount(businessId, existing.id, dto.accountId, data, userId)
+        : await this.prisma.savingsGoal.update({ where: { id }, data });
     // A new target can finish the goal or give a finished one more to save.
     if (dto.targetAmount === undefined) return updated;
     return this.maybeReopen(await this.maybeMarkCompleted(updated));
+  }
+
+  // A goal that changes account takes its money along: one Transfer posting
+  // moves what each other savings wallet holds for it into the new one (each
+  // wallet's part an ACCOUNT_CHANGE entry, sharing a groupId), committed
+  // with the goal's new account. Money whose wallet isn't known stays put.
+  // The parts are worked out again under the locks, as a withdrawal's are.
+  private async moveToAccount(businessId: string, goalId: string, accountId: string, data: Prisma.SavingsGoalUncheckedUpdateInput, userId: string): Promise<SavingsGoal> {
+    const before = await this.ledger(businessId);
+    const walletIds = [...(before.holdings.get(goalId)?.keys() ?? [])].filter((walletId) => walletId && walletId !== accountId);
+
+    return this.transactionsService.withLocks([`savings-goal:${goalId}`, `account:${accountId}`, ...walletIds.map((walletId) => `account:${walletId}`)], async (tx) => {
+      const goal = await this.requireGoal(businessId, goalId, tx);
+      const ledger = await this.ledger(businessId, tx);
+      const parts: WalletPart[] = [...(ledger.holdings.get(goalId) ?? new Map<string, Prisma.Decimal>())]
+        .filter(([walletId, amount]) => walletId && walletId !== accountId && amount.greaterThan(0))
+        .map(([walletId, amount]) => ({ walletId, amount }));
+      if (parts.some((part) => !walletIds.includes(part.walletId))) throw new BadRequestException('The savings changed while this was saving. Try again.');
+
+      if (parts.length > 0) {
+        const to = await this.requireSavingsAccount(businessId, accountId, tx);
+        for (const part of parts) {
+          const wallet = await this.requireSavingsAccount(businessId, part.walletId, tx);
+          if (decimal(wallet.currentBalance).lessThan(part.amount)) {
+            throw new BadRequestException(`"${wallet.name}" only has ${decimal(wallet.currentBalance).toFixed(2)} -- cannot move ${part.amount.toFixed(2)} from it.`);
+          }
+        }
+        const date = dhakaDateKey(new Date());
+        const transaction = await this.transactionsService.createTransaction(
+          businessId,
+          {
+            transactionType: 'TRANSFER',
+            transactionDate: date,
+            description: `Savings account change: ${goal.name} -- to ${to.name}`,
+            entries: [
+              { accountId: to.id, entryType: 'DEBIT', amount: sum(parts).toNumber() },
+              ...parts.map((part) => ({ accountId: part.walletId, entryType: 'CREDIT' as const, amount: part.amount.toNumber() })),
+            ],
+          },
+          userId,
+          tx,
+        );
+        const groupId = randomUUID();
+        for (const part of parts) {
+          await tx.savingsGoalEntry.create({
+            data: { savingsGoalId: goalId, businessId, type: 'ACCOUNT_CHANGE', amount: part.amount, date: new Date(date), moneyAccountId: part.walletId, savingsAccountId: to.id, transactionId: transaction.id, groupId },
+          });
+        }
+      }
+      return tx.savingsGoal.update({ where: { id: goalId }, data });
+    });
   }
 
   async updateStatus(businessId: string, id: string, dto: UpdateSavingsGoalStatusDto) {
@@ -575,9 +671,13 @@ export class SavingsGoalsService {
   // Transaction engine every other money movement in this app uses (see
   // QuickEntriesService.createTransfer(), which this mirrors exactly).
   async addContribution(businessId: string, goalId: string, dto: AddContributionDto, userId: string) {
-    await this.requireGoal(businessId, goalId);
+    const target = await this.requireGoal(businessId, goalId);
     const fromAccount = await this.requireMoneyAccount(businessId, dto.moneyAccountId);
-    const savingsAccount = await this.requireSavingsAccount(businessId, dto.toAccountId);
+    // Every deposit goes into the account the goal keeps its money in,
+    // unless an older app names one.
+    const toAccountId = dto.toAccountId ?? target.accountId;
+    if (!toAccountId) throw new BadRequestException('Pick the savings account this money goes into.');
+    const savingsAccount = await this.requireSavingsAccount(businessId, toAccountId);
 
     // The posting and the goal's entry commit together -- a failure between
     // them can no longer move the money without crediting the goal. The goal
@@ -602,6 +702,8 @@ export class SavingsGoalsService {
         userId,
         tx,
       );
+      // An older goal with no account yet keeps its money where this went.
+      if (!goal.accountId) await tx.savingsGoal.update({ where: { id: goalId }, data: { accountId: savingsAccount.id } });
 
       return tx.savingsGoalEntry.create({
         data: {
@@ -878,12 +980,21 @@ export class SavingsGoalsService {
   }
 
   // Every entry of a workspace, its goals' holdings, and the account names
-  // they need -- one read, so a list of goals costs the same as one.
+  // they need (the savings accounts' too, which a goal may keep its money in
+  // before any deposit) -- one read, so a list of goals costs the same as one.
   private async ledger(businessId: string, client: Prisma.TransactionClient = this.prisma): Promise<Ledger> {
     const entries = await client.savingsGoalEntry.findMany({ where: { businessId }, select: ENTRY_SELECT });
     const accountIds = [...new Set(entries.flatMap((e) => [e.moneyAccountId, e.savingsAccountId]).filter((v): v is string => !!v))];
-    const accounts = accountIds.length ? await client.account.findMany({ where: { id: { in: accountIds } }, select: { id: true, name: true } }) : [];
-    return { entries, holdings: goalHoldings(entries as HoldingEntry[]), accountNames: new Map(accounts.map((a) => [a.id, a.name])) };
+    const accounts = await client.account.findMany({
+      where: { businessId, OR: [{ id: { in: accountIds } }, { accountType: 'ASSET', accountSubtype: 'savings' }] },
+      select: { id: true, name: true, accountNumber: true },
+    });
+    return {
+      entries,
+      holdings: goalHoldings(entries as HoldingEntry[]),
+      accountNames: new Map(accounts.map((a) => [a.id, a.name])),
+      accountNumbers: new Map(accounts.map((a) => [a.id, a.accountNumber])),
+    };
   }
 
   // Which wallets each entry's money was in: its own wallet, or for an old
@@ -909,7 +1020,7 @@ export class SavingsGoalsService {
 
   private async toSummary(goal: SavingsGoal, ledger: Ledger) {
     const mine = ledger.entries.filter((e) => e.savingsGoalId === goal.id);
-    const currentAmount = mine.reduce((total, e) => (e.type === 'TRANSFER_OUT' || e.type === 'WITHDRAWAL' ? total.minus(e.amount) : total.plus(e.amount)), ZERO);
+    const currentAmount = mine.reduce((total, e) => total.plus(new Prisma.Decimal(e.amount).times(entrySign(e.type))), ZERO);
     const target = new Prisma.Decimal(goal.targetAmount);
     // Self-healing, not just triggered on a fresh contribution/transfer --
     // catches a goal that was ALREADY fully funded before this check
@@ -962,6 +1073,8 @@ export class SavingsGoalsService {
       addedThisMonth: addedThisMonth.toFixed(2),
       entryCount: mine.length,
       holdings,
+      // The savings account it keeps its money in (Keep the money in).
+      account: goal.accountId ? { id: goal.accountId, name: ledger.accountNames.get(goal.accountId) ?? null, accountNumber: ledger.accountNumbers.get(goal.accountId) ?? null } : null,
       lastWithdrawal: last ? { date: last.date, accountName: last.moneyAccountId ? (ledger.accountNames.get(last.moneyAccountId) ?? null) : null } : null,
     };
   }
@@ -987,7 +1100,7 @@ export class SavingsGoalsService {
     let total = new Prisma.Decimal(0);
     for (const row of grouped) {
       const amount = new Prisma.Decimal(row._sum.amount ?? 0);
-      total = row.type === 'TRANSFER_OUT' || row.type === 'WITHDRAWAL' ? total.minus(amount) : total.plus(amount);
+      total = total.plus(amount.times(entrySign(row.type)));
     }
     return total;
   }
@@ -1015,6 +1128,13 @@ export class SavingsGoalsService {
         currentBalance: 0,
       },
     });
+  }
+
+  // A savings account a goal can keep its money in: not archived.
+  private async requireOpenSavingsAccount(businessId: string, accountId: string): Promise<Account> {
+    const account = await this.requireSavingsAccount(businessId, accountId);
+    if (account.status !== 'ACTIVE') throw new BadRequestException('Pick a savings account that is not archived.');
+    return account;
   }
 
   private async requireSavingsAccount(businessId: string, accountId: string, client: Prisma.TransactionClient = this.prisma): Promise<Account> {
