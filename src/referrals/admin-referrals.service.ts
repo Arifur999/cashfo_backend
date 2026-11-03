@@ -313,7 +313,7 @@ export class AdminReferralsService {
       const amountPaisa = toPaisa(locked.amount);
       const paidPaisa = dto.paidAmount !== undefined ? Math.round(dto.paidAmount * 100) : amountPaisa - toPaisa(locked.fee);
       if (paidPaisa <= 0 || paidPaisa > amountPaisa)
-        throw new BadRequestException(`The amount sent must be more than 0 and at most ৳ ${fromPaisa(amountPaisa)}`);
+        throw new BadRequestException(`The amount sent must be more than 0 and at most TK ${fromPaisa(amountPaisa)}`);
 
       const { count } = await tx.payoutRequest.updateMany({
         where: { id, status: 'APPROVED' },

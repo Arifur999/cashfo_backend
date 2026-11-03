@@ -23,6 +23,7 @@ import type { ClientInfo } from '../auth/auth-sessions.service.js';
 import { ChangePasswordDto } from './dto/change-password.dto.js';
 import { ForgotPasswordDto } from './dto/forgot-password.dto.js';
 import { LoginDto } from './dto/login.dto.js';
+import { LogoutDto } from './dto/logout.dto.js';
 import { RefreshDto } from './dto/refresh.dto.js';
 import { RegisterDto } from './dto/register.dto.js';
 import { SessionExchangeDto } from './dto/session-exchange.dto.js';
@@ -130,8 +131,8 @@ export class UserAuthController {
   }
 
   @Post('logout')
-  logout(@Body() dto: RefreshDto) {
-    return this.userAuthService.logout(dto.refreshToken);
+  logout(@Body() dto: LogoutDto) {
+    return this.userAuthService.logout(dto.refreshToken, dto.everywhere);
   }
 
   @UseGuards(UserAuthGuard)

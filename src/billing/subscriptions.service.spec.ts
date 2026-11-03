@@ -156,7 +156,7 @@ describe('SubscriptionsService.sweepUser (expiry)', () => {
 
     await service.sweepUser('u-1', NOW);
 
-    expect(tx.payment.findMany.mock.calls[0][0].where).toEqual({ status: 'PENDING', expiresAt: { lte: NOW }, userId: 'u-1' });
+    expect(tx.payment.findMany.mock.calls[0][0].where).toEqual({ status: 'PENDING', expiresAt: { lte: NOW }, submittedAt: null, userId: 'u-1' });
     expect(tx.payment.updateMany).toHaveBeenCalledWith({ where: { id: 'pay-9', status: 'PENDING' }, data: { status: 'FAILED', failureReason: 'expired' } });
     expect(notices.bell).toHaveBeenCalledWith('u-1', expect.objectContaining({ key: 'payment:pay-9:expired' }));
   });

@@ -26,7 +26,7 @@ export function dayLabel(day: string | Date): string {
   return `${Number(key.slice(8, 10))} ${MONTHS[Number(key.slice(5, 7)) - 1]} ${key.slice(0, 4)}`;
 }
 
-// Taka in lakh grouping, as "Tk 12,50,000" (the paisa only when there are
+// Taka in lakh grouping, as "TK 12,50,000" (the paisa only when there are
 // some). The PDF fonts have no taka sign.
 export function takaLabel(value: string | number): string {
   const amount = Number(value);
@@ -34,7 +34,7 @@ export function takaLabel(value: string | number): string {
   const [whole, paisa] = Math.abs(amount).toFixed(2).split('.');
   const last = whole.slice(-3);
   const rest = whole.slice(0, -3).replace(/\B(?=(\d{2})+(?!\d))/g, ',');
-  return `${negative ? '-' : ''}Tk ${rest ? `${rest},${last}` : last}${paisa === '00' ? '' : `.${paisa}`}`;
+  return `${negative ? '-' : ''}TK ${rest ? `${rest},${last}` : last}${paisa === '00' ? '' : `.${paisa}`}`;
 }
 
 // A name as the PDF can draw it.

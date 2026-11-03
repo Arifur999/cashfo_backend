@@ -31,6 +31,8 @@ const METHOD_NAMES: Record<PaymentGateway, Record<BillingLocale, string>> = {
   SSLCOMMERZ: { en: 'SSLCommerz', bn: 'SSLCommerz' },
   CARD: { en: 'card', bn: 'কার্ড' },
   MANUAL: { en: 'bank or mobile banking', bn: 'ব্যাংক বা মোবাইল ব্যাংকিং' },
+  ROCKET: { en: 'Rocket', bn: 'রকেট' },
+  BANK: { en: 'bank transfer', bn: 'ব্যাংক ট্রান্সফার' },
 };
 
 export const methodName = (gateway: PaymentGateway, locale: BillingLocale): string => METHOD_NAMES[gateway][locale];

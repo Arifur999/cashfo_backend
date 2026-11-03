@@ -50,6 +50,16 @@ export class PaymentsController {
     return this.paymentsService.getById(id);
   }
 
+  // The customer's screenshot of the money they sent. Never cached: it
+  // shows their wallet.
+  @Get(':id/proof')
+  @Header('Cache-Control', 'private, no-store')
+  @Header('X-Content-Type-Options', 'nosniff')
+  async proof(@Param('id') id: string) {
+    const proof = await this.paymentsService.proof(id);
+    return new StreamableFile(proof.data, { type: proof.mimeType, disposition: 'inline' });
+  }
+
   // A customer's checkout arrived: the plan starts, with an invoice.
   @Roles(AdminRole.SUPER_ADMIN, AdminRole.FINANCE_ADMIN)
   @Post(':id/mark-paid')

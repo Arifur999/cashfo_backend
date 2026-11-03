@@ -13,7 +13,7 @@ describe('renderInvoiceEmail', () => {
   it('names the invoice in English and escapes what the customer typed', () => {
     const email = renderInvoiceEmail('en', invoice, 'Smartly');
     expect(email.subject).toBe('Your invoice INV-2026-000001');
-    expect(email.text).toContain('Your invoice INV-2026-000001 for Yearly Pro (৳ 1,299, issued 2 Oct 2026) is attached as a PDF.');
+    expect(email.text).toContain('Your invoice INV-2026-000001 for Yearly Pro (TK 1,299, issued 2 Oct 2026) is attached as a PDF.');
     expect(email.text).toContain('https://app.example.com/settings/plans');
     expect(email.html).toContain('Nadia &lt;b&gt;');
     expect(email.html).not.toContain('Nadia <b>');

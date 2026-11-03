@@ -31,7 +31,7 @@ export function renderMonthlySummaryEmail(
   const subject = en ? `Your ${email.month} summary` : `আপনার ${email.month} মাসের সারসংক্ষেপ`;
   const greeting = en ? `Hi ${email.name},` : `প্রিয় ${email.name},`;
   const body = en ? `Here is how ${email.month} went in ${email.workspaceName}.` : `${email.workspaceName}-এ ${email.month} মাস যেমন গেল:`;
-  const taka = (amount: string) => `৳ ${amount}`;
+  const taka = (amount: string) => `${en ? 'TK' : '৳'} ${amount}`;
   const rows: [string, string][] = en
     ? [
         ['Income', taka(email.income)],

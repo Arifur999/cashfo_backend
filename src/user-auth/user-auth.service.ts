@@ -214,12 +214,20 @@ export class UserAuthService {
     return { accessToken: this.tokens.signAccess('user', { sub, sid, role: session.user.role }) };
   }
 
-  async logout(refreshToken: string) {
+  // `everywhere` ends every device of the account, but only from a live
+  // session of the customer's own: a stale token, or a super admin's
+  // read-only view, signs out just itself.
+  async logout(refreshToken: string, everywhere = false) {
     // Best-effort: an already-expired or malformed refresh token has no
     // session left to end, so don't fail the logout request over it.
     try {
-      const { sid } = this.tokens.verifyRefresh('user', refreshToken);
-      await this.devices.end(sid);
+      const { sub, sid } = this.tokens.verifyRefresh('user', refreshToken);
+      const session = everywhere ? await this.sessions.findActive(sid) : null;
+      if (session && session.userId === sub && !session.impersonatedBy) {
+        await this.devices.endAll(sub);
+      } else {
+        await this.devices.end(sid);
+      }
     } catch {
       // ignore
     }
