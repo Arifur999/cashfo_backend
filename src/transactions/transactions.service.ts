@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { Account, AccountType, EntryType, Prisma, TransactionType } from '@prisma/client';
 import { AccountBalanceService, isDebitPositive } from '../accounts/account-balance.service.js';
 import { REFERRAL_BONUS_INCOME_SUBTYPE } from '../accounts/accounts.service.js';
@@ -8,6 +8,14 @@ import { CreateTransactionDto } from './dto/create-transaction.dto.js';
 import { CreateTransactionEntryDto } from './dto/create-transaction-entry.dto.js';
 import { ListTransactionsQueryDto } from './dto/list-transactions-query.dto.js';
 import { BUILT_IN_CHARGE_CATEGORIES, CHARGE_CATEGORY } from '../budgets/app-categories.js';
+
+// The reason the Transactions page's Delete voids with. Only a void made
+// with it can be undone (restoreTransaction): the void endpoint takes only
+// what no feature keeps a record of, and a feature's own void (an asset
+// deleted, a zakat entry removed, a correction) says something else.
+export const DELETED_REASON = 'Deleted from Transactions';
+// How long after it a delete can be undone.
+export const RESTORE_WINDOW_MINUTES = 10;
 
 // Still counts: neither a voided original nor the reversal that undid it.
 const STANDING_TRANSACTION = { status: 'POSTED', reversalOfId: null } satisfies Prisma.TransactionWhereInput;
@@ -143,7 +151,8 @@ export class TransactionsService {
     return transaction;
   }
 
-  // NEVER hard-deletes. Marks the original VOIDED and creates a brand new
+  // NEVER hard-deletes (save restoreTransaction() taking back a delete made
+  // minutes ago). Marks the original VOIDED and creates a brand new
   // reversing Transaction whose entries are the exact mirror of the
   // original (DEBIT<->CREDIT swapped, same accounts/amounts) -- this is
   // what actually restores the affected accounts' balances, since
@@ -237,6 +246,70 @@ export class TransactionsService {
     }
 
     return { original: { id: original.id, status: 'VOIDED' as const }, reversal };
+  }
+
+  // Undo of a delete: the transaction stands again and the reversal that
+  // undid it goes, so every list, balance and statement is as it was before
+  // (a re-post would leave the void and its reversal on the wallet's
+  // statement). Only a delete from the Transactions page (DELETED_REASON),
+  // by the same person, within RESTORE_WINDOW_MINUTES; the charges deleted
+  // with it come back too.
+  async restoreTransaction(businessId: string, transactionId: string, userId: string) {
+    const now = new Date();
+    return this.prisma.$transaction((tx) => this.restoreIn(tx, businessId, transactionId, userId, now));
+  }
+
+  private async restoreIn(tx: Prisma.TransactionClient, businessId: string, transactionId: string, userId: string, now: Date) {
+    const original = await tx.transaction.findUnique({ where: { id: transactionId }, include: { entries: true } });
+    if (!original || original.businessId !== businessId) {
+      throw new NotFoundException('Transaction not found');
+    }
+    if (original.status !== 'VOIDED' || original.reversalOfId || original.voidedReason !== DELETED_REASON) {
+      throw new BadRequestException('Only a transaction deleted from Transactions can be brought back');
+    }
+    if (!original.voidedAt || now.getTime() - original.voidedAt.getTime() > RESTORE_WINDOW_MINUTES * 60_000) {
+      throw new BadRequestException('A delete can be undone for 10 minutes only');
+    }
+    const reversal = await tx.transaction.findFirst({ where: { reversalOfId: original.id }, select: { id: true, createdBy: true } });
+    if (!reversal) {
+      throw new BadRequestException('Only a transaction deleted from Transactions can be brought back');
+    }
+    if (reversal.createdBy !== userId) {
+      throw new ForbiddenException('Only the person who deleted it can undo the delete');
+    }
+    // A charge stands only with the entry it was paid with.
+    if (original.chargeForId) {
+      const paidWith = await tx.transaction.findUnique({ where: { id: original.chargeForId }, select: { status: true } });
+      if (paidWith?.status !== 'POSTED') throw new BadRequestException('Bring back the entry this charge was paid with first');
+    }
+
+    const distinctAccountIds = [...new Set(original.entries.map((e) => e.accountId))];
+    await this.lockAccounts(tx, distinctAccountIds);
+
+    // Claimed with a condition: of two undos racing, only one gets here.
+    const claimed = await tx.transaction.updateMany({
+      where: { id: original.id, status: 'VOIDED', voidedReason: DELETED_REASON },
+      data: { status: 'POSTED', voidedAt: null, voidedReason: null },
+    });
+    if (claimed.count === 0) {
+      throw new BadRequestException('This transaction is back already');
+    }
+    await tx.transactionEntry.deleteMany({ where: { transactionId: reversal.id } });
+    await tx.transaction.delete({ where: { id: reversal.id } });
+
+    for (const accountId of distinctAccountIds) {
+      await this.accountBalanceService.recalculateBalance(accountId, tx);
+    }
+
+    const charges = await tx.transaction.findMany({
+      where: { businessId, chargeForId: original.id, status: 'VOIDED', reversalOfId: null, voidedReason: DELETED_REASON },
+      select: { id: true },
+    });
+    for (const charge of charges) {
+      await this.restoreIn(tx, businessId, charge.id, userId, now);
+    }
+
+    return { id: original.id, status: 'POSTED' as const };
   }
 
   // A charge (a bank or service fee) paid with a loan entry, out of the

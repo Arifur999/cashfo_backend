@@ -1,6 +1,6 @@
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import type { ListTransactionsQueryDto } from './dto/list-transactions-query.dto.js';
-import { TransactionsService } from './transactions.service.js';
+import { DELETED_REASON, TransactionsService } from './transactions.service.js';
 
 const original = {
   id: 'tx-1',
@@ -124,5 +124,110 @@ describe("TransactionsService entries' accounts", () => {
     const transaction = await service.getTransaction('biz-1', 'tx-1');
     expect(prisma.transaction.findUnique.mock.calls[0][0].include.entries).toEqual({ include: { account: { select: accountSelect } } });
     expect(transaction.entries.map((entry) => entry.account.nameBn)).toEqual([null, 'ভাড়া খরচ']);
+  });
+});
+
+describe('TransactionsService.restoreTransaction', () => {
+  const NOW = new Date('2026-11-03T10:00:00Z');
+  const deleted = {
+    ...original,
+    status: 'VOIDED',
+    voidedReason: DELETED_REASON,
+    voidedAt: new Date('2026-11-03T09:58:00Z'),
+    chargeForId: null as string | null,
+  };
+
+  const restoreSetup = ({
+    transaction = deleted as typeof deleted | null,
+    reversal = { id: 'reversal-1', createdBy: 'user-1' } as object | null,
+    claimed = 1,
+    charges = [] as { id: string }[],
+    paidWith = null as object | null,
+  } = {}) => {
+    const tx = {
+      transaction: {
+        // The entry a charge was paid with is read with a select; it stands
+        // (the mock doesn't see the claim) unless a test says otherwise.
+        findUnique: vi
+          .fn()
+          .mockImplementation(({ where, select }: { where: { id: string }; select?: object }) =>
+            Promise.resolve(
+              select ? (paidWith ?? { status: 'POSTED' }) : where.id === 'charge-1' ? { ...deleted, id: 'charge-1', chargeForId: 'tx-1' } : transaction,
+            ),
+          ),
+        findFirst: vi.fn().mockResolvedValue(reversal),
+        updateMany: vi.fn().mockResolvedValue({ count: claimed }),
+        delete: vi.fn().mockResolvedValue({}),
+        findMany: vi.fn().mockResolvedValueOnce(charges).mockResolvedValue([]),
+      },
+      transactionEntry: { deleteMany: vi.fn().mockResolvedValue({ count: 2 }) },
+      $queryRaw: vi.fn().mockResolvedValue([]),
+    };
+    const prisma = { $transaction: vi.fn((work: (client: typeof tx) => unknown) => work(tx)) };
+    const balances = { recalculateBalance: vi.fn().mockResolvedValue(undefined) };
+    const service = new TransactionsService(prisma as never, balances as never);
+    return { service, tx, balances };
+  };
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('stands the transaction again, drops its reversal and recalculates both accounts', async () => {
+    const { service, tx, balances } = restoreSetup();
+    await expect(service.restoreTransaction('biz-1', 'tx-1', 'user-1')).resolves.toEqual({ id: 'tx-1', status: 'POSTED' });
+    expect(tx.transaction.updateMany).toHaveBeenCalledWith({
+      where: { id: 'tx-1', status: 'VOIDED', voidedReason: DELETED_REASON },
+      data: { status: 'POSTED', voidedAt: null, voidedReason: null },
+    });
+    expect(tx.transactionEntry.deleteMany).toHaveBeenCalledWith({ where: { transactionId: 'reversal-1' } });
+    expect(tx.transaction.delete).toHaveBeenCalledWith({ where: { id: 'reversal-1' } });
+    expect(balances.recalculateBalance).toHaveBeenCalledTimes(2);
+  });
+
+  it('brings back the charges deleted with it', async () => {
+    const { service, tx } = restoreSetup({ charges: [{ id: 'charge-1' }] });
+    await service.restoreTransaction('biz-1', 'tx-1', 'user-1');
+    expect(tx.transaction.updateMany).toHaveBeenCalledTimes(2);
+    expect(tx.transaction.updateMany.mock.calls[1][0].where.id).toBe('charge-1');
+  });
+
+  it.each([
+    ['a correction', { ...deleted, voidedReason: 'Corrected' }],
+    ["a feature's own void", { ...deleted, voidedReason: 'Asset deleted: Fridge' }],
+    ['a transaction that stands', { ...deleted, status: 'POSTED', voidedReason: null }],
+    ['a reversal', { ...deleted, reversalOfId: 'tx-0' }],
+    ['a delete older than the window', { ...deleted, voidedAt: new Date('2026-11-03T09:49:00Z') }],
+  ])('refuses %s', async (_label, transaction) => {
+    const { service, tx } = restoreSetup({ transaction: transaction as typeof deleted });
+    await expect(service.restoreTransaction('biz-1', 'tx-1', 'user-1')).rejects.toThrow(BadRequestException);
+    expect(tx.transaction.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("is a 404 for another workspace's transaction", async () => {
+    const { service } = restoreSetup({ transaction: { ...deleted, businessId: 'biz-2' } });
+    await expect(service.restoreTransaction('biz-1', 'tx-1', 'user-1')).rejects.toThrow(NotFoundException);
+  });
+
+  it('lets only the person who deleted it undo it', async () => {
+    const { service, tx } = restoreSetup({ reversal: { id: 'reversal-1', createdBy: 'user-2' } });
+    await expect(service.restoreTransaction('biz-1', 'tx-1', 'user-1')).rejects.toThrow(ForbiddenException);
+    expect(tx.transaction.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('keeps a charge deleted while the entry it was paid with stays deleted', async () => {
+    const { service, tx } = restoreSetup({ transaction: { ...deleted, chargeForId: 'transfer-1' }, paidWith: { status: 'VOIDED' } });
+    await expect(service.restoreTransaction('biz-1', 'tx-1', 'user-1')).rejects.toThrow(BadRequestException);
+    expect(tx.transaction.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('deletes no reversal when a parallel undo already claimed it', async () => {
+    const { service, tx } = restoreSetup({ claimed: 0 });
+    await expect(service.restoreTransaction('biz-1', 'tx-1', 'user-1')).rejects.toThrow(BadRequestException);
+    expect(tx.transaction.delete).not.toHaveBeenCalled();
   });
 });

@@ -45,4 +45,11 @@ export class TransactionsController {
   void(@Param('businessId') businessId: string, @Param('id') id: string, @Body() dto: VoidTransactionDto, @CurrentUser() user: RequestUser) {
     return this.transactionsService.voidTransaction(businessId, id, dto.reason, user.id);
   }
+
+  // Undo of a delete made from the Transactions page minutes ago.
+  @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
+  @Post(':id/restore')
+  restore(@Param('businessId') businessId: string, @Param('id') id: string, @CurrentUser() user: RequestUser) {
+    return this.transactionsService.restoreTransaction(businessId, id, user.id);
+  }
 }
