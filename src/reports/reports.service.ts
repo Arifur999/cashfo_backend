@@ -19,6 +19,25 @@ const ACCOUNT_TYPE_ORDER: AccountType[] = ['ASSET', 'LIABILITY', 'EQUITY', 'INCO
 // rank so the chart still gets a distinct color per slice.
 const FALLBACK_COLORS = ['blue', 'green', 'purple', 'orange', 'pink', 'yellow', 'red', 'indigo'];
 
+// The row the money with no category goes under: an income or expense made
+// before the workspace had categories, or by a feature that files none (a
+// loan's interest, say). The app words it; the name is for an older app.
+export const UNCATEGORISED = 'Uncategorised';
+const UNCATEGORISED_COLOR = 'grey';
+const NO_CATEGORY = '\u0000';
+
+// One standing income or expense transaction's money, once: its amount (the
+// debit side -- an income or expense moves the same sum on both sides, as
+// the Transactions summary counts it) and its category, from the one entry
+// that carries it (null when none does). Summed by category, and by month
+// ('YYYY-MM') when asked.
+interface CategoryMoney {
+  month: string | null;
+  category: string | null;
+  amount: Prisma.Decimal | null;
+  count: number;
+}
+
 @Injectable()
 export class ReportsService {
   constructor(private readonly prisma: PrismaService) {}
@@ -145,31 +164,19 @@ export class ReportsService {
   // double-entry pair" trick used elsewhere (see
   // BudgetsService.listIncomeGoals()'s comment).
   async getCategoryBreakdown(businessId: string, query: CategoryBreakdownQueryDto) {
-    const dateFilter: Prisma.DateTimeFilter = {};
-    if (query.dateFrom) dateFilter.gte = new Date(query.dateFrom);
-    if (query.dateTo) dateFilter.lte = new Date(query.dateTo);
-    const hasDateFilter = Object.keys(dateFilter).length > 0;
-
-    const grouped = await this.prisma.transactionEntry.groupBy({
-      by: ['categoryId'],
-      where: {
-        categoryId: { not: null },
-        transaction: { businessId, status: 'POSTED', reversalOfId: null, transactionType: query.type, ...(hasDateFilter && { transactionDate: dateFilter }) },
-      },
-      _sum: { amount: true },
+    const grouped = await this.categoryMoney(businessId, query.type, {
+      ...(query.dateFrom && { from: new Date(query.dateFrom) }),
+      ...(query.dateTo && { through: new Date(query.dateTo) }),
     });
-
-    const categoryNames = grouped.map((g) => g.categoryId).filter((v): v is string => !!v);
-    const budgetCategories = categoryNames.length
-      ? await this.prisma.budgetCategory.findMany({ where: { businessId, type: query.type, name: { in: categoryNames } } })
-      : [];
-    const colorByName = new Map(budgetCategories.map((c) => [c.name, c.color]));
+    const colorByName = await this.categoryColors(businessId, query.type, grouped);
 
     const withAmounts = grouped
       .map((g, i) => ({
-        name: g.categoryId!,
-        amount: new Prisma.Decimal(g._sum.amount ?? 0),
-        color: colorByName.get(g.categoryId!) ?? FALLBACK_COLORS[i % FALLBACK_COLORS.length],
+        name: g.category ?? UNCATEGORISED,
+        uncategorised: g.category === null,
+        amount: new Prisma.Decimal(g.amount ?? 0),
+        count: g.count,
+        color: g.category === null ? UNCATEGORISED_COLOR : (colorByName.get(g.category) ?? FALLBACK_COLORS[i % FALLBACK_COLORS.length]),
       }))
       .sort((a, b) => b.amount.comparedTo(a.amount));
 
@@ -178,70 +185,101 @@ export class ReportsService {
     return {
       type: query.type,
       total: total.toFixed(2),
-      categories: withAmounts.slice(0, 10).map((row) => ({
+      categories: withAmounts.map((row) => ({
         name: row.name,
         amount: row.amount.toFixed(2),
         percent: total.isZero() ? 0 : Math.round(row.amount.dividedBy(total).times(100).toNumber()),
         color: row.color,
+        count: row.count,
+        ...(row.uncategorised && { uncategorised: true }),
       })),
     };
   }
 
+  // See CategoryMoney. `through` is the last day (inclusive), `before` the
+  // first day after; `accountId` keeps the transactions that touched it.
+  private categoryMoney(
+    businessId: string,
+    type: 'INCOME' | 'EXPENSE',
+    range: { from?: Date; through?: Date; before?: Date },
+    options: { byMonth?: boolean; accountId?: string } = {},
+  ): Promise<CategoryMoney[]> {
+    const month = options.byMonth ? Prisma.sql`to_char(t."transactionDate", 'YYYY-MM')` : Prisma.sql`NULL::text`;
+    return this.prisma.$queryRaw<CategoryMoney[]>`
+      SELECT x."month", x."category", SUM(x."amount") AS "amount", COUNT(*)::int AS "count"
+      FROM (
+        SELECT ${month} AS "month", MAX(e."categoryId") AS "category", SUM(e."amount") FILTER (WHERE e."entryType" = 'DEBIT') AS "amount"
+        FROM "Transaction" t JOIN "TransactionEntry" e ON e."transactionId" = t."id"
+        WHERE t."businessId" = ${businessId} AND t."status" = 'POSTED' AND t."reversalOfId" IS NULL
+          AND t."transactionType" = ${type}::"TransactionType"
+          ${range.from ? Prisma.sql`AND t."transactionDate" >= ${range.from}` : Prisma.empty}
+          ${range.through ? Prisma.sql`AND t."transactionDate" <= ${range.through}` : Prisma.empty}
+          ${range.before ? Prisma.sql`AND t."transactionDate" < ${range.before}` : Prisma.empty}
+          ${options.accountId ? Prisma.sql`AND EXISTS (SELECT 1 FROM "TransactionEntry" w WHERE w."transactionId" = t."id" AND w."accountId" = ${options.accountId})` : Prisma.empty}
+        GROUP BY t."id"${options.byMonth ? Prisma.sql`, t."transactionDate"` : Prisma.empty}
+      ) x
+      GROUP BY x."month", x."category"`;
+  }
+
+  // The colours of the categories named, from the Category Set.
+  private async categoryColors(businessId: string, type: 'INCOME' | 'EXPENSE', rows: CategoryMoney[]): Promise<Map<string, string>> {
+    const names = [...new Set(rows.map((row) => row.category).filter((name): name is string => name !== null))];
+    if (!names.length) return new Map();
+    const categories = await this.prisma.budgetCategory.findMany({ where: { businessId, type, name: { in: names } }, select: { name: true, color: true } });
+    return new Map(categories.map((c) => [c.name, c.color]));
+  }
+
   // Insights › Reports: every category of one type, with a column per
-  // calendar month in the range. The same "categoryId picks one side of the
-  // pair" rule as getCategoryBreakdown(), but nothing is capped: the table
-  // is the place a customer goes for every row. One groupBy per month
-  // (at most MAX_REPORT_MONTHS) rather than a raw date_trunc, like the
-  // trend below. `accountId` keeps only the transactions that touched that
-  // wallet (the entry on the wallet side is the other half of the pair).
+  // calendar month in the range, money with no category in its own row --
+  // each standing transaction once, as getCategoryBreakdown() counts it.
+  // Nothing is capped: the table is the place a customer goes for every row.
+  // `accountId` keeps only the transactions that touched that wallet.
   async getMonthlyBreakdown(businessId: string, query: MonthlyBreakdownQueryDto) {
     const buckets = monthBucketsBetween(query.dateFrom, query.dateTo);
     if (buckets.length === 0) throw new BadRequestException(`Pick a range of 1 to ${MAX_REPORT_MONTHS} months, oldest day first`);
 
-    const grouped = await Promise.all(
-      buckets.map((bucket) =>
-        this.prisma.transactionEntry.groupBy({
-          by: ['categoryId'],
-          where: {
-            categoryId: { not: null },
-            transaction: {
-              businessId,
-              status: 'POSTED',
-              reversalOfId: null,
-              transactionType: query.type,
-              transactionDate: { gte: bucket.start, lt: bucket.end },
-              ...(query.accountId && { entries: { some: { accountId: query.accountId } } }),
-            },
-          },
-          _sum: { amount: true },
-        }),
-      ),
+    const grouped = await this.categoryMoney(
+      businessId,
+      query.type,
+      { from: buckets[0].start, before: buckets[buckets.length - 1].end },
+      { byMonth: true, ...(query.accountId && { accountId: query.accountId }) },
     );
+    const monthIndex = new Map(buckets.map((bucket, index) => [bucket.key, index]));
 
     const byName = new Map<string, Prisma.Decimal[]>();
-    grouped.forEach((rows, monthIndex) => {
-      for (const row of rows) {
-        if (!row.categoryId) continue;
-        const amounts = byName.get(row.categoryId) ?? buckets.map(() => new Prisma.Decimal(0));
-        amounts[monthIndex] = new Prisma.Decimal(row._sum.amount ?? 0);
-        byName.set(row.categoryId, amounts);
-      }
-    });
+    for (const row of grouped) {
+      const index = row.month === null ? undefined : monthIndex.get(row.month);
+      if (index === undefined) continue;
+      // Keyed apart from a category a customer happened to name the same.
+      const name = row.category ?? NO_CATEGORY;
+      const amounts = byName.get(name) ?? buckets.map(() => new Prisma.Decimal(0));
+      amounts[index] = amounts[index].plus(row.amount ?? 0);
+      byName.set(name, amounts);
+    }
 
-    const names = [...byName.keys()];
-    const budgetCategories = names.length ? await this.prisma.budgetCategory.findMany({ where: { businessId, type: query.type, name: { in: names } } }) : [];
-    const colorByName = new Map(budgetCategories.map((c) => [c.name, c.color]));
+    const colorByName = await this.categoryColors(businessId, query.type, grouped);
     const sum = (values: Prisma.Decimal[]) => values.reduce((acc, v) => acc.plus(v), new Prisma.Decimal(0));
 
-    const rows = names
-      .map((name, i) => ({ name, color: colorByName.get(name) ?? FALLBACK_COLORS[i % FALLBACK_COLORS.length], amounts: byName.get(name)!, total: sum(byName.get(name)!) }))
+    const rows = [...byName.keys()]
+      .map((name, i) => ({
+        name,
+        color: name === NO_CATEGORY ? UNCATEGORISED_COLOR : (colorByName.get(name) ?? FALLBACK_COLORS[i % FALLBACK_COLORS.length]),
+        amounts: byName.get(name)!,
+        total: sum(byName.get(name)!),
+      }))
       .sort((a, b) => b.total.comparedTo(a.total));
     const totals = buckets.map((_, monthIndex) => sum(rows.map((row) => row.amounts[monthIndex])));
 
     return {
       type: query.type,
       months: buckets.map((bucket) => bucket.key),
-      rows: rows.map((row) => ({ name: row.name, color: row.color, amounts: row.amounts.map((a) => a.toFixed(2)), total: row.total.toFixed(2) })),
+      rows: rows.map((row) => ({
+        name: row.name === NO_CATEGORY ? UNCATEGORISED : row.name,
+        color: row.color,
+        amounts: row.amounts.map((a) => a.toFixed(2)),
+        total: row.total.toFixed(2),
+        ...(row.name === NO_CATEGORY && { uncategorised: true }),
+      })),
       totals: totals.map((t) => t.toFixed(2)),
       total: sum(totals).toFixed(2),
     };
@@ -263,7 +301,7 @@ export class ReportsService {
     return foldIntoMonths(days.map((row) => ({ date: row.transactionDate, count: row._count._all })));
   }
 
-  // Income (same categorized-entry trick as above) and total Savings Goal
+  // Income (each standing income transaction once, as above) and total Savings Goal
   // contributions (see SavingsGoalsService.getOverview()'s "savedThisMonth"
   // for the identical per-month aggregate, just repeated across a range
   // instead of just the current month). Sequential per-month queries
@@ -282,7 +320,7 @@ export class ReportsService {
         this.prisma.transactionEntry.aggregate({
           _sum: { amount: true },
           where: {
-            categoryId: { not: null },
+            entryType: 'DEBIT',
             transaction: { businessId, status: 'POSTED', reversalOfId: null, transactionType: 'INCOME', transactionDate: { gte: monthStart, lt: monthEnd } },
           },
         }),

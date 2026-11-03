@@ -1,4 +1,4 @@
-import { IsDateString, IsNotEmpty, IsOptional, IsString, IsUUID } from 'class-validator';
+import { IsDateString, IsNotEmpty, IsOptional, IsString, IsUUID, MaxLength } from 'class-validator';
 import { IsMoney } from '../../common/dto.js';
 
 export class CreateIncomeDto {
@@ -27,8 +27,10 @@ export class CreateIncomeDto {
   @IsDateString()
   date: string;
 
+  // The popup's Description box holds 500 characters.
   @IsOptional()
   @IsString()
+  @MaxLength(500)
   description?: string;
 
   // A receipt, cheque or slip number; shown in the Reference column.
@@ -42,8 +44,10 @@ export class CreateIncomeDto {
   @IsString()
   categoryId?: string;
 
+  // The popup's Description box holds 500 characters.
   @IsOptional()
   @IsString()
+  @MaxLength(500)
   note?: string;
 
   // A loan's profit or interest: the bank or person it was received from. It

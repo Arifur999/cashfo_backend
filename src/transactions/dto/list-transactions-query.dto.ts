@@ -93,6 +93,13 @@ export class ListTransactionsQueryDto {
   @IsBoolean()
   standingOnly?: boolean;
 
+  // Income & Expense's Uncategorised row: only what no entry files under a
+  // category.
+  @IsOptional()
+  @Transform(({ value }) => (value === 'true' || value === '1' ? true : value === 'false' || value === '0' ? false : value))
+  @IsBoolean()
+  uncategorised?: boolean;
+
   @IsOptional()
   @IsString()
   search?: string;
