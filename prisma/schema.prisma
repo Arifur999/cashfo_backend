@@ -229,8 +229,14 @@ model Payment {
   periodEnd          DateTime?
   // The number the money came from, typed in at Mark paid.
   payerAccount       String?
-  // An unpaid checkout lapses at this time.
+  // An unpaid checkout lapses at this time. Null once the customer sent
+  // the payment's details: money already sent waits for an admin.
   expiresAt          DateTime?
+  // When the customer sent the number they paid from and the TrxID
+  // (payerAccount, gatewayReferenceId) for an admin to check.
+  submittedAt        DateTime?
+  // The customer's screenshot of the payment, when they added one.
+  proof              PaymentProof?
   // The admin who marked it paid.
   markedPaidBy       String?
   createdAt          DateTime            @default(now())
@@ -252,6 +258,21 @@ enum PaymentGateway {
   SSLCOMMERZ
   CARD
   MANUAL
+  ROCKET
+  BANK
+}
+
+// A customer's screenshot of the money they sent (Checkout), for the
+// admin who checks it. Raster images only, kept in the database like a
+// support screenshot (TicketAttachment).
+model PaymentProof {
+  id        String   @id @default(uuid())
+  paymentId String   @unique
+  payment   Payment  @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  mimeType  String
+  size      Int
+  data      Bytes
+  createdAt DateTime @default(now())
 }
 
 enum PaymentStatus {
