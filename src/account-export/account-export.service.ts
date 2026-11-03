@@ -222,6 +222,33 @@ export class AccountExportService {
       },
       { name: 'skill-log.csv', data: toCsv(['Date', 'Skill', 'Amount', 'Counted in'], skills.flatMap((k) => k.logs.map((l) => [day(l.date), k.name, l.amount, countedIn(k.unit)]))) },
       { name: 'skill-goals.csv', data: toCsv(['Year', 'Skills'], skillGoals.map((g) => [g.year, g.target])) },
+      ...(await this.writingSheets(userId)),
+    ];
+  }
+
+  // Habit Tracker > Write: notes and the journal, private entries too (they
+  // are the person's own; "Private" says which).
+  private async writingSheets(userId: string): Promise<ZipEntry[]> {
+    const [notes, entries] = await Promise.all([
+      this.prisma.note.findMany({ where: { userId }, orderBy: { createdAt: 'asc' }, include: { category: { select: { name: true } } } }),
+      this.prisma.journalEntry.findMany({ where: { userId }, orderBy: { date: 'asc' }, include: { category: { select: { name: true } } } }),
+    ]);
+    const MOODS = ['Great', 'Good', 'Okay', 'Low', 'Hard'];
+    return [
+      {
+        name: 'notes.csv',
+        data: toCsv(
+          ['Kind', 'Title', 'Note', 'Category', 'Tags', 'Pinned', 'Archived', 'Written'],
+          notes.map((n) => [n.kind, n.title, n.body, n.category?.name, n.tags.join(' '), n.pinned, n.archived, n.createdAt]),
+        ),
+      },
+      {
+        name: 'journal.csv',
+        data: toCsv(
+          ['Date', 'Kind', 'Mood', 'What went well', 'Grateful for', 'Tomorrow I will', 'Entry', 'Category', 'Tags', 'Private'],
+          entries.map((e) => [day(e.date), e.kind, MOODS[e.mood], e.wentWell, e.gratefulFor, e.tomorrow, e.body, e.category?.name, e.tags.join(' '), e.isPrivate]),
+        ),
+      },
     ];
   }
 

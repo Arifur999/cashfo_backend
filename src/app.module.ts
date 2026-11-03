@@ -64,6 +64,7 @@ import { SupportAccessModule } from './support-access/support-access.module.js';
 import { SystemModule } from './system/system.module.js';
 import { TicketsModule } from './tickets/tickets.module.js';
 import { TodosModule } from './todos/todos.module.js';
+import { WritingModule } from './writing/writing.module.js';
 import { TransactionsModule } from './transactions/transactions.module.js';
 import { TranslationsModule } from './translations/translations.module.js';
 import { TwoStepModule } from './two-step/two-step.module.js';
@@ -144,6 +145,7 @@ import { MonthlySummaryModule } from './monthly-summary/monthly-summary.module.j
     BooksModule,
     SkillsModule,
     TodosModule,
+    WritingModule,
     UserNotificationsModule,
     EmailVerificationModule,
     MonthlySummaryModule,

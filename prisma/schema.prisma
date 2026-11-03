@@ -910,6 +910,10 @@ model User {
   todoRepeats             TodoRepeat[]
   prayerSettings          PrayerSettings?
   qazaLogs                QazaLog[]
+  notes                   Note[]
+  noteCategories          NoteCategory[]
+  journalEntries          JournalEntry[]
+  writingSettings         WritingSettings?
   // Every Referral row this user created by inviting someone else (as the
   // referrer), vs. the single Referral row recording that this user was
   // THEMSELVES referred by someone else's code at registration.
@@ -1689,6 +1693,98 @@ model TodoRepeat {
   items         TodoItem[]
 
   @@index([userId])
+}
+
+// Habit Tracker > Write > Notes (the NotesHome board): quick notes and
+// ideas, personal like the rest of the Habit Tracker (no workspace).
+enum NoteKind {
+  NOTE
+  IDEA
+}
+
+model Note {
+  id         String        @id @default(uuid())
+  userId     String
+  user       User          @relation(fields: [userId], references: [id])
+  kind       NoteKind      @default(NOTE)
+  // Empty when the note has none: a quick note is just its text.
+  title      String        @default("")
+  body       String
+  categoryId String?
+  category   NoteCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  // Lowercase, without the "#".
+  tags       String[]      @default([])
+  // The card's tint by name (white, yellow, green, blue, pink, purple).
+  color      String        @default("white")
+  pinned     Boolean       @default(false)
+  archived   Boolean       @default(false)
+  createdAt  DateTime      @default(now())
+  updatedAt  DateTime      @updatedAt
+
+  @@index([userId, archived])
+}
+
+// The categories notes and journal entries share (Work, Family, ...).
+// Deleting one keeps its notes and entries, without a category.
+model NoteCategory {
+  id             String         @id @default(uuid())
+  userId         String
+  user           User           @relation(fields: [userId], references: [id])
+  name           String
+  // By name: blue, rose, amber, violet, teal, green, slate.
+  color          String
+  createdAt      DateTime       @default(now())
+  notes          Note[]
+  journalEntries JournalEntry[]
+
+  @@index([userId])
+}
+
+// Habit Tracker > Write > Journal (the JournalHome board): one entry a day,
+// a short daily journal or a free diary page.
+enum JournalKind {
+  DAILY
+  DIARY
+}
+
+model JournalEntry {
+  id          String        @id @default(uuid())
+  userId      String
+  user        User          @relation(fields: [userId], references: [id])
+  date        DateTime      @db.Date
+  kind        JournalKind   @default(DAILY)
+  // 0 Great, 1 Good, 2 Okay, 3 Low, 4 Hard.
+  mood        Int
+  // The daily journal's three prompts; a diary page has only the body.
+  wentWell    String        @default("")
+  gratefulFor String        @default("")
+  tomorrow    String        @default("")
+  body        String        @default("")
+  categoryId  String?
+  category    NoteCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  // The #tags written in it, lowercase, kept for search.
+  tags        String[]      @default([])
+  // Shown and searched only after the diary PIN is entered on this sign-in.
+  isPrivate   Boolean       @default(false)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  @@unique([userId, date])
+}
+
+// One person's Write settings. The row exists once the starter categories
+// were added, so deleting them all never brings them back. The diary PIN
+// (bcrypt) guards private journal entries; wrong PINs are counted like the
+// vault's (ten in ten minutes, then a wait).
+model WritingSettings {
+  id           String    @id @default(uuid())
+  userId       String    @unique
+  user         User      @relation(fields: [userId], references: [id])
+  diaryPinHash String?
+  pinFailures  Int       @default(0)
+  pinFailedAt  DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
 }
 
 model Business {
