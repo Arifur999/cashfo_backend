@@ -1,5 +1,6 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { EMPTY_PAYMENT_ACCOUNTS, parsePaymentAccounts, type PaymentAccounts } from '../billing/manual-payments.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import type { UpdateReferralSettingsDto } from './dto/update-referral-settings.dto.js';
 import { UpdateSettingsDto } from './dto/update-settings.dto.js';
@@ -42,6 +43,9 @@ const DEFAULTS = {
   billing_grace_days: 3,
   // Hours an unpaid checkout stays open.
   billing_checkout_hours: 48,
+  // Where the customer sends the money (Checkout): the bKash, Nagad and
+  // Rocket numbers and the bank account. Empty ones aren't offered.
+  billing_payment_accounts: EMPTY_PAYMENT_ACCOUNTS,
   // Security > Admin team > "Require it for everyone": every admin must
   // use two-step sign-in; one without it sets it up before getting in.
   admin_two_step_required: false,
@@ -61,6 +65,7 @@ const KEY_TO_FIELD: Record<string, keyof PlatformSettings> = {
   billing_manual_instructions_bn: 'billingManualInstructionsBn',
   billing_grace_days: 'billingGraceDays',
   billing_checkout_hours: 'billingCheckoutHours',
+  billing_payment_accounts: 'billingPaymentAccounts',
   admin_two_step_required: 'adminTwoStepRequired',
 };
 
@@ -78,6 +83,7 @@ export interface PlatformSettings {
   billingManualInstructionsBn: string;
   billingGraceDays: number;
   billingCheckoutHours: number;
+  billingPaymentAccounts: PaymentAccounts;
   adminTwoStepRequired: boolean;
 }
 
@@ -129,6 +135,7 @@ export class SettingsService {
       billingManualInstructionsBn: (byKey.get('billing_manual_instructions_bn') as string | undefined) || DEFAULTS.billing_manual_instructions_bn,
       billingGraceDays: (byKey.get('billing_grace_days') as number | undefined) ?? DEFAULTS.billing_grace_days,
       billingCheckoutHours: (byKey.get('billing_checkout_hours') as number | undefined) ?? DEFAULTS.billing_checkout_hours,
+      billingPaymentAccounts: parsePaymentAccounts(byKey.get('billing_payment_accounts')),
       adminTwoStepRequired: (byKey.get('admin_two_step_required') as boolean | undefined) ?? DEFAULTS.admin_two_step_required,
     };
   }
@@ -212,7 +219,7 @@ export class SettingsService {
   async update(dto: UpdateSettingsDto, adminId: string, ipAddress?: string): Promise<PlatformSettings> {
     const before = await this.get();
 
-    const updates: [string, string | boolean | number][] = [];
+    const updates: [string, string | boolean | number | PaymentAccounts][] = [];
     if (dto.platformName !== undefined) updates.push(['platform_name', dto.platformName]);
     if (dto.supportEmail !== undefined) updates.push(['support_email', dto.supportEmail]);
     if (dto.defaultCurrency !== undefined) updates.push(['default_currency', dto.defaultCurrency]);
@@ -226,6 +233,7 @@ export class SettingsService {
     if (dto.billingManualInstructionsBn !== undefined) updates.push(['billing_manual_instructions_bn', dto.billingManualInstructionsBn]);
     if (dto.billingGraceDays !== undefined) updates.push(['billing_grace_days', dto.billingGraceDays]);
     if (dto.billingCheckoutHours !== undefined) updates.push(['billing_checkout_hours', dto.billingCheckoutHours]);
+    if (dto.billingPaymentAccounts !== undefined) updates.push(['billing_payment_accounts', parsePaymentAccounts(dto.billingPaymentAccounts)]);
     if (dto.adminTwoStepRequired !== undefined) updates.push(['admin_two_step_required', dto.adminTwoStepRequired]);
 
     // Every field and its audit entry together: a failure half-way used to
