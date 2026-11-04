@@ -31,8 +31,8 @@ describe('loanActivity', () => {
       ],
       '2026-11',
     );
-    expect(byContact.get('selim')).toEqual({ entries: 2, last: { kind: 'GOT_BACK', date: '2026-07-25' } });
-    expect(byContact.get('hasan')).toEqual({ entries: 2, last: { kind: 'PROFIT_RECEIVED', date: '2026-08-20' } });
+    expect(byContact.get('selim')).toEqual({ entries: 2, last: { kind: 'GOT_BACK', date: '2026-07-25' }, first: '2026-03-05' });
+    expect(byContact.get('hasan')).toEqual({ entries: 2, last: { kind: 'PROFIT_RECEIVED', date: '2026-08-20' }, first: '2026-08-20' });
     expect(byContact.get('karim')).toBeUndefined();
   });
 });

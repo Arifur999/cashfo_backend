@@ -98,6 +98,8 @@ export interface LoanDashboardRow {
   // day (Contacts' "Last activity").
   entries: number;
   lastEntry: { kind: LoanEntryKind; date: string } | null;
+  // The day of their first entry (the statement's "Since").
+  firstEntryDate: string | null;
 }
 
 export interface LoanDashboard {
@@ -522,7 +524,21 @@ export class ReceivablesPayablesService {
         profit: transaction.entries.reduce((sum, entry) => sum.plus(entry.amount), new Prisma.Decimal(0)),
       })),
     ];
-    const rows: LoanStatementRow[] = loanStatementRows(items, balanceBroughtForward);
+    // Each entry's charge (a bank or service fee posted with it), to say
+    // under its note.
+    const charges = items.length
+      ? await this.prisma.transaction.findMany({
+          where: { businessId, chargeForId: { in: items.map((item) => item.transaction.id) }, status: 'POSTED', reversalOfId: null },
+          select: { chargeForId: true, entries: { where: { entryType: 'DEBIT' }, select: { amount: true } } },
+        })
+      : [];
+    const chargeOf = new Map<string, Prisma.Decimal>();
+    for (const charge of charges) {
+      if (!charge.chargeForId) continue;
+      const amount = charge.entries.reduce((sum, entry) => sum.plus(entry.amount), new Prisma.Decimal(0));
+      chargeOf.set(charge.chargeForId, (chargeOf.get(charge.chargeForId) ?? new Prisma.Decimal(0)).plus(amount));
+    }
+    const rows: LoanStatementRow[] = loanStatementRows(items, balanceBroughtForward).map((row) => ({ ...row, charge: chargeOf.get(row.transactionId)?.toFixed(2) ?? null }));
 
     return {
       contactId,
@@ -851,6 +867,7 @@ export class ReceivablesPayablesService {
         direction,
         entries: activity.byContact.get(contact.id)?.entries ?? 0,
         lastEntry: activity.byContact.get(contact.id)?.last ?? null,
+        firstEntryDate: activity.byContact.get(contact.id)?.first ?? null,
       });
     }
 

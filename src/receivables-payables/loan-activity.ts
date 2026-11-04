@@ -30,6 +30,8 @@ export interface LoanContactActivity {
   entries: number;
   // The newest entry: what it was and its day ("2026-09-16").
   last: { kind: LoanEntryKind; date: string } | null;
+  // The day of the oldest.
+  first: string | null;
 }
 
 const MONTH_FIELD: Record<LoanEntryKind, keyof Omit<LoanMonth, 'entries'>> = {
@@ -58,6 +60,7 @@ export function loanActivity(postings: LoanActivityPosting[], month: string): { 
     byContact.set(posting.contactId, {
       entries: (seen?.entries ?? 0) + 1,
       last: newer ? { kind: posting.kind, date: day } : (seen?.last ?? null),
+      first: !seen?.first || day < seen.first ? day : seen.first,
       at: newer ? posting.createdAt.getTime() : (seen?.at ?? 0),
     });
   }
@@ -72,6 +75,6 @@ export function loanActivity(postings: LoanActivityPosting[], month: string): { 
       profitReceived: money(sums.profitReceived),
       entries,
     },
-    byContact: new Map([...byContact].map(([contactId, { entries: count, last }]) => [contactId, { entries: count, last }])),
+    byContact: new Map([...byContact].map(([contactId, { entries: count, last, first }]) => [contactId, { entries: count, last, first }])),
   };
 }

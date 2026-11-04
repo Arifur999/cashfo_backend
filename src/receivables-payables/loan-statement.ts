@@ -1,4 +1,5 @@
 import { Prisma, type EntryType, type TransactionStatus, type TransactionType } from '@prisma/client';
+import type { LoanEntryKind } from './loan-activity.js';
 
 // A loan contact's statement: the principal they owe (or are owed) after
 // every loan, repayment and profit posting, oldest first. Pure, so the
@@ -34,6 +35,12 @@ export interface LoanStatementRow {
   reversalOfId: string | null;
   // Voided, or the reversal that voided it: shown, but not counted.
   cancelled: boolean;
+  // What happened: a loan given or taken, money back either way, or profit
+  // paid or received (the statement's "What happened").
+  kind: LoanEntryKind;
+  // A bank or service charge posted with it, else null (added by the
+  // service, which reads the charges).
+  charge?: string | null;
 }
 
 // What the statement reads of a posting.
@@ -79,12 +86,26 @@ export function loanStatementRows(items: LoanStatementItem[], broughtForward: Pr
     if (item.principal === null) {
       const amount = new Prisma.Decimal(item.profit).toFixed(2);
       const paid = transaction.transactionType === 'EXPENSE';
-      return { ...base, category: 'Profit', debit: null, credit: null, profitPaid: paid ? amount : null, profitReceived: paid ? null : amount, runningPrincipal: running.toFixed(2) };
+      return {
+        ...base,
+        kind: paid ? ('PROFIT_PAID' as const) : ('PROFIT_RECEIVED' as const),
+        category: 'Profit',
+        debit: null,
+        credit: null,
+        profitPaid: paid ? amount : null,
+        profitReceived: paid ? null : amount,
+        runningPrincipal: running.toFixed(2),
+      };
     }
     const amount = new Prisma.Decimal(item.principal.amount);
     if (!cancelled) running = running.plus(item.principal.entryType === 'DEBIT' ? amount : amount.negated());
+    // A sale on credit is a loan given, a purchase one taken; a payment is
+    // money back, out when it eased the payable (a debit), in otherwise.
+    const out = item.principal.entryType === 'DEBIT';
+    const kind: LoanEntryKind = transaction.transactionType === 'SALE' ? 'GAVE' : transaction.transactionType === 'PURCHASE' ? 'TOOK' : out ? 'PAID_BACK' : 'GOT_BACK';
     return {
       ...base,
+      kind,
       category: 'Principal',
       debit: item.principal.entryType === 'DEBIT' ? amount.toFixed(2) : null,
       credit: item.principal.entryType === 'CREDIT' ? amount.toFixed(2) : null,
