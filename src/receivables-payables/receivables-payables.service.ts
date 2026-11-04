@@ -1,7 +1,7 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { Account, AccountType, Contact, ContactCategory, Prisma } from '@prisma/client';
 import { MONEY_ACCOUNT_SUBTYPES } from '../accounts/accounts.service.js';
-import { dhakaDateOnly, dhakaYear } from '../common/dhaka.js';
+import { dhakaDateKey, dhakaDateOnly, dhakaYear } from '../common/dhaka.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { TransactionsService } from '../transactions/transactions.service.js';
 import { contactStatement, STATEMENT_TRANSACTION_TYPES, type ContactStatement } from './contact-statement.js';
@@ -10,6 +10,7 @@ import { CreatePayableDto } from './dto/create-payable.dto.js';
 import { CreateReceivableDto } from './dto/create-receivable.dto.js';
 import { PayPaymentDto } from './dto/pay-payment.dto.js';
 import { ReceivePaymentDto } from './dto/receive-payment.dto.js';
+import { loanActivity, type LoanActivityPosting, type LoanEntryKind, type LoanMonth } from './loan-activity.js';
 import { profitTotals } from './loan-profit.js';
 import { directionBreakdown, type Direction, type DirectionBreakdown, type DirectionPosting } from './direction-breakdown.js';
 import { loanStatementRows, type LoanStatementItem, type LoanStatementRow } from './loan-statement.js';
@@ -93,6 +94,12 @@ export interface LoanDashboardRow {
   profitReceived: string;
   currentBalance: string;
   direction: LoanBalanceDirection;
+  // How many entries there are with them, and the newest one's kind and
+  // day (Contacts' "Last activity").
+  entries: number;
+  lastEntry: { kind: LoanEntryKind; date: string } | null;
+  // The day of their first entry (the statement's "Since").
+  firstEntryDate: string | null;
 }
 
 export interface LoanDashboard {
@@ -106,6 +113,8 @@ export interface LoanDashboard {
   // about how much a month.
   profitPaidThisYear: string;
   topProfit: { contactId: string; contactName: string; monthly: string } | null;
+  // This Asia/Dhaka month's loan money, by what it was for.
+  thisMonth: LoanMonth;
   rows: LoanDashboardRow[];
 }
 
@@ -515,7 +524,21 @@ export class ReceivablesPayablesService {
         profit: transaction.entries.reduce((sum, entry) => sum.plus(entry.amount), new Prisma.Decimal(0)),
       })),
     ];
-    const rows: LoanStatementRow[] = loanStatementRows(items, balanceBroughtForward);
+    // Each entry's charge (a bank or service fee posted with it), to say
+    // under its note.
+    const charges = items.length
+      ? await this.prisma.transaction.findMany({
+          where: { businessId, chargeForId: { in: items.map((item) => item.transaction.id) }, status: 'POSTED', reversalOfId: null },
+          select: { chargeForId: true, entries: { where: { entryType: 'DEBIT' }, select: { amount: true } } },
+        })
+      : [];
+    const chargeOf = new Map<string, Prisma.Decimal>();
+    for (const charge of charges) {
+      if (!charge.chargeForId) continue;
+      const amount = charge.entries.reduce((sum, entry) => sum.plus(entry.amount), new Prisma.Decimal(0));
+      chargeOf.set(charge.chargeForId, (chargeOf.get(charge.chargeForId) ?? new Prisma.Decimal(0)).plus(amount));
+    }
+    const rows: LoanStatementRow[] = loanStatementRows(items, balanceBroughtForward).map((row) => ({ ...row, charge: chargeOf.get(row.transactionId)?.toFixed(2) ?? null }));
 
     return {
       contactId,
@@ -778,8 +801,21 @@ export class ReceivablesPayablesService {
         reversalOfId: null,
         chargeForId: null,
       },
-      select: { contactId: true, transactionDate: true, transactionType: true, entries: { where: { entryType: 'DEBIT' }, select: { amount: true } } },
+      select: { contactId: true, transactionDate: true, createdAt: true, transactionType: true, entries: { where: { entryType: 'DEBIT' }, select: { amount: true } } },
     });
+    const activity = loanActivity(
+      [
+        ...(await this.loanPrincipalPostings(businessId, contacts)),
+        ...profitPostings.map((posting) => ({
+          contactId: posting.contactId as string,
+          kind: (posting.transactionType === 'EXPENSE' ? 'PROFIT_PAID' : 'PROFIT_RECEIVED') as LoanEntryKind,
+          amount: posting.entries.reduce((sum, entry) => sum + Number(entry.amount), 0),
+          date: posting.transactionDate,
+          createdAt: posting.createdAt,
+        })),
+      ],
+      dhakaDateKey(new Date()).slice(0, 7),
+    );
     const profit = profitTotals(
       profitPostings.map((posting) => ({
         contactId: posting.contactId as string,
@@ -829,6 +865,9 @@ export class ReceivablesPayablesService {
         profitReceived: (profit.byContact.get(contact.id)?.received ?? 0).toFixed(2),
         currentBalance: currentBalance.toFixed(2),
         direction,
+        entries: activity.byContact.get(contact.id)?.entries ?? 0,
+        lastEntry: activity.byContact.get(contact.id)?.last ?? null,
+        firstEntryDate: activity.byContact.get(contact.id)?.first ?? null,
       });
     }
 
@@ -847,8 +886,32 @@ export class ReceivablesPayablesService {
             monthly: profit.top.monthly.toFixed(2),
           }
         : null,
+      thisMonth: activity.month,
       rows,
     };
+  }
+
+  // The principal entries with these loan contacts, each by what it was: a
+  // loan given or taken (a sale or purchase on credit) or money back (a
+  // payment, received against the receivable or paid against the payable).
+  private async loanPrincipalPostings(businessId: string, contacts: Pick<Contact, 'id'>[]): Promise<LoanActivityPosting[]> {
+    if (contacts.length === 0) return [];
+    const receivable = await this.findSystemAccount(this.prisma, businessId, 'receivable', 'ASSET');
+    const payable = await this.findSystemAccount(this.prisma, businessId, 'payable', 'LIABILITY');
+    const postings = await this.prisma.transaction.findMany({
+      where: { businessId, contactId: { in: contacts.map((contact) => contact.id) }, transactionType: { in: ['SALE', 'PURCHASE', 'PAYMENT'] }, status: 'POSTED', reversalOfId: null },
+      select: { contactId: true, transactionType: true, transactionDate: true, createdAt: true, entries: { select: { accountId: true, amount: true } } },
+    });
+    const on = (posting: (typeof postings)[number], account: Account | null) => posting.entries.filter((entry) => account && entry.accountId === account.id).reduce((sum, entry) => sum + Number(entry.amount), 0);
+    return postings.flatMap((posting) => {
+      const toReceivable = on(posting, receivable);
+      const toPayable = on(posting, payable);
+      const kind: LoanEntryKind | null =
+        posting.transactionType === 'SALE' ? 'GAVE' : posting.transactionType === 'PURCHASE' ? 'TOOK' : toReceivable > 0 ? 'GOT_BACK' : toPayable > 0 ? 'PAID_BACK' : null;
+      if (!kind || !posting.contactId) return [];
+      const amount = kind === 'GAVE' || kind === 'GOT_BACK' ? toReceivable : toPayable;
+      return [{ contactId: posting.contactId, kind, amount, date: posting.transactionDate, createdAt: posting.createdAt }];
+    });
   }
 
   // ---------------------------------------------------------------------

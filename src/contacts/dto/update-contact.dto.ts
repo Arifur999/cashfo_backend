@@ -1,9 +1,10 @@
 import { ContactCategory, ContactType } from '@prisma/client';
-import { IsEnum, IsNotEmpty, IsOptional, IsString } from 'class-validator';
+import { IsEnum, IsNotEmpty, IsOptional, IsString, Matches } from 'class-validator';
+import { MONEY_STRING_MESSAGE, MONEY_STRING_REGEX } from '../../common/dto.js';
 
-// No openingBalance here -- it's a one-time starting point set at creation,
-// not something meant to be silently edited later (that would make
-// currentBalance's history untrustworthy). No status here either -- that
+// The opening balance can be corrected (the Loans board's Edit contact): it
+// is a field on the contact, not a posting, so the entries stay as they are
+// and the current balance moves by the same amount. No status here -- that
 // goes through the dedicated archive endpoint, which has its own
 // "block if outstanding balance" business rule.
 export class UpdateContactDto {
@@ -42,4 +43,8 @@ export class UpdateContactDto {
   @IsOptional()
   @IsString()
   notes?: string;
+
+  @IsOptional()
+  @Matches(MONEY_STRING_REGEX, { message: `openingBalance ${MONEY_STRING_MESSAGE}` })
+  openingBalance?: string;
 }

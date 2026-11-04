@@ -2,7 +2,7 @@ import { ContactCategory, ContactType } from '@prisma/client';
 import { IsEnum, IsNotEmpty, IsOptional, IsString, Matches } from 'class-validator';
 import { MONEY_STRING_MESSAGE, MONEY_STRING_REGEX } from '../../common/dto.js';
 
-// "At least one of phone/email" is a cross-field business rule, checked in
+// "At least one of phone/email" (for a Books contact) is a cross-field rule, checked in
 // ContactsService rather than here -- same reasoning as AccountsService's
 // requireCompatibleParent(), the service is the real validation boundary.
 export class CreateContactDto {

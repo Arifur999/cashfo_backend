@@ -26,6 +26,21 @@ const profit = (id: string, day: number, amount: number, paid: boolean): LoanSta
 });
 
 describe('loanStatementRows', () => {
+  it('says what each entry was: a loan given or taken, money back either way, or profit', () => {
+    const rows = loanStatementRows(
+      [
+        loan('gave', 1, 'DEBIT', 1000),
+        loan('took', 2, 'CREDIT', 5000, { transactionType: 'PURCHASE' }),
+        loan('back', 3, 'CREDIT', 400, { transactionType: 'PAYMENT' }),
+        loan('paid', 4, 'DEBIT', 600, { transactionType: 'PAYMENT' }),
+        profit('interest', 5, 50, true),
+        profit('earned', 6, 20, false),
+      ],
+      new Prisma.Decimal(0),
+    );
+    expect(rows.map((row) => row.kind)).toEqual(['GAVE', 'TOOK', 'GOT_BACK', 'PAID_BACK', 'PROFIT_PAID', 'PROFIT_RECEIVED']);
+  });
+
   it('carries the principal through loans and repayments, oldest first', () => {
     const rows = loanStatementRows([loan('repaid', 10, 'CREDIT', 4000), loan('given', 1, 'DEBIT', 10000)], new Prisma.Decimal(500));
     expect(rows.map((row) => [row.transactionId, row.debit, row.credit, row.runningPrincipal])).toEqual([

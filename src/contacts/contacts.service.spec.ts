@@ -1,4 +1,4 @@
-import { NotFoundException, RequestMethod } from '@nestjs/common';
+import { BadRequestException, NotFoundException, RequestMethod } from '@nestjs/common';
 import { METHOD_METADATA, PATH_METADATA } from '@nestjs/common/constants.js';
 import { Prisma } from '@prisma/client';
 import { BUSINESS_ROLES_KEY } from '../business-access/decorators/require-role.decorator.js';
@@ -21,11 +21,40 @@ const setup = (found: ReturnType<typeof contact> | null) => {
     contact: {
       findUnique: vi.fn().mockResolvedValue(found),
       update: vi.fn(({ data }: { where: { id: string }; data: Record<string, unknown> }) => Promise.resolve({ ...found, ...data })),
+      create: vi.fn(({ data }: { data: Record<string, unknown> }) => Promise.resolve({ id: 'new', ...data })),
     },
   };
   const receivablesPayables = { getContactCurrentBalance: vi.fn() };
   return { service: new ContactsService(prisma as never, receivablesPayables as never), prisma, receivablesPayables };
 };
+
+describe('ContactsService and a way to reach a contact', () => {
+  it('keeps a loan contact by name alone, as a bank or a relative may be', async () => {
+    const { service, prisma } = setup(contact({ status: 'ACTIVE', phone: '01711223344' }));
+    await service.create('biz-1', { name: 'Islami Bank', type: 'BANK', category: 'LOAN' } as never);
+    await service.update('biz-1', 'rahim', { phone: '' } as never);
+    expect(prisma.contact.create).toHaveBeenCalled();
+    expect(prisma.contact.update).toHaveBeenCalled();
+  });
+
+  it('still asks a Books contact for a phone or an email', async () => {
+    const { service, prisma } = setup(contact({ status: 'ACTIVE', category: 'BUSINESS', phone: '01711223344', email: null }));
+    await expect(service.create('biz-1', { name: 'Karim Store', type: 'CUSTOMER' } as never)).rejects.toBeInstanceOf(BadRequestException);
+    await expect(service.update('biz-1', 'rahim', { phone: '' } as never)).rejects.toBeInstanceOf(BadRequestException);
+    await expect(service.update('biz-1', 'rahim', { category: 'LOAN', phone: '' } as never)).resolves.toBeDefined();
+    expect(prisma.contact.create).not.toHaveBeenCalled();
+  });
+});
+
+describe('ContactsService.update and the opening balance', () => {
+  it('corrects the opening balance, and leaves it alone when not sent', async () => {
+    const { service, prisma } = setup(contact({ status: 'ACTIVE' }));
+    await service.update('biz-1', 'rahim', { openingBalance: '-5000' } as never);
+    await service.update('biz-1', 'rahim', { name: 'Rahim Uddin' } as never);
+    expect(prisma.contact.update.mock.calls[0][0].data).toMatchObject({ openingBalance: '-5000' });
+    expect(prisma.contact.update.mock.calls[1][0].data).not.toHaveProperty('openingBalance');
+  });
+});
 
 describe('ContactsService.unarchive', () => {
   it('makes an archived contact active again', async () => {
