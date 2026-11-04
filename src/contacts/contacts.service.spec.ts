@@ -46,6 +46,16 @@ describe('ContactsService and a way to reach a contact', () => {
   });
 });
 
+describe('ContactsService.update and the opening balance', () => {
+  it('corrects the opening balance, and leaves it alone when not sent', async () => {
+    const { service, prisma } = setup(contact({ status: 'ACTIVE' }));
+    await service.update('biz-1', 'rahim', { openingBalance: '-5000' } as never);
+    await service.update('biz-1', 'rahim', { name: 'Rahim Uddin' } as never);
+    expect(prisma.contact.update.mock.calls[0][0].data).toMatchObject({ openingBalance: '-5000' });
+    expect(prisma.contact.update.mock.calls[1][0].data).not.toHaveProperty('openingBalance');
+  });
+});
+
 describe('ContactsService.unarchive', () => {
   it('makes an archived contact active again', async () => {
     const { service, prisma, receivablesPayables } = setup(contact());

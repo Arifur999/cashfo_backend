@@ -121,6 +121,7 @@ export class ContactsService {
         ...(dto.address !== undefined && { address: dto.address }),
         ...(dto.photoUrl !== undefined && { photoUrl: dto.photoUrl }),
         ...(dto.notes !== undefined && { notes: dto.notes }),
+        ...(dto.openingBalance !== undefined && { openingBalance: dto.openingBalance }),
       },
     });
   }
