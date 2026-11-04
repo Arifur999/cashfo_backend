@@ -1,10 +1,15 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import { ContactCategory, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { CreateContactDto } from './dto/create-contact.dto.js';
 import { ListContactsQueryDto } from './dto/list-contacts-query.dto.js';
 import { UpdateContactDto } from './dto/update-contact.dto.js';
 import { ReceivablesPayablesService } from '../receivables-payables/receivables-payables.service.js';
+
+// A Books contact (a customer or supplier one invoices) needs a phone or an
+// email to be reached; a loan contact may be a bank or a relative kept by
+// name alone.
+const reachableOnly = (category: ContactCategory) => category === 'BUSINESS';
 
 @Injectable()
 export class ContactsService {
@@ -76,7 +81,7 @@ export class ContactsService {
   }
 
   async create(businessId: string, dto: CreateContactDto) {
-    if (!dto.phone && !dto.email) {
+    if (reachableOnly(dto.category ?? 'BUSINESS') && !dto.phone && !dto.email) {
       throw new BadRequestException('Provide at least a phone number or an email so this contact can be reached');
     }
 
@@ -101,7 +106,7 @@ export class ContactsService {
 
     const nextPhone = dto.phone !== undefined ? dto.phone : contact.phone;
     const nextEmail = dto.email !== undefined ? dto.email : contact.email;
-    if (!nextPhone && !nextEmail) {
+    if (reachableOnly(dto.category ?? contact.category) && !nextPhone && !nextEmail) {
       throw new BadRequestException('Provide at least a phone number or an email so this contact can be reached');
     }
 
