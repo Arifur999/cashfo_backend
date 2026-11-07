@@ -13,7 +13,10 @@ export class DataPrivacyService {
 
   async page(userId: string) {
     const [user, owned, groups] = await Promise.all([
-      this.prisma.user.findUniqueOrThrow({ where: { id: userId }, select: { shareUsage: true, showNameInGroups: true, notificationPrefs: true, aiInsights: true, aiReads: true } }),
+      this.prisma.user.findUniqueOrThrow({
+        where: { id: userId },
+        select: { shareUsage: true, showNameInGroups: true, notificationPrefs: true, aiInsights: true, aiReads: true },
+      }),
       this.prisma.business.findMany({ where: { ownerId: userId, deletedAt: null, type: { not: 'GROUP' } }, select: { id: true } }),
       this.prisma.businessMember.count({ where: { userId, status: 'ACTIVE', business: { type: 'GROUP', deletedAt: null } } }),
     ]);
@@ -28,7 +31,11 @@ export class DataPrivacyService {
     ]);
     return {
       glance: { transactions, accounts, goals, loanContacts: contacts, assets, groups, events },
-      privacy: { shareUsage: user.shareUsage, showNameInGroups: user.showNameInGroups, marketingEmails: resolvePrefs(user.notificationPrefs).alerts.news.email },
+      privacy: {
+        shareUsage: user.shareUsage,
+        showNameInGroups: user.showNameInGroups,
+        marketingEmails: resolvePrefs(user.notificationPrefs).alerts.news.email,
+      },
       ai: { on: user.aiInsights, reads: user.aiReads },
     };
   }

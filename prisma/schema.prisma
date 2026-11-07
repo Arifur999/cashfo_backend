@@ -932,6 +932,14 @@ model User {
   // their groups (initials when off).
   shareUsage              Boolean                  @default(true)
   showNameInGroups        Boolean                  @default(true)
+  // Settings › Data & privacy › Backup and restore: an automatic copy at
+  // 2:00 at night (Dhaka), daily or weekly, the newest backupKeep kept.
+  backupAuto              Boolean                  @default(true)
+  backupEvery             BackupEvery              @default(WEEKLY)
+  backupKeep              Int                      @default(5)
+  // The Dhaka day the last automatic backup was claimed, so two servers or
+  // two ticks never take it twice.
+  autoBackupOn            String?
   createdAt               DateTime                 @default(now())
   updatedAt               DateTime                 @updatedAt
   memberships             BusinessMember[]
@@ -987,6 +995,7 @@ model User {
   adminNotesAbout         AdminNote[]              @relation("AdminNoteSubject")
   adminNotesWritten       AdminNote[]              @relation("AdminNoteAuthor")
   emailVerificationTokens EmailVerificationToken[]
+  dataBackups             DataBackup[]
 
   // No separate @@index([email]) -- @unique above already creates a unique
   // index covering lookups by email (same reasoning as PlatformUser).
@@ -2116,6 +2125,9 @@ model Transaction {
   // reversalOfId above (queried directly, in-memory here, when needed).
   dueDate                DateTime?          @db.Date
   appliedToTransactionId String?
+  // The file it came from (Settings › Data & privacy › Import), so imported
+  // entries can be told apart and counted.
+  importedFrom           String?
   entries                TransactionEntry[]
 
   @@index([businessId, transactionDate])
@@ -3295,6 +3307,40 @@ enum GiftDirection {
 enum GiftKind {
   CASH
   ITEM
+}
+
+// Settings › Data & privacy › Backup and restore: a copy of the money
+// records in every workspace the person owns, kept in Smartly (gzipped
+// JSON, one array of rows per table). Password Manager and the Habit
+// Tracker are not in it.
+model DataBackup {
+  id         String         @id @default(uuid())
+  userId     String
+  user       User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  kind       DataBackupKind
+  // Bytes stored (gzipped), and bytes of the records it holds.
+  size       Int
+  rawSize    Int
+  // sha-256 of the records: an automatic copy identical to the newest one
+  // is not kept twice.
+  hash       String
+  workspaces Int
+  data       Bytes
+  createdAt  DateTime       @default(now())
+
+  @@index([userId, createdAt])
+}
+
+enum DataBackupKind {
+  AUTO
+  MANUAL
+  // Taken just before a restore, so the restore can be undone.
+  BEFORE_RESTORE
+}
+
+enum BackupEvery {
+  DAILY
+  WEEKLY
 }
 
 // The parts of a person's records AI Insights may read (User.aiReads).
