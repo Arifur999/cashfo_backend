@@ -203,6 +203,7 @@ export class EventsService implements OnModuleInit {
           const data = row.data as unknown as EventReminderData;
           return {
             userId: row.userId,
+            alert: 'event' as const,
             build: (locale: 'en' | 'bn') =>
               locale === 'bn'
                 ? { title: data.title, body: `আগামীকাল${data.time ? ` ${data.time}` : ''}${data.place ? ` · ${data.place}` : ''}`, url: data.url, tag: `event-${data.eventId}` }

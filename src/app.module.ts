@@ -49,6 +49,7 @@ import { ZakatModule } from './zakat/zakat.module.js';
 import { EventsModule } from './events/events.module.js';
 import { InsightsModule } from './insights/insights.module.js';
 import { MoneyFlowModule } from './money-flow/money-flow.module.js';
+import { NotificationPrefsModule } from './notification-prefs/notification-prefs.module.js';
 import { BalanceAdjustmentsModule } from './balance-adjustments/balance-adjustments.module.js';
 import { ReferralsModule } from './referrals/referrals.module.js';
 import { RemindersModule } from './reminders/reminders.module.js';
@@ -141,6 +142,7 @@ import { MonthlySummaryModule } from './monthly-summary/monthly-summary.module.j
     EventsModule,
     InsightsModule,
     MoneyFlowModule,
+    NotificationPrefsModule,
     BalanceAdjustmentsModule,
     BudgetsModule,
     SavingsGoalsModule,

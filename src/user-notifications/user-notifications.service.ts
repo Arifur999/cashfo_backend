@@ -1,4 +1,6 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { alertOfRow, resolvePrefs } from '../notification-prefs/notification-prefs.js';
+import { NotificationPrefsService } from '../notification-prefs/notification-prefs.service.js';
 import { Prisma } from '@prisma/client';
 import { AnnouncementsService } from '../announcements/announcements.service.js';
 import { BudgetsService } from '../budgets/budgets.service.js';
@@ -39,6 +41,7 @@ export class UserNotificationsService {
     private readonly announcementsService: AnnouncementsService,
     private readonly mail: MailService,
     private readonly unlocks: WorkspaceUnlockService,
+    private readonly prefs: NotificationPrefsService,
   ) {}
 
   // A reminder about a PIN-locked workspace keeps its details (a contact's
@@ -47,10 +50,19 @@ export class UserNotificationsService {
   async feed(user: RequestUser, unlockTokens: string[] = []) {
     const userId = user.id;
     await this.refresh(userId);
-    const [rows, unreadCount] = await Promise.all([
+    const [all, prefs] = await Promise.all([
       this.prisma.userNotification.findMany({ where: { userId }, orderBy: { createdAt: 'desc' }, take: FEED_SIZE, select: FEED_SELECT }),
-      this.prisma.userNotification.count({ where: { userId, readAt: null } }),
+      this.prefs.get(userId),
     ]);
+    // Rows of an alert turned off in the bell are left out, and read, so
+    // the count says what the bell shows.
+    const hidden = all.filter((row) => {
+      const alert = alertOfRow(row.type, row.data as Record<string, unknown> | null);
+      return alert !== null && !prefs.alerts[alert]?.app;
+    });
+    if (hidden.some((row) => !row.readAt)) await this.prisma.userNotification.updateMany({ where: { id: { in: hidden.filter((row) => !row.readAt).map((row) => row.id) } }, data: { readAt: new Date() } });
+    const unreadCount = await this.prisma.userNotification.count({ where: { userId, readAt: null } });
+    const rows = all.filter((row) => !hidden.includes(row));
     const businessIds = [...new Set(rows.flatMap((row) => (row.businessId ? [row.businessId] : [])))];
     const workspaces = businessIds.length ? await this.prisma.business.findMany({ where: { id: { in: businessIds }, pinHash: { not: null } }, select: { id: true, pinHash: true } }) : [];
     const shut = new Set(workspaces.filter((workspace) => this.unlocks.isShut(user, workspace, unlockTokens)).map((workspace) => workspace.id));
@@ -130,7 +142,7 @@ export class UserNotificationsService {
   // ones: they have no budget, loans or savings), as the switches allow.
   private async collect(userId: string, now: Date): Promise<ReminderDraft[]> {
     const [user, workspaces] = await Promise.all([
-      this.prisma.user.findUniqueOrThrow({ where: { id: userId }, select: { remindBudget: true, remindLoans: true, remindSavings: true } }),
+      this.prisma.user.findUniqueOrThrow({ where: { id: userId }, select: { remindBudget: true, remindLoans: true, remindSavings: true, notificationPrefs: true } }),
       this.prisma.business.findMany({ where: { ownerId: userId, deletedAt: null }, select: { id: true, type: true, planId: true } }),
     ]);
     const today = dhakaToday();
@@ -146,7 +158,7 @@ export class UserNotificationsService {
         drafts.push(...budgetReminders(workspace.id, month, lines));
       }
       if (user.remindLoans) {
-        drafts.push(...loanReminders(workspace.id, await this.receivablesPayablesService.dueWithin(workspace.id, LOAN_DAYS)));
+        drafts.push(...loanReminders(workspace.id, await this.receivablesPayablesService.dueWithin(workspace.id, resolvePrefs(user.notificationPrefs).loanDaysBefore || LOAN_DAYS)));
       }
       if (user.remindSavings) {
         const goals = await this.savingsGoalsService.list(workspace.id, 'ACTIVE');

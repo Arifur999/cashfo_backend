@@ -1,4 +1,5 @@
 import { testPush } from './push-payload.js';
+import { allows, defaultPrefs } from '../notification-prefs/notification-prefs.js';
 import { PushService } from './push.service.js';
 
 const webpush = vi.hoisted(() => ({ setVapidDetails: vi.fn(), sendNotification: vi.fn() }));
@@ -18,7 +19,9 @@ const setup = (subscriptions = [device('d1')], vapid = true) => {
   vi.stubEnv('VAPID_PUBLIC_KEY', vapid ? 'pub' : undefined);
   vi.stubEnv('VAPID_PRIVATE_KEY', vapid ? 'priv' : undefined);
   vi.stubEnv('VAPID_SUBJECT', vapid ? 'mailto:support@example.com' : undefined);
-  const service = new PushService(prisma as never);
+  // Everyone on the defaults, on Free.
+  const prefs = { forUsers: vi.fn().mockResolvedValue(new Map()), allowed: (_entry: unknown, alert: string, channel: string) => allows(defaultPrefs(), alert, channel as 'push', { pro: false, dhakaClock: '12:00' }) };
+  const service = new PushService(prisma as never, prefs as never);
   service.onModuleInit();
   return { service, prisma };
 };
