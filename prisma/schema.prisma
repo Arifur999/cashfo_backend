@@ -918,6 +918,8 @@ model User {
   // sections of their records it may read. Password Manager is never read.
   aiInsights              Boolean                  @default(false)
   aiReads                 AiSection[]              @default([TRANSACTIONS, SAVINGS, LOANS])
+  // The 7 AM bell row with what needs attention (AI settings).
+  aiMorning               Boolean                  @default(false)
   monthlySummarySentFor   String?
   createdAt               DateTime                 @default(now())
   updatedAt               DateTime                 @updatedAt
@@ -3089,6 +3091,8 @@ enum UserNotificationType {
   ZAKAT
   // An event the customer asked to be reminded of is tomorrow.
   EVENT
+  // AI Insights' morning summary: what needs attention today.
+  INSIGHT
 }
 
 // A browser or phone that gets web push notifications for one customer

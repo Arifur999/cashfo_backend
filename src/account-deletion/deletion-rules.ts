@@ -42,6 +42,7 @@ export const anonymisedUser = (userId: string) => ({
   failedTriesAlertedAt: null,
   monthlySummaryEmail: false,
   aiInsights: false,
+  aiMorning: false,
   alertNewDevice: false,
   alertFailedTries: false,
   askCodeBeforeReset: false,

@@ -13,4 +13,9 @@ export class UpdateAiSettingsDto {
   @ArrayMaxSize(4)
   @IsIn(Object.values(AiSection), { each: true })
   reads?: AiSection[];
+
+  // The morning summary in the bell at 7 AM.
+  @ValidateIf(whenSent)
+  @IsBoolean()
+  morning?: boolean;
 }
