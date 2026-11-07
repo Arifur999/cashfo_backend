@@ -914,6 +914,10 @@ model User {
   // Settings > App > Reminders: last month's summary by email on the 1st
   // (Dhaka), and the 'YYYY-MM' it was last sent for, so it goes once.
   monthlySummaryEmail     Boolean                  @default(false)
+  // AI Insights: turned on by the person (off until then), and the
+  // sections of their records it may read. Password Manager is never read.
+  aiInsights              Boolean                  @default(false)
+  aiReads                 AiSection[]              @default([TRANSACTIONS, SAVINGS, LOANS])
   monthlySummarySentFor   String?
   createdAt               DateTime                 @default(now())
   updatedAt               DateTime                 @updatedAt
@@ -3276,6 +3280,14 @@ enum GiftDirection {
 enum GiftKind {
   CASH
   ITEM
+}
+
+// The parts of a person's records AI Insights may read (User.aiReads).
+enum AiSection {
+  TRANSACTIONS
+  SAVINGS
+  LOANS
+  GROUPS
 }
 
 // Someone gifts go to or come from: a cousin, a colleague.

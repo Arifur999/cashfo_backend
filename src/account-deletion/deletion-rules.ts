@@ -41,6 +41,7 @@ export const anonymisedUser = (userId: string) => ({
   vaultUnlockFailedAt: null,
   failedTriesAlertedAt: null,
   monthlySummaryEmail: false,
+  aiInsights: false,
   alertNewDevice: false,
   alertFailedTries: false,
   askCodeBeforeReset: false,

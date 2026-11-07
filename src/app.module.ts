@@ -47,6 +47,7 @@ import { PushModule } from './push/push.module.js';
 import { ProfileCardModule } from './profile-card/profile-card.module.js';
 import { ZakatModule } from './zakat/zakat.module.js';
 import { EventsModule } from './events/events.module.js';
+import { InsightsModule } from './insights/insights.module.js';
 import { BalanceAdjustmentsModule } from './balance-adjustments/balance-adjustments.module.js';
 import { ReferralsModule } from './referrals/referrals.module.js';
 import { RemindersModule } from './reminders/reminders.module.js';
@@ -137,6 +138,7 @@ import { MonthlySummaryModule } from './monthly-summary/monthly-summary.module.j
     ProfileCardModule,
     ZakatModule,
     EventsModule,
+    InsightsModule,
     BalanceAdjustmentsModule,
     BudgetsModule,
     SavingsGoalsModule,
