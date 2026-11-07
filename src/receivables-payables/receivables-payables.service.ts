@@ -894,6 +894,18 @@ export class ReceivablesPayablesService {
   // The principal entries with these loan contacts, each by what it was: a
   // loan given or taken (a sale or purchase on credit) or money back (a
   // payment, received against the receivable or paid against the payable).
+  // Loan principal moved between two Dhaka days ('YYYY-MM-DD', both
+  // included), by kind, in taka: the dashboard's cash flow line for Loans.
+  async loanFlow(businessId: string, from: string, to: string): Promise<Record<'GAVE' | 'TOOK' | 'GOT_BACK' | 'PAID_BACK', number>> {
+    const contacts = await this.prisma.contact.findMany({ where: { businessId, category: 'LOAN' }, select: { id: true } });
+    const sums = { GAVE: 0, TOOK: 0, GOT_BACK: 0, PAID_BACK: 0 };
+    for (const posting of await this.loanPrincipalPostings(businessId, contacts)) {
+      const day = dhakaDateKey(posting.date);
+      if (day >= from && day <= to && posting.kind in sums) sums[posting.kind as keyof typeof sums] += posting.amount;
+    }
+    return sums;
+  }
+
   private async loanPrincipalPostings(businessId: string, contacts: Pick<Contact, 'id'>[]): Promise<LoanActivityPosting[]> {
     if (contacts.length === 0) return [];
     const receivable = await this.findSystemAccount(this.prisma, businessId, 'receivable', 'ASSET');
