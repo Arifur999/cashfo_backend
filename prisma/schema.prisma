@@ -1880,6 +1880,9 @@ model Business {
   zakatProfile                ZakatProfile?
   zakatExtras                 ZakatExtra[]
   zakatPayments               ZakatPayment[]
+  eventPeople                 EventPerson[]
+  socialEvents                SocialEvent[]
+  eventGifts                  EventGift[]
   assets                      Asset[]
   assetCategoryOptions        AssetCategoryOption[]
   groupMembers                GroupMember[]
@@ -3080,6 +3083,8 @@ enum UserNotificationType {
   IDEA
   // The zakat date is 30 or 3 days away and some zakat is left to give.
   ZAKAT
+  // An event the customer asked to be reminded of is tomorrow.
+  EVENT
 }
 
 // A browser or phone that gets web push notifications for one customer
@@ -3241,4 +3246,94 @@ model ZakatPayment {
   createdAt     DateTime @default(now())
 
   @@index([businessId, dueDate])
+}
+
+// =====================================================================
+// Calendar & Events: invitations and the customer's own events
+// (weddings, aqiqahs, birthdays...), and the gifts given and received at
+// them -- who gave what, both ways, over the years. A record of social
+// giving, not a money posting: a cash gift does not move a wallet.
+// =====================================================================
+
+enum SocialEventType {
+  WEDDING
+  HOLUD
+  AQIQAH
+  KHATNA
+  BIRTHDAY
+  MILAD
+  EID
+  OTHER
+}
+
+// GAVE: at someone else's event; GOT: at the customer's own.
+enum GiftDirection {
+  GAVE
+  GOT
+}
+
+// CASH, or an ITEM (a gold ring) written down at its value.
+enum GiftKind {
+  CASH
+  ITEM
+}
+
+// Someone gifts go to or come from: a cousin, a colleague.
+model EventPerson {
+  id         String        @id @default(uuid())
+  businessId String
+  business   Business      @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  name       String
+  // How they are related ("Cousin", "Uncle"), as typed.
+  relation   String?
+  createdAt  DateTime      @default(now())
+  updatedAt  DateTime      @updatedAt
+  hosted     SocialEvent[]
+  gifts      EventGift[]
+
+  @@index([businessId])
+}
+
+model SocialEvent {
+  id         String          @id @default(uuid())
+  businessId String
+  business   Business        @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  type       SocialEventType
+  title      String
+  date       DateTime        @db.Date
+  // "HH:MM" in Asia/Dhaka, when given.
+  time       String?
+  place      String?
+  // Whose event it is; null for the customer's own.
+  hostId     String?
+  host       EventPerson?    @relation(fields: [hostId], references: [id], onDelete: SetNull)
+  remind     Boolean         @default(true)
+  createdAt  DateTime        @default(now())
+  updatedAt  DateTime        @updatedAt
+  gifts      EventGift[]
+
+  @@index([businessId, date])
+  @@index([hostId])
+}
+
+model EventGift {
+  id         String        @id @default(uuid())
+  businessId String
+  business   Business      @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  eventId    String
+  event      SocialEvent   @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  personId   String
+  person     EventPerson   @relation(fields: [personId], references: [id], onDelete: Cascade)
+  direction  GiftDirection
+  kind       GiftKind
+  // The item, for an ITEM gift ("Gold ring").
+  item       String?
+  // Cash given, or what the item is worth.
+  amount     Decimal       @db.Decimal(14, 2)
+  note       String?
+  createdAt  DateTime      @default(now())
+
+  @@index([businessId])
+  @@index([eventId])
+  @@index([personId])
 }
