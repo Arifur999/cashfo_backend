@@ -917,7 +917,7 @@ model User {
   // AI Insights: turned on by the person (off until then), and the
   // sections of their records it may read. Password Manager is never read.
   aiInsights              Boolean                  @default(false)
-  aiReads                 AiSection[]              @default([TRANSACTIONS, SAVINGS, LOANS])
+  aiReads                 AiSection[]              @default([TRANSACTIONS, BUDGET, SAVINGS, LOANS])
   // The 7 AM bell row with what needs attention (AI settings).
   aiMorning               Boolean                  @default(false)
   // Settings › Notifications: each alert's channels, quiet hours, reminder

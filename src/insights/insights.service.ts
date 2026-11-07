@@ -10,7 +10,19 @@ import { ReportsService } from '../reports/reports.service.js';
 import { SavingsGoalsService } from '../savings-goals/savings-goals.service.js';
 import { UpdateAiSettingsDto } from './dto/ai-settings.dto.js';
 import { morningDay, morningKey } from './insights-morning.js';
-import { affordAnswer, type BudgetFact, happenings, type IncomeFact, type InsightInputs, owedAnswer, shiftMonth, spendAnswer, summary, todos, ways } from './insights-rules.js';
+import {
+  affordAnswer,
+  type BudgetFact,
+  happenings,
+  type IncomeFact,
+  type InsightInputs,
+  owedAnswer,
+  shiftMonth,
+  spendAnswer,
+  summary,
+  todos,
+  ways,
+} from './insights-rules.js';
 
 const FIVE_MINUTES = 5 * 60 * 1000;
 
@@ -74,7 +86,12 @@ export class InsightsService implements OnModuleInit {
     const today = dhakaDateKey(now);
     const thisMonth = today.slice(0, 7);
     const month = shiftMonth(thisMonth, -1);
-    const reads = { transactions: settings.reads.includes(AiSection.TRANSACTIONS), savings: settings.reads.includes(AiSection.SAVINGS), loans: settings.reads.includes(AiSection.LOANS) };
+    const reads = {
+      transactions: settings.reads.includes(AiSection.TRANSACTIONS),
+      savings: settings.reads.includes(AiSection.SAVINGS),
+      loans: settings.reads.includes(AiSection.LOANS),
+    };
+    const budget = settings.reads.includes(AiSection.BUDGET);
     const from = monthStart(shiftMonth(month, -6));
     const before = monthStart(shiftMonth(thisMonth, 1));
     const [year, monthNumber] = month.split('-').map(Number);
@@ -83,8 +100,9 @@ export class InsightsService implements OnModuleInit {
       reads.transactions ? this.reports.categoryByMonth(businessId, 'EXPENSE', from, before) : [],
       reads.transactions ? this.reports.categoryByMonth(businessId, 'INCOME', from, before) : [],
       this.prisma.budgetCategory.findMany({ where: { businessId, type: 'EXPENSE' }, select: { name: true, icon: true } }),
-      reads.transactions ? this.budgetFacts(businessId, {}) : [],
-      reads.transactions ? this.budgetFacts(businessId, { year, month: monthNumber }) : [],
+      // Budgets only with Settings › Data & privacy’s Budget ticked too.
+      reads.transactions && budget ? this.budgetFacts(businessId, {}) : [],
+      reads.transactions && budget ? this.budgetFacts(businessId, { year, month: monthNumber }) : [],
       reads.savings ? this.goalFacts(businessId, thisMonth) : [],
       reads.loans ? this.owedFacts(businessId) : [],
       reads.transactions ? this.biggestIncome(businessId, month) : null,
@@ -135,7 +153,13 @@ export class InsightsService implements OnModuleInit {
       const page = await this.overview(workspace.id, workspace.ownerId, now);
       const todos = page.report?.todos ?? [];
       const data: MorningData = { count: todos.length, first: todos[0] ? { kind: todos[0].kind, name: todos[0].name } : null, url: '/ai-insights' };
-      rows.push({ userId: workspace.ownerId, businessId: workspace.id, type: 'INSIGHT', key: morningKey(workspace.id, day), data: data as unknown as Prisma.InputJsonObject });
+      rows.push({
+        userId: workspace.ownerId,
+        businessId: workspace.id,
+        type: 'INSIGHT',
+        key: morningKey(workspace.id, day),
+        data: data as unknown as Prisma.InputJsonObject,
+      });
     }
     if (rows.length === 0) return;
     const inserted = await this.prisma.userNotification.createManyAndReturn({ data: rows, skipDuplicates: true, select: { userId: true, data: true } });
@@ -147,8 +171,18 @@ export class InsightsService implements OnModuleInit {
             userId: row.userId,
             build: (locale: 'en' | 'bn') =>
               locale === 'bn'
-                ? { title: 'সকালের সারাংশ', body: count ? `আজ ${count}টি বিষয়ে নজর দেওয়া দরকার।` : 'আজ নজর দেওয়ার মতো কিছু নেই।', url: '/ai-insights', tag: 'ai-morning' }
-                : { title: 'Your morning summary', body: count ? `${count} ${count === 1 ? 'thing needs' : 'things need'} your attention today.` : 'Nothing needs your attention today.', url: '/ai-insights', tag: 'ai-morning' },
+                ? {
+                    title: 'সকালের সারাংশ',
+                    body: count ? `আজ ${count}টি বিষয়ে নজর দেওয়া দরকার।` : 'আজ নজর দেওয়ার মতো কিছু নেই।',
+                    url: '/ai-insights',
+                    tag: 'ai-morning',
+                  }
+                : {
+                    title: 'Your morning summary',
+                    body: count ? `${count} ${count === 1 ? 'thing needs' : 'things need'} your attention today.` : 'Nothing needs your attention today.',
+                    url: '/ai-insights',
+                    tag: 'ai-morning',
+                  },
           };
         }),
       );
@@ -159,7 +193,11 @@ export class InsightsService implements OnModuleInit {
 
   private async budgetFacts(businessId: string, query: { year?: number; month?: number }): Promise<BudgetFact[]> {
     const overview = await this.budgets.getOverview(businessId, query);
-    return overview.categories.map((category) => ({ name: category.name, limit: category.monthlyLimit === null ? null : toPaisa(category.monthlyLimit), spent: toPaisa(category.spent) }));
+    return overview.categories.map((category) => ({
+      name: category.name,
+      limit: category.monthlyLimit === null ? null : toPaisa(category.monthlyLimit),
+      spent: toPaisa(category.spent),
+    }));
   }
 
   private async goalFacts(businessId: string, thisMonth: string) {
