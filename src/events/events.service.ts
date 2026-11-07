@@ -92,8 +92,8 @@ export class EventsService implements OnModuleInit {
   // The event and its gifts go, with the expense of any gift added to
   // Transactions; the people stay, with their other gifts.
   async deleteEvent(businessId: string, id: string, userId: string) {
-    await this.requireEvent(businessId, id);
     await this.prisma.$transaction(async (tx) => {
+      await this.lockEvent(tx, businessId, id);
       const posted = await tx.eventGift.findMany({ where: { eventId: id, transactionId: { not: null } }, select: { transactionId: true } });
       await tx.socialEvent.delete({ where: { id } });
       for (const { transactionId } of posted) {
@@ -109,12 +109,12 @@ export class EventsService implements OnModuleInit {
   // Transactions as a Gifts expense out of a wallet, in the same database
   // transaction as the gift.
   async addGift(businessId: string, eventId: string, dto: CreateGiftDto, userId: string) {
-    const event = await this.requireEvent(businessId, eventId);
-    const direction = dto.direction ?? (event.hostId === null ? 'GOT' : 'GAVE');
-    if (dto.fromAccountId && (direction !== 'GAVE' || dto.kind !== 'CASH')) {
-      throw new BadRequestException('Only cash you gave can be added to Transactions.');
-    }
     const gift = await this.prisma.$transaction(async (tx) => {
+      const event = await this.lockEvent(tx, businessId, eventId);
+      const direction = dto.direction ?? (event.hostId === null ? 'GOT' : 'GAVE');
+      if (dto.fromAccountId && (direction !== 'GAVE' || dto.kind !== 'CASH')) {
+        throw new BadRequestException('Only cash you gave can be added to Transactions.');
+      }
       const personId = dto.personId || dto.personName ? await this.personFor(tx, businessId, dto.personId, dto.personName, dto.personRelation) : event.hostId;
       if (!personId) throw new BadRequestException('Pick who gave or received it.');
       const transactionId = dto.fromAccountId ? await this.postGift(tx, businessId, event, dto.fromAccountId, dto.amount, userId) : null;
@@ -276,6 +276,16 @@ export class EventsService implements OnModuleInit {
     const posting = await tx.transaction.findUnique({ where: { id: transactionId }, select: { status: true } });
     if (posting?.status !== 'POSTED') return;
     await this.transactions.voidTransaction(businessId, transactionId, GIFT_DELETED, userId, tx);
+  }
+
+  // The event's row, locked until the database transaction ends: a gift
+  // written while its event is being deleted waits, then finds it gone,
+  // so no expense is ever left that no gift owns.
+  private async lockEvent(tx: Prisma.TransactionClient, businessId: string, id: string): Promise<SocialEvent> {
+    await tx.$queryRaw`SELECT id FROM "SocialEvent" WHERE id = ${id} FOR UPDATE`;
+    const event = await tx.socialEvent.findUnique({ where: { id } });
+    if (!event || event.businessId !== businessId) throw new NotFoundException('Event not found');
+    return event;
   }
 
   private async requireEvent(businessId: string, id: string) {

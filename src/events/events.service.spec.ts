@@ -15,7 +15,9 @@ const setup = (opts: { people?: { id: string; name: string }[]; event?: Record<s
     },
     socialEvent: {
       create: vi.fn(({ data }: { data: Record<string, unknown> }) => Promise.resolve({ id: 'ev-new', createdAt: new Date(), ...data, gifts: [] })),
+      findUnique: vi.fn(() => Promise.resolve(opts.event ?? null)),
     },
+    $queryRaw: vi.fn(() => Promise.resolve([])),
     eventGift: {
       create: vi.fn(({ data }: { data: Record<string, unknown> }) => Promise.resolve({ id: 'gift-new', createdAt: new Date(), ...data, amount: D(Number(data.amount)) })),
       delete: vi.fn(() => Promise.resolve({})),
