@@ -32,6 +32,19 @@ export const nextCategoryColor = (used: string[]): string => {
   return free ?? BUDGET_CATEGORY_COLORS[used.length % BUDGET_CATEGORY_COLORS.length];
 };
 
+// An expense category the app files money under by itself (Zakat, Gifts),
+// made the first time it is needed, after the workspace's own. Safe to run
+// twice at once: the name is unique per workspace and type.
+export async function ensureExpenseCategory(client: Prisma.TransactionClient | PrismaService, businessId: string, name: string, icon: string) {
+  const exists = await client.budgetCategory.count({ where: { businessId, type: 'EXPENSE', name } });
+  if (exists) return;
+  const siblings = await client.budgetCategory.findMany({ where: { businessId, type: 'EXPENSE' }, select: { color: true } });
+  await client.budgetCategory.createMany({
+    data: [{ businessId, type: 'EXPENSE', name, icon, color: nextCategoryColor(siblings.map((s) => s.color)), displayOrder: siblings.length }],
+    skipDuplicates: true,
+  });
+}
+
 @Injectable()
 export class BudgetsService {
   constructor(private readonly prisma: PrismaService) {}
