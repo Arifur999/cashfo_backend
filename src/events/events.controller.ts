@@ -2,6 +2,8 @@ import { Body, Controller, Delete, Get, Param, Patch, Post } from '@nestjs/commo
 import { MemberRole } from '@prisma/client';
 import { RequireBusinessMembership } from '../business-access/decorators/require-business-membership.decorator.js';
 import { RequireRole } from '../business-access/decorators/require-role.decorator.js';
+import { CurrentUser } from '../user-auth/decorators/current-user.decorator.js';
+import type { RequestUser } from '../user-auth/interfaces/request-user.interface.js';
 import { CreateEventDto, CreateGiftDto, UpdateEventDto, UpdateGiftDto, UpdatePersonDto } from './dto/events.dto.js';
 import { EventsService } from './events.service.js';
 
@@ -34,8 +36,8 @@ export class EventsController {
   }
 
   @Delete('gifts/:giftId')
-  deleteGift(@Param('businessId') businessId: string, @Param('giftId') giftId: string) {
-    return this.events.deleteGift(businessId, giftId);
+  deleteGift(@Param('businessId') businessId: string, @Param('giftId') giftId: string, @CurrentUser() user: RequestUser) {
+    return this.events.deleteGift(businessId, giftId, user.id);
   }
 
   @Patch(':id')
@@ -44,12 +46,12 @@ export class EventsController {
   }
 
   @Delete(':id')
-  remove(@Param('businessId') businessId: string, @Param('id') id: string) {
-    return this.events.deleteEvent(businessId, id);
+  remove(@Param('businessId') businessId: string, @Param('id') id: string, @CurrentUser() user: RequestUser) {
+    return this.events.deleteEvent(businessId, id, user.id);
   }
 
   @Post(':id/gifts')
-  addGift(@Param('businessId') businessId: string, @Param('id') id: string, @Body() dto: CreateGiftDto) {
-    return this.events.addGift(businessId, id, dto);
+  addGift(@Param('businessId') businessId: string, @Param('id') id: string, @Body() dto: CreateGiftDto, @CurrentUser() user: RequestUser) {
+    return this.events.addGift(businessId, id, dto, user.id);
   }
 }

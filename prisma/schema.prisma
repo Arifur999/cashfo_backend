@@ -3331,6 +3331,9 @@ model EventGift {
   // Cash given, or what the item is worth.
   amount     Decimal       @db.Decimal(14, 2)
   note       String?
+  // Cash given that was also added to Transactions: its expense, which
+  // only deleting the gift (or its event) voids.
+  transactionId String?    @unique
   createdAt  DateTime      @default(now())
 
   @@index([businessId])

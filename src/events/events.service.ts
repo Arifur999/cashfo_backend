@@ -1,12 +1,18 @@
 import { BadRequestException, Injectable, Logger, NotFoundException, type OnModuleInit } from '@nestjs/common';
 import { Prisma, type EventGift, type EventPerson, type SocialEvent } from '@prisma/client';
+import { MONEY_ACCOUNT_SUBTYPES } from '../accounts/accounts.service.js';
+import { GIFTS_CATEGORY } from '../budgets/app-categories.js';
+import { ensureExpenseCategory } from '../budgets/budgets.service.js';
+import { dhakaDateKey } from '../common/dhaka.js';
 import { HousekeepingScheduler } from '../housekeeping/housekeeping.scheduler.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { PushService } from '../push/push.service.js';
+import { TransactionsService } from '../transactions/transactions.service.js';
 import { CreateEventDto, CreateGiftDto, UpdateEventDto, UpdateGiftDto, UpdatePersonDto } from './dto/events.dto.js';
 import { reminderDay, reminderKey } from './event-reminders.js';
 
 const FIVE_MINUTES = 5 * 60 * 1000;
+const GIFT_DELETED = 'Gift deleted from Calendar & Events';
 // A workspace's events, people and gifts are read in one go; this many
 // events is years of invitations.
 const MAX_EVENTS = 3000;
@@ -28,7 +34,8 @@ export interface EventReminderData {
 
 // Calendar & Events: invitations and the customer's own events, the
 // people they are with, and the gifts given and received at them. A
-// record of social giving: a cash gift moves no wallet.
+// record of social giving: a gift moves no wallet, unless cash given is
+// also added to Transactions (a Gifts expense the gift then owns).
 @Injectable()
 export class EventsService implements OnModuleInit {
   private readonly logger = new Logger(EventsService.name);
@@ -37,6 +44,7 @@ export class EventsService implements OnModuleInit {
     private readonly prisma: PrismaService,
     private readonly push: PushService,
     private readonly housekeeping: HousekeepingScheduler,
+    private readonly transactions: TransactionsService,
   ) {}
 
   onModuleInit() {
@@ -81,24 +89,47 @@ export class EventsService implements OnModuleInit {
     return eventView(event);
   }
 
-  // The event and its gifts go; the people stay, with their other gifts.
-  async deleteEvent(businessId: string, id: string) {
+  // The event and its gifts go, with the expense of any gift added to
+  // Transactions; the people stay, with their other gifts.
+  async deleteEvent(businessId: string, id: string, userId: string) {
     await this.requireEvent(businessId, id);
-    await this.prisma.socialEvent.delete({ where: { id } });
+    await this.prisma.$transaction(async (tx) => {
+      const posted = await tx.eventGift.findMany({ where: { eventId: id, transactionId: { not: null } }, select: { transactionId: true } });
+      await tx.socialEvent.delete({ where: { id } });
+      for (const { transactionId } of posted) {
+        if (transactionId) await this.voidPosting(tx, businessId, transactionId, userId);
+      }
+    });
     return { deleted: true };
   }
 
-  // A gift at someone else's event is given to its host; at the customer's
-  // own, it is received from the person named.
-  async addGift(businessId: string, eventId: string, dto: CreateGiftDto) {
+  // A gift given or received (received at the customer's own events and
+  // given at others', unless the direction is sent), to or from a person
+  // by id or a new one by name, else the host. Cash given can also go into
+  // Transactions as a Gifts expense out of a wallet, in the same database
+  // transaction as the gift.
+  async addGift(businessId: string, eventId: string, dto: CreateGiftDto, userId: string) {
     const event = await this.requireEvent(businessId, eventId);
-    const mine = event.hostId === null;
+    const direction = dto.direction ?? (event.hostId === null ? 'GOT' : 'GAVE');
+    if (dto.fromAccountId && (direction !== 'GAVE' || dto.kind !== 'CASH')) {
+      throw new BadRequestException('Only cash you gave can be added to Transactions.');
+    }
     const gift = await this.prisma.$transaction(async (tx) => {
-      const personId = mine ? await this.personFor(tx, businessId, dto.personId, dto.personName, dto.personRelation) : (dto.personId ?? event.hostId);
-      if (!personId) throw new BadRequestException('Say who the gift is from.');
-      if (!mine && personId !== event.hostId) throw new BadRequestException('A gift at an invitation goes to its host.');
+      const personId = dto.personId || dto.personName ? await this.personFor(tx, businessId, dto.personId, dto.personName, dto.personRelation) : event.hostId;
+      if (!personId) throw new BadRequestException('Pick who gave or received it.');
+      const transactionId = dto.fromAccountId ? await this.postGift(tx, businessId, event, dto.fromAccountId, dto.amount, userId) : null;
       return tx.eventGift.create({
-        data: { businessId, eventId, personId, direction: mine ? 'GOT' : 'GAVE', kind: dto.kind, item: dto.kind === 'ITEM' ? (dto.item ?? null) : null, amount: dto.amount, note: dto.note || null },
+        data: {
+          businessId,
+          eventId,
+          personId,
+          direction,
+          kind: dto.kind,
+          item: dto.kind === 'ITEM' ? (dto.item ?? null) : null,
+          amount: dto.amount,
+          note: dto.note || null,
+          transactionId,
+        },
       });
     });
     return giftView(gift);
@@ -107,6 +138,11 @@ export class EventsService implements OnModuleInit {
   async updateGift(businessId: string, giftId: string, dto: UpdateGiftDto) {
     const gift = await this.prisma.eventGift.findUnique({ where: { id: giftId } });
     if (!gift || gift.businessId !== businessId) throw new NotFoundException('Gift not found');
+    // Its expense says how much left the wallet: changing that is deleting
+    // the gift and writing it again.
+    if (gift.transactionId && ((dto.kind !== undefined && dto.kind !== gift.kind) || (dto.amount !== undefined && !gift.amount.equals(dto.amount)))) {
+      throw new BadRequestException('This gift is in Transactions. Delete it and write it down again to change the amount.');
+    }
     const kind = dto.kind ?? gift.kind;
     const item = kind === 'ITEM' ? (dto.item !== undefined ? dto.item : gift.item) : null;
     if (kind === 'ITEM' && !item) throw new BadRequestException('Say what the gift was.');
@@ -117,10 +153,14 @@ export class EventsService implements OnModuleInit {
     return giftView(updated);
   }
 
-  async deleteGift(businessId: string, giftId: string) {
+  // The gift goes, and its expense is voided with it.
+  async deleteGift(businessId: string, giftId: string, userId: string) {
     const gift = await this.prisma.eventGift.findUnique({ where: { id: giftId } });
     if (!gift || gift.businessId !== businessId) throw new NotFoundException('Gift not found');
-    await this.prisma.eventGift.delete({ where: { id: giftId } });
+    await this.prisma.$transaction(async (tx) => {
+      await tx.eventGift.delete({ where: { id: giftId } });
+      if (gift.transactionId) await this.voidPosting(tx, businessId, gift.transactionId, userId);
+    });
     return { deleted: true };
   }
 
@@ -192,6 +232,52 @@ export class EventsService implements OnModuleInit {
     return created.id;
   }
 
+  // Cash given as a Gifts expense out of a money wallet that holds it,
+  // dated the event's day (today for an event still to come). The wallet's
+  // row is locked first, so two gifts from it can't both pass the check.
+  private async postGift(tx: Prisma.TransactionClient, businessId: string, event: SocialEvent, accountId: string, amount: number, userId: string): Promise<string> {
+    const wallet = await tx.account.findFirst({
+      where: { id: accountId, businessId, status: 'ACTIVE', accountType: 'ASSET', accountSubtype: { in: MONEY_ACCOUNT_SUBTYPES } },
+      select: { id: true },
+    });
+    if (!wallet) throw new BadRequestException('Pick a cash, bank or mobile banking wallet.');
+    await tx.$executeRaw`SELECT id FROM "Account" WHERE id = ${wallet.id} FOR UPDATE`;
+    const fresh = await tx.account.findUniqueOrThrow({ where: { id: wallet.id }, select: { currentBalance: true } });
+    if (fresh.currentBalance.lessThan(amount)) throw new BadRequestException("This wallet doesn't have that much. Pick another wallet.");
+    const expense = await tx.account.findFirst({
+      where: { businessId, accountType: 'EXPENSE', status: 'ACTIVE' },
+      orderBy: [{ displayOrder: 'asc' }, { createdAt: 'asc' }],
+      select: { id: true },
+    });
+    if (!expense) throw new BadRequestException('This workspace has no expense account.');
+    await ensureExpenseCategory(tx, businessId, GIFTS_CATEGORY, 'gift');
+    const today = dhakaDateKey(new Date());
+    const day = dayOf(event.date);
+    const posted = await this.transactions.createTransaction(
+      businessId,
+      {
+        transactionType: 'EXPENSE',
+        transactionDate: day > today ? today : day,
+        description: `Gift · ${event.title}`,
+        entries: [
+          { accountId: expense.id, entryType: 'DEBIT', amount, categoryId: GIFTS_CATEGORY },
+          { accountId: wallet.id, entryType: 'CREDIT', amount },
+        ],
+      },
+      userId,
+      tx,
+    );
+    return posted.id;
+  }
+
+  // A gift's expense, voided when the gift goes. One voided already (from
+  // the Transactions page, before this owned it) is left as it is.
+  private async voidPosting(tx: Prisma.TransactionClient, businessId: string, transactionId: string, userId: string) {
+    const posting = await tx.transaction.findUnique({ where: { id: transactionId }, select: { status: true } });
+    if (posting?.status !== 'POSTED') return;
+    await this.transactions.voidTransaction(businessId, transactionId, GIFT_DELETED, userId, tx);
+  }
+
   private async requireEvent(businessId: string, id: string) {
     const event = await this.prisma.socialEvent.findUnique({ where: { id } });
     if (!event || event.businessId !== businessId) throw new NotFoundException('Event not found');
@@ -204,7 +290,19 @@ function personView(person: EventPerson) {
 }
 
 function giftView(gift: EventGift) {
-  return { id: gift.id, eventId: gift.eventId, personId: gift.personId, direction: gift.direction, kind: gift.kind, item: gift.item, amount: gift.amount.toFixed(2), note: gift.note, createdAt: gift.createdAt };
+  return {
+    id: gift.id,
+    eventId: gift.eventId,
+    personId: gift.personId,
+    direction: gift.direction,
+    kind: gift.kind,
+    item: gift.item,
+    amount: gift.amount.toFixed(2),
+    note: gift.note,
+    // Also in Transactions (as a Gifts expense).
+    inTransactions: gift.transactionId !== null,
+    createdAt: gift.createdAt,
+  };
 }
 
 function eventView(event: EventRow) {

@@ -1,4 +1,4 @@
-import { GiftKind, SocialEventType } from '@prisma/client';
+import { GiftDirection, GiftKind, SocialEventType } from '@prisma/client';
 import { Transform } from 'class-transformer';
 import { IsBoolean, IsIn, IsNotEmpty, IsString, Matches, MaxLength, ValidateIf } from 'class-validator';
 import { IsMoney, trim, whenSent } from '../../common/dto.js';
@@ -90,9 +90,15 @@ export class UpdateEventDto {
   remind?: boolean;
 }
 
-// A gift at an event: given to its host (or, at the customer's own event,
-// received from a person by id or a new one by name).
+// A gift at an event, given or received, to or from a person by id or a
+// new one by name (else the event's host).
 export class CreateGiftDto {
+  // Received at the customer's own events and given at others', unless
+  // sent.
+  @ValidateIf(whenSent)
+  @IsIn(Object.values(GiftDirection))
+  direction?: GiftDirection;
+
   @ValidateIf((dto: CreateGiftDto) => dto.personId !== undefined)
   @IsString()
   @IsNotEmpty()
@@ -130,6 +136,13 @@ export class CreateGiftDto {
   @IsString()
   @MaxLength(200)
   note?: string;
+
+  // Cash given can also go into Transactions as a Gifts expense, out of
+  // this wallet.
+  @ValidateIf(whenSent)
+  @IsString()
+  @IsNotEmpty()
+  fromAccountId?: string;
 }
 
 export class UpdateGiftDto {
