@@ -1,7 +1,15 @@
 import { BackupEvery } from '@prisma/client';
 
-// Automatic backups start at 2:00 at night on the Dhaka calendar.
+// Automatic backups are made in the night on the Dhaka calendar, from 2:00;
+// those the night can't reach by 8:00 wait for the next one.
 export const BACKUP_HOUR = 2;
+export const BACKUP_UNTIL_HOUR = 8;
+
+// Whether `now` is in that window.
+export const inBackupWindow = (now: Date) => {
+  const hour = new Date(now.getTime() + 6 * 60 * 60 * 1000).getUTCHours();
+  return hour >= BACKUP_HOUR && hour < BACKUP_UNTIL_HOUR;
+};
 
 const dayNumber = (key: string) => Math.round(Date.parse(`${key}T00:00:00Z`) / 86_400_000);
 

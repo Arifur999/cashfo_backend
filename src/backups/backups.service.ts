@@ -6,7 +6,7 @@ import { AccountBalanceService } from '../accounts/account-balance.service.js';
 import { dhakaDateKey } from '../common/dhaka.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { ownedWhere, planBackup, quoteIdent, type ForeignKey, type PlannedTable } from './backup-plan.js';
-import { autoBackupDue, BACKUP_HOUR } from './backup-rules.js';
+import { autoBackupDue, inBackupWindow } from './backup-rules.js';
 
 // What a backup holds: the workspaces it covers and, per table, its rows
 // as Postgres wrote them (JSON text, never parsed into numbers here, so a
@@ -29,7 +29,7 @@ export const KEEP_CHOICES = [3, 5, 10] as const;
 // Copies taken just before a restore, kept so it can be undone.
 const UNDO_COPIES = 2;
 // People given an automatic backup in one housekeeping tick.
-const AUTO_BATCH = 50;
+const AUTO_BATCH = 100;
 // A restore rewrites every record in the person's workspaces.
 const RESTORE_TIMEOUT_MS = 120_000;
 
@@ -172,13 +172,12 @@ export class BackupsService {
     };
   }
 
-  // Automatic backups, from 2:00 at night on the Dhaka calendar: daily, or
-  // a week after the last. Each person is claimed first (autoBackupOn), so
+  // Automatic backups, between 2:00 and 8:00 at night on the Dhaka
+  // calendar: daily, or a week after the last. Each person is claimed first (autoBackupOn), so
   // two servers or an overlapping tick never take it twice.
   async runAuto(now = new Date()): Promise<number> {
     const today = dhakaDateKey(now);
-    const local = new Date(now.getTime() + 6 * 60 * 60 * 1000);
-    if (local.getUTCHours() < BACKUP_HOUR) return 0;
+    if (!inBackupWindow(now)) return 0;
     const weekAgo = dhakaDateKey(new Date(now.getTime() - 7 * 86_400_000));
     const people = await this.prisma.user.findMany({
       where: {

@@ -1,7 +1,14 @@
 import { BackupEvery } from '@prisma/client';
-import { autoBackupDue } from './backup-rules.js';
+import { autoBackupDue, inBackupWindow } from './backup-rules.js';
 
 describe('automatic backups', () => {
+  it('are made between 2:00 and 8:00 at night in Dhaka', () => {
+    expect(inBackupWindow(new Date('2026-11-06T19:59:00.000Z'))).toBe(false);
+    expect(inBackupWindow(new Date('2026-11-06T20:00:00.000Z'))).toBe(true);
+    expect(inBackupWindow(new Date('2026-11-07T01:59:00.000Z'))).toBe(true);
+    expect(inBackupWindow(new Date('2026-11-07T02:00:00.000Z'))).toBe(false);
+  });
+
   it('are due at once the first time', () => {
     expect(autoBackupDue(BackupEvery.WEEKLY, null, '2026-11-07')).toBe(true);
   });
