@@ -84,14 +84,14 @@ describe('insights rules', () => {
   it('suggests a tip per kind of spending from the last three months, biggest first', () => {
     const list = ways(inputs(), '2026-10');
     expect(list.map((way) => [way.tip, way.name, way.perMonth])).toEqual([
-      ['less', 'House Rent', TK(2_100)],
       ['eatOut', 'Food & Dining', TK(3_100)],
       ['ride', 'Transport', TK(500)],
+      ['power', 'Bills & Utilities', TK(200)],
     ]);
   });
 
   it('answers the suggested questions from the same figures', () => {
-    expect(spendAnswer(inputs(), '2026-10')).toMatchObject({ name: 'House Rent', total: TK(62_750), highest: '2026-09' });
+    expect(spendAnswer(inputs(), '2026-10')).toMatchObject({ name: 'Food & Dining', total: TK(47_100), perMonth: TK(15_700), highest: '2026-10' });
     const afford = affordAnswer(inputs(), '2026-10');
     expect(afford).toMatchObject({ verdict: 'slow', amount: TK(30_000) });
     expect(owedAnswer(inputs())).toMatchObject({ count: 2, total: TK(115_000), quiet: { name: 'Karim Traders', months: 4 } });

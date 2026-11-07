@@ -213,10 +213,14 @@ const TIP_OF: [WayTip, string[], number][] = [
   ['eatOut', ['food', 'coffee', 'utensils', 'pizza', 'cookie', 'cake', 'beer', 'restaurant'], 0.2],
   ['ride', ['car', 'bus', 'bike', 'fuel', 'train', 'taxi'], 0.15],
   ['bulk', ['shopping-cart', 'basket', 'grocery', 'apple', 'carrot'], 0.08],
-  ['list', ['shopping', 'shopping-bag', 'shirt', 'gift'], 0.15],
+  ['list', ['shopping', 'shopping-bag', 'shirt'], 0.15],
   ['power', ['service', 'bolt', 'zap', 'lightbulb', 'plug', 'droplet', 'wifi'], 0.1],
 ];
 const LESS_SHARE = 0.1;
+// Costs that are fixed or not the place to save (rent, health, school,
+// zakat): no tip, and not the category a question picks.
+const FIXED_ICONS = new Set(['home', 'health', 'education', 'heart', 'salary']);
+const flexible = (inputs: InsightInputs) => (name: string) => !FIXED_ICONS.has(inputs.icons.get(name) ?? '');
 const WAY_AT_LEAST = 10_000;
 
 export interface Way {
@@ -230,6 +234,7 @@ export function ways(inputs: InsightInputs, month: string): Way[] {
   if (!inputs.reads.transactions) return [];
   const months = [0, -1, -2].map((back) => shiftMonth(month, back));
   const biggestFirst = namedOf(inputs.expense)
+    .filter(flexible(inputs))
     .map((name) => ({ name, average: months.reduce((sum, key) => sum + sumOf(inputs.expense, key, name), 0) / months.length }))
     .filter((row) => row.average > 0)
     .sort((a, b) => b.average - a.average);
@@ -256,6 +261,7 @@ export function spendAnswer(inputs: InsightInputs, month: string) {
   if (!inputs.reads.transactions) return null;
   const months = [-2, -1, 0].map((back) => shiftMonth(month, back));
   const top = namedOf(inputs.expense)
+    .filter(flexible(inputs))
     .map((name) => ({ name, total: months.reduce((sum, key) => sum + sumOf(inputs.expense, key, name), 0) }))
     .filter((row) => row.total > 0)
     .sort((a, b) => b.total - a.total)[0];
