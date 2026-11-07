@@ -906,6 +906,56 @@ export class ReceivablesPayablesService {
     return sums;
   }
 
+  // Loan Management over a period, for Reports: what moved between two
+  // Dhaka days (both included) by kind, profit or interest either way, each
+  // entry (newest first), and what people owed you and you owed when each
+  // of `days` ended. A contact's balance is its opening balance, plus loans
+  // given and repaid by you, less loans taken and money got back.
+  async loanPeriod(businessId: string, from: string, to: string, days: string[]) {
+    const contacts = await this.prisma.contact.findMany({ where: { businessId, category: 'LOAN' }, select: { id: true, name: true, openingBalance: true } });
+    const nameOf = new Map(contacts.map((contact) => [contact.id, contact.name]));
+    const [principal, profit] = await Promise.all([
+      this.loanPrincipalPostings(businessId, contacts),
+      contacts.length
+        ? this.prisma.transaction.findMany({
+            where: {
+              businessId,
+              contactId: { in: contacts.map((contact) => contact.id) },
+              transactionType: { in: ['INCOME', 'EXPENSE'] },
+              status: 'POSTED',
+              reversalOfId: null,
+              chargeForId: null,
+              transactionDate: { gte: new Date(`${from}T00:00:00.000Z`), lte: new Date(`${to}T00:00:00.000Z`) },
+            },
+            select: { contactId: true, transactionDate: true, transactionType: true, entries: { where: { entryType: 'DEBIT' }, select: { amount: true } } },
+          })
+        : [],
+    ]);
+    const sums = { GAVE: 0, TOOK: 0, GOT_BACK: 0, PAID_BACK: 0, PROFIT_PAID: 0, PROFIT_RECEIVED: 0 };
+    const entries: { date: string; contactId: string; name: string; kind: LoanEntryKind; amount: number }[] = [];
+    for (const posting of principal) {
+      const day = dhakaDateKey(posting.date);
+      if (day < from || day > to) continue;
+      sums[posting.kind] += posting.amount;
+      entries.push({ date: day, contactId: posting.contactId, name: nameOf.get(posting.contactId) ?? '', kind: posting.kind, amount: posting.amount });
+    }
+    for (const posting of profit) {
+      const kind: LoanEntryKind = posting.transactionType === 'EXPENSE' ? 'PROFIT_PAID' : 'PROFIT_RECEIVED';
+      const amount = posting.entries.reduce((sum, entry) => sum + Number(entry.amount), 0);
+      sums[kind] += amount;
+      entries.push({ date: dhakaDateKey(posting.transactionDate), contactId: posting.contactId as string, name: nameOf.get(posting.contactId as string) ?? '', kind, amount });
+    }
+    entries.sort((a, b) => b.date.localeCompare(a.date));
+    return { sums, entries: entries.slice(0, 100), at: loanBalancesOn(contacts, principal, days) };
+  }
+
+  // What people owed you (pawna) and you owed (dena) when each Dhaka day
+  // ended, and how many on each side: the net worth on any day.
+  async loanBalancesAt(businessId: string, days: string[]) {
+    const contacts = await this.prisma.contact.findMany({ where: { businessId, category: 'LOAN' }, select: { id: true, openingBalance: true } });
+    return loanBalancesOn(contacts, await this.loanPrincipalPostings(businessId, contacts), days);
+  }
+
   private async loanPrincipalPostings(businessId: string, contacts: Pick<Contact, 'id'>[]): Promise<LoanActivityPosting[]> {
     if (contacts.length === 0) return [];
     const receivable = await this.findSystemAccount(this.prisma, businessId, 'receivable', 'ASSET');
@@ -1148,4 +1198,30 @@ export class ReceivablesPayablesService {
     }
     return account.id;
   }
+}
+
+// A contact's balance on a day: its opening balance, plus loans given and
+// repaid by you, less loans taken and money got back by then.
+const LOAN_SIGN: Record<LoanEntryKind, number> = { GAVE: 1, PAID_BACK: 1, TOOK: -1, GOT_BACK: -1, PROFIT_PAID: 0, PROFIT_RECEIVED: 0 };
+
+function loanBalancesOn(contacts: { id: string; openingBalance: Prisma.Decimal | number | string }[], principal: LoanActivityPosting[], days: string[]) {
+  return days.map((day) => {
+    let pawna = 0;
+    let dena = 0;
+    let owesYou = 0;
+    let youOwe = 0;
+    for (const contact of contacts) {
+      const balance = principal
+        .filter((posting) => posting.contactId === contact.id && dhakaDateKey(posting.date) <= day)
+        .reduce((sum, posting) => sum + LOAN_SIGN[posting.kind] * posting.amount, Number(contact.openingBalance));
+      if (balance > 0.004) {
+        pawna += balance;
+        owesYou += 1;
+      } else if (balance < -0.004) {
+        dena -= balance;
+        youOwe += 1;
+      }
+    }
+    return { day, pawna, dena, owesYou, youOwe };
+  });
 }

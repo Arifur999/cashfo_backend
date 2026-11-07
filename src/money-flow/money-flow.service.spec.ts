@@ -13,32 +13,24 @@ const setup = () => {
       { type: 'EXPENSE', count: 9, amount: D(52_300) },
     ])
     // Cash gifts given at events.
-    .mockResolvedValueOnce([{ amount: D(1_500) }])
-    // This month's income and expenses (the net worth's move).
-    .mockResolvedValueOnce([
-      { type: 'INCOME', count: 1, amount: D(85_000) },
-      { type: 'EXPENSE', count: 4, amount: D(35_250) },
-    ]);
+    .mockResolvedValueOnce([{ amount: D(1_500) }]);
   const prisma = {
     $queryRaw: queryRaw,
     savingsGoalEntry: { groupBy: vi.fn().mockResolvedValue([{ type: 'CONTRIBUTION', _sum: { amount: D(20_000) } }, { type: 'WITHDRAWAL', _sum: { amount: D(5_000) } }]) },
     asset: {
       aggregate: vi.fn().mockResolvedValueOnce({ _sum: { purchasePrice: D(30_000) } }).mockResolvedValueOnce({ _sum: { soldPrice: null } }),
-      findMany: vi.fn().mockResolvedValue([
-        // Valued at 1,10,000 before this month, 1,20,000 now.
-        { purchaseDate: new Date('2025-01-01T00:00:00Z'), purchasePrice: D(100_000), currentValue: D(120_000), valueHistory: [{ value: D(110_000) }] },
-        // Bought this month for 30,000, now 28,000.
-        { purchaseDate: new Date('2026-11-03T00:00:00Z'), purchasePrice: D(30_000), currentValue: D(28_000), valueHistory: [] },
-      ]),
     },
   };
   const loans = { loanFlow: vi.fn().mockResolvedValue({ GAVE: 10_000, TOOK: 0, GOT_BACK: 2_000, PAID_BACK: 0 }) };
-  return { service: new MoneyFlowService(prisma as never, loans as never), prisma, loans };
+  // The net worth when last month ended, and today.
+  const worthOn = (day: string, cash: number) => ({ day, parts: { cash, savings: 20_000, assets: 0, pawna: 5_000, dena: 10_000 }, counts: { accounts: 1, assets: 0, pawna: 1, dena: 1 } });
+  const netWorth = { on: vi.fn().mockResolvedValue([worthOn('2026-10-31', 100_000), worthOn('2026-11-07', 155_750)]) };
+  return { service: new MoneyFlowService(prisma as never, loans as never, netWorth as never), prisma, loans, netWorth };
 };
 
 describe('MoneyFlowService', () => {
-  it('splits gifts from expenses and moves the net worth by income less expenses and asset value changes', async () => {
-    const { service, loans } = setup();
+  it('splits gifts from expenses, and moves the net worth by what the records held on both days', async () => {
+    const { service, loans, netWorth } = setup();
     const flow = await service.flow('b1', '2026-10-01', '2026-10-31', new Date('2026-11-07T06:00:00Z'));
     expect(flow).toEqual({
       dateFrom: '2026-10-01',
@@ -49,8 +41,9 @@ describe('MoneyFlowService', () => {
       loans: { took: 0, gotBack: 2_000, gave: 10_000, paidBack: 0 },
       assets: { bought: 30_000, sold: 0 },
       gifts: { gave: 1_500, got: 0 },
-      worthChange: 85_000 - 35_250 + 10_000 - 2_000,
+      worthChange: 55_750,
     });
+    expect(netWorth.on).toHaveBeenCalledWith('b1', ['2026-10-31', '2026-11-07'], '2026-11-07');
     expect(loans.loanFlow).toHaveBeenCalledWith('b1', '2026-10-01', '2026-10-31');
   });
 

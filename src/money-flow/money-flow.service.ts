@@ -3,6 +3,7 @@ import { Prisma } from '@prisma/client';
 import { dhakaDateKey } from '../common/dhaka.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { ReceivablesPayablesService } from '../receivables-payables/receivables-payables.service.js';
+import { NetWorthService, netOf } from './net-worth.service.js';
 
 const dateOf = (day: string) => new Date(`${day}T00:00:00.000Z`);
 const nextDay = (day: string) => new Date(dateOf(day).getTime() + 86_400_000);
@@ -13,13 +14,13 @@ const MAX_DAYS = 3 * 366;
 // expenses, what went into savings goals and came out, loans given, taken
 // and paid back, assets bought and sold, and cash gifts given at events
 // (kept apart from the expenses they are posted as). Also how much the net
-// worth moved this month: this month's income less expenses, and assets'
-// value changes.
+// worth moved since last month ended (NetWorthService, as Reports has it).
 @Injectable()
 export class MoneyFlowService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly receivablesPayables: ReceivablesPayablesService,
+    private readonly netWorth: NetWorthService,
   ) {}
 
   async flow(businessId: string, from: string, to: string, now = new Date()) {
@@ -74,23 +75,11 @@ export class MoneyFlowService {
     return taka(rows[0]?.amount);
   }
 
-  // Since the end of last month: this month's income less expenses, and
-  // what the assets still held gained or lost in value (moving money
-  // between wallets, goals, loans and assets changes nothing).
+  // Since the end of last month, from the records on both days.
   private async worthChangeThisMonth(businessId: string, now: Date): Promise<number> {
     const today = dhakaDateKey(now);
-    const monthStart = dateOf(`${today.slice(0, 7)}-01`);
-    const [pnl, assets] = await Promise.all([
-      this.profitAndLoss(businessId, monthStart, nextDay(today)),
-      this.prisma.asset.findMany({
-        where: { businessId, status: 'ACTIVE' },
-        select: { purchaseDate: true, purchasePrice: true, currentValue: true, valueHistory: { where: { recordedAt: { lt: monthStart } }, orderBy: { recordedAt: 'desc' }, take: 1, select: { value: true } } },
-      }),
-    ]);
-    const revalued = assets.reduce((sum, asset) => {
-      const before = asset.purchaseDate >= monthStart ? asset.purchasePrice : (asset.valueHistory[0]?.value ?? asset.purchasePrice);
-      return sum + taka(asset.currentValue) - taka(before);
-    }, 0);
-    return taka((pnl.get('INCOME')?.amount ?? 0) - (pnl.get('EXPENSE')?.amount ?? 0) + revalued);
+    const lastMonthEnd = new Date(dateOf(`${today.slice(0, 7)}-01`).getTime() - 86_400_000).toISOString().slice(0, 10);
+    const [before, after] = await this.netWorth.on(businessId, [lastMonthEnd, today], today);
+    return taka(netOf(after) - netOf(before));
   }
 }
