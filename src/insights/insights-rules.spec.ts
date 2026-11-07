@@ -98,3 +98,12 @@ describe('insights rules', () => {
     expect(owedAnswer(inputs({ reads: { transactions: true, savings: true, loans: false } }))).toBeNull();
   });
 });
+
+describe('insights rules without a category', () => {
+  it('keeps uncategorised money out of the advice, but not out of the totals', () => {
+    const plain = inputs({ expense: [{ month: '2026-10', category: 'Uncategorised', amount: TK(5_000) }], icons: new Map() });
+    expect(summary(plain, '2026-10')).toMatchObject({ expenses: TK(5_000), biggest: { name: 'Uncategorised' } });
+    expect(ways(plain, '2026-10')).toEqual([]);
+    expect(spendAnswer(plain, '2026-10')).toBeNull();
+  });
+});

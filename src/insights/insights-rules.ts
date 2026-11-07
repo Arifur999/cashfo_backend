@@ -1,3 +1,5 @@
+import { UNCATEGORISED } from '../budgets/app-categories.js';
+
 // AI Insights without a model: the summary, the to-dos, what happened and
 // the ways to save, worked out by plain rules from a workspace's own
 // figures. Pure, so the rules are tested; every amount is in paisa and
@@ -69,6 +71,8 @@ const sumOf = (rows: MonthMoney[], month: string, category?: string) =>
   rows.reduce((sum, row) => (row.month === month && (category === undefined || row.category === category) ? sum + row.amount : sum), 0);
 
 const categoriesOf = (rows: MonthMoney[]) => [...new Set(rows.map((row) => row.category))];
+// Money with no category says nothing about what to change.
+const namedOf = (rows: MonthMoney[]) => categoriesOf(rows).filter((name) => name !== UNCATEGORISED);
 
 const percent = (part: number, whole: number) => (whole > 0 ? Math.round((part / whole) * 100) : null);
 
@@ -140,7 +144,7 @@ export function todos(inputs: InsightInputs): Todo[] {
     if (tight) list.push({ kind: 'budget', key: `budget:${tight.name}:${thisMonth}`, name: tight.name, spent: tight.spent, limit: tight.limit, left: Math.max(0, tight.limit - tight.spent), over: tight.spent > tight.limit });
 
     const usualMonths = [1, 2, 3].map((back) => shiftMonth(thisMonth, -back));
-    const bill = categoriesOf(inputs.expense)
+    const bill = namedOf(inputs.expense)
       .filter((name) => name !== tight?.name)
       .map((name) => ({ name, now: sumOf(inputs.expense, thisMonth, name), usual: Math.round(usualMonths.reduce((sum, month) => sum + sumOf(inputs.expense, month, name), 0) / usualMonths.length) }))
       .filter((row) => row.usual >= USUAL_AT_LEAST && row.now >= row.usual * HIGHER_BY && row.now - row.usual >= HIGHER_AT_LEAST)
@@ -187,7 +191,7 @@ export function happenings(inputs: InsightInputs, month: string): Happening[] {
     const tone = before.keptPercent !== null && now.keptPercent < before.keptPercent ? 'watch' : 'good';
     list.push({ tone, kind: 'kept', percent: now.keptPercent, before: before.keptPercent, previous: now.previous });
   }
-  const rose = categoriesOf(inputs.expense)
+  const rose = namedOf(inputs.expense)
     .map((name) => ({ name, now: sumOf(inputs.expense, month, name), earlier: sumOf(inputs.expense, now.previous, name) }))
     .map((row) => ({ ...row, by: row.now - row.earlier }))
     .filter((row) => row.earlier > 0 && row.by >= ROSE_AT_LEAST && row.by >= row.earlier * 0.1)
@@ -225,7 +229,7 @@ export interface Way {
 export function ways(inputs: InsightInputs, month: string): Way[] {
   if (!inputs.reads.transactions) return [];
   const months = [0, -1, -2].map((back) => shiftMonth(month, back));
-  const biggestFirst = categoriesOf(inputs.expense)
+  const biggestFirst = namedOf(inputs.expense)
     .map((name) => ({ name, average: months.reduce((sum, key) => sum + sumOf(inputs.expense, key, name), 0) / months.length }))
     .filter((row) => row.average > 0)
     .sort((a, b) => b.average - a.average);
@@ -251,7 +255,7 @@ export function ways(inputs: InsightInputs, month: string): Way[] {
 export function spendAnswer(inputs: InsightInputs, month: string) {
   if (!inputs.reads.transactions) return null;
   const months = [-2, -1, 0].map((back) => shiftMonth(month, back));
-  const top = categoriesOf(inputs.expense)
+  const top = namedOf(inputs.expense)
     .map((name) => ({ name, total: months.reduce((sum, key) => sum + sumOf(inputs.expense, key, name), 0) }))
     .filter((row) => row.total > 0)
     .sort((a, b) => b.total - a.total)[0];
