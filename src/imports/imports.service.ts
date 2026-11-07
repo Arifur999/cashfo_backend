@@ -57,7 +57,8 @@ export class ImportsService {
 
     let added = 0;
     let already = 0;
-    const skipped: { row: number; reason: string }[] = [];
+    // The reason is the page's own words (a dictionary key), {value} filled from value.
+    const skipped: { row: number; reason: string; value?: string }[] = [];
     for (const row of dto.rows) {
       if (done.has(keyOf(row))) {
         already++;
@@ -68,12 +69,12 @@ export class ImportsService {
         continue;
       }
       if (!(row.amount > 0)) {
-        skipped.push({ row: row.row, reason: 'The amount must be more than 0.' });
+        skipped.push({ row: row.row, reason: '“{value}” is not an amount.', value: String(row.amount) });
         continue;
       }
       const wallet = row.wallet ? wallets.find((one) => same(one.name, row.wallet!)) : wallets[0];
       if (!wallet) {
-        skipped.push({ row: row.row, reason: row.wallet ? `No wallet named "${row.wallet}".` : 'Add a wallet first.' });
+        skipped.push(row.wallet ? { row: row.row, reason: 'No wallet named “{value}”.', value: row.wallet } : { row: row.row, reason: 'Add a wallet first.' });
         continue;
       }
       // An existing category in its own spelling, or a new one.
