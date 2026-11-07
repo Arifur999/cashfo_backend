@@ -1,0 +1,7 @@
+-- AlterEnum
+ALTER TYPE "AiSection" ADD VALUE 'BUDGET';
+ALTER TYPE "AiSection" ADD VALUE 'ASSETS';
+
+-- AlterTable
+ALTER TABLE "User" ADD COLUMN     "shareUsage" BOOLEAN NOT NULL DEFAULT true,
+ADD COLUMN     "showNameInGroups" BOOLEAN NOT NULL DEFAULT true;

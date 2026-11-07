@@ -38,7 +38,11 @@ export class UsageEventsService {
       deviceType: classifyDeviceType(client.userAgent),
       country: placeOfIp(client.ipAddress ?? null),
     };
-    void this.prisma.usageEvent.create({ data, select: { id: true } }).catch((error: unknown) => {
+    // Settings › Data & privacy: nothing is counted for someone who said no.
+    void this.prisma.user
+      .count({ where: { id: userId, shareUsage: false } })
+      .then((optedOut) => (optedOut ? null : this.prisma.usageEvent.create({ data, select: { id: true } })))
+      .catch((error: unknown) => {
       this.logger.warn(`Could not record usage event ${eventType}: ${error instanceof Error ? error.message : String(error)}`);
     });
   }

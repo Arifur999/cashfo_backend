@@ -927,6 +927,11 @@ model User {
   // The Dhaka day the last daily or weekly summary was sent (claimed), so
   // two servers or two ticks never send it twice.
   periodSummarySentOn     String?
+  // Settings › Data & privacy: which pages they open and what breaks may be
+  // counted (never amounts or names), and their name shown to members of
+  // their groups (initials when off).
+  shareUsage              Boolean                  @default(true)
+  showNameInGroups        Boolean                  @default(true)
   createdAt               DateTime                 @default(now())
   updatedAt               DateTime                 @updatedAt
   memberships             BusinessMember[]
@@ -3298,6 +3303,8 @@ enum AiSection {
   SAVINGS
   LOANS
   GROUPS
+  BUDGET
+  ASSETS
 }
 
 // Someone gifts go to or come from: a cousin, a colleague.

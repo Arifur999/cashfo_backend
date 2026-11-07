@@ -43,6 +43,7 @@ export const anonymisedUser = (userId: string) => ({
   monthlySummaryEmail: false,
   aiInsights: false,
   aiMorning: false,
+  shareUsage: false,
   alertNewDevice: false,
   alertFailedTries: false,
   askCodeBeforeReset: false,
