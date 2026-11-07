@@ -155,6 +155,7 @@ export class MailService {
   }
 
   // Settings > App > Reminders > Monthly summary by email.
+  // A month's summary, or (with email.kind) a day's or a week's.
   async sendMonthlySummaryEmail(to: string, locale: 'en' | 'bn', email: MonthlySummaryEmail): Promise<void> {
     await this.sendEmail({ to, ...renderMonthlySummaryEmail(locale, email, await this.platformName()) });
   }

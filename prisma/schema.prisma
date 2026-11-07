@@ -924,6 +924,9 @@ model User {
   // days and the summary (notification-prefs.ts); null is the defaults.
   notificationPrefs       Json?
   monthlySummarySentFor   String?
+  // The Dhaka day the last daily or weekly summary was sent (claimed), so
+  // two servers or two ticks never send it twice.
+  periodSummarySentOn     String?
   createdAt               DateTime                 @default(now())
   updatedAt               DateTime                 @updatedAt
   memberships             BusinessMember[]
