@@ -9,7 +9,10 @@ import { PrismaService } from '../prisma/prisma.service.js';
 import { PushService } from '../push/push.service.js';
 import { TransactionsService } from '../transactions/transactions.service.js';
 import { CreateEventDto, CreateGiftDto, UpdateEventDto, UpdateGiftDto, UpdatePersonDto } from './dto/events.dto.js';
-import { reminderDay, reminderKey } from './event-reminders.js';
+import { daysBetween, reminderKey, reminderToday } from './event-reminders.js';
+import { EVENT_DAYS, resolvePrefs } from '../notification-prefs/notification-prefs.js';
+import { NotificationPrefsService } from '../notification-prefs/notification-prefs.service.js';
+import { SmsService } from '../sms/sms.service.js';
 
 const FIVE_MINUTES = 5 * 60 * 1000;
 const GIFT_DELETED = 'Gift deleted from Calendar & Events';
@@ -45,6 +48,8 @@ export class EventsService implements OnModuleInit {
     private readonly push: PushService,
     private readonly housekeeping: HousekeepingScheduler,
     private readonly transactions: TransactionsService,
+    private readonly prefs: NotificationPrefsService,
+    private readonly sms: SmsService,
   ) {}
 
   onModuleInit() {
@@ -174,23 +179,27 @@ export class EventsService implements OnModuleInit {
     return personView(updated);
   }
 
-  // Tomorrow's events with a reminder on, as bell rows for the workspace's
-  // owner: one per event and day (the key), so a second server or a later
-  // tick never writes it twice; only new rows are pushed.
+  // Events with a reminder on, as bell rows for the workspace's owner, as
+  // many days before as they asked (a day unless they chose otherwise):
+  // one per event and day (the key), so a second server or a later tick
+  // never writes it twice; only new rows are pushed, or sent by SMS (Pro).
   async sendReminders(now: Date) {
-    const day = reminderDay(now);
-    if (!day) return;
-    const due = await this.prisma.socialEvent.findMany({
-      where: { remind: true, date: dateOf(day), business: { owner: { status: 'ACTIVE' } } },
-      select: { id: true, title: true, date: true, time: true, place: true, businessId: true, business: { select: { ownerId: true } } },
+    const today = reminderToday(now);
+    if (!today) return;
+    const latest = new Date(dateOf(today).getTime() + Math.max(...EVENT_DAYS) * 86_400_000);
+    const upcoming = await this.prisma.socialEvent.findMany({
+      where: { remind: true, date: { gt: dateOf(today), lte: latest }, business: { owner: { status: 'ACTIVE' } } },
+      select: { id: true, title: true, date: true, time: true, place: true, businessId: true, business: { select: { ownerId: true, owner: { select: { notificationPrefs: true } } } } },
     });
+    const due = upcoming.filter((event) => daysBetween(today, dayOf(event.date)) === resolvePrefs(event.business.owner.notificationPrefs).eventDaysBefore);
     if (due.length === 0) return;
+    const day = today;
     const inserted = await this.prisma.userNotification.createManyAndReturn({
       data: due.map((event) => ({
         userId: event.business.ownerId,
         businessId: event.businessId,
         type: 'EVENT' as const,
-        key: reminderKey(event.id, day),
+        key: reminderKey(event.id, dayOf(event.date)),
         data: { eventId: event.id, title: event.title, date: dayOf(event.date), time: event.time, place: event.place, url: '/events' } satisfies EventReminderData as unknown as Prisma.InputJsonObject,
       })),
       skipDuplicates: true,
@@ -204,16 +213,33 @@ export class EventsService implements OnModuleInit {
           return {
             userId: row.userId,
             alert: 'event' as const,
-            build: (locale: 'en' | 'bn') =>
-              locale === 'bn'
-                ? { title: data.title, body: `আগামীকাল${data.time ? ` ${data.time}` : ''}${data.place ? ` · ${data.place}` : ''}`, url: data.url, tag: `event-${data.eventId}` }
-                : { title: data.title, body: `Tomorrow${data.time ? ` at ${data.time}` : ''}${data.place ? ` · ${data.place}` : ''}`, url: data.url, tag: `event-${data.eventId}` },
+            build: (locale: 'en' | 'bn') => ({ title: data.title, body: whenText(data, day, locale), url: data.url, tag: `event-${data.eventId}` }),
           };
         }),
       );
     } catch (error) {
       // The bell has them; a push that fails is only logged.
       this.logger.warn(`Event reminder push failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    await this.textReminders(inserted, day, now);
+  }
+
+  // An SMS to owners on Pro who asked for event reminders by SMS, outside
+  // their quiet hours, at their verified number. A failed one is only logged.
+  private async textReminders(rows: { userId: string; data: Prisma.JsonValue }[], day: string, now: Date) {
+    if (!this.sms.configured || rows.length === 0) return;
+    const people = await this.prefs.forUsers([...new Set(rows.map((row) => row.userId))]);
+    const phones = await this.prisma.user.findMany({ where: { id: { in: [...people.keys()] }, phoneVerifiedAt: { not: null } }, select: { id: true, phone: true, preferredLanguage: true } });
+    for (const row of rows) {
+      const person = phones.find((user) => user.id === row.userId);
+      if (!person?.phone || !this.prefs.allowed(people.get(row.userId), 'event', 'sms', now)) continue;
+      const data = row.data as unknown as EventReminderData;
+      const locale = person.preferredLanguage === 'BN' ? 'bn' : 'en';
+      try {
+        await this.sms.send(person.phone, `Smartly: ${data.title}, ${whenText(data, day, locale)}`);
+      } catch (error) {
+        this.logger.warn(`Event reminder SMS failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
     }
   }
 
@@ -329,4 +355,12 @@ function eventView(event: EventRow) {
     remind: event.remind,
     gifts: event.gifts.map(giftView),
   };
+}
+
+// "Tomorrow at 13:00 · Mirpur", "In 3 days", in the person's language.
+function whenText(data: EventReminderData, today: string, locale: 'en' | 'bn'): string {
+  const days = daysBetween(today, data.date);
+  const when = locale === 'bn' ? (days === 1 ? 'আগামীকাল' : `${days} দিন পর`) : days === 1 ? 'Tomorrow' : `In ${days} days`;
+  const time = data.time ? (locale === 'bn' ? ` ${data.time}` : ` at ${data.time}`) : '';
+  return `${when}${time}${data.place ? ` · ${data.place}` : ''}`;
 }

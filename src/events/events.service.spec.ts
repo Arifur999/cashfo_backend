@@ -41,7 +41,7 @@ const setup = (opts: { people?: { id: string; name: string }[]; event?: Record<s
   const push = { send: vi.fn(() => Promise.resolve(0)) };
   const housekeeping = { register: vi.fn() };
   const transactions = { createTransaction: vi.fn(() => Promise.resolve({ id: 'tx-gift' })), voidTransaction: vi.fn(() => Promise.resolve({})) };
-  return { service: new EventsService(prisma as never, push as never, housekeeping as never, transactions as never), prisma, tx, push, transactions };
+  return { service: new EventsService(prisma as never, push as never, housekeeping as never, transactions as never, { forUsers: vi.fn().mockResolvedValue(new Map()), allowed: () => false } as never, { configured: false } as never), prisma, tx, push, transactions };
 };
 
 const event = (over: Partial<CreateEventDto> = {}) => ({ type: 'WEDDING', title: "Sumaiya Apu's wedding", date: '2026-11-07', mine: false, ...over }) as CreateEventDto;
@@ -122,8 +122,12 @@ describe('EventsService', () => {
     const { service, prisma } = setup();
     await service.sendReminders(new Date('2026-11-05T02:00:00.000Z'));
     expect(prisma.socialEvent.findMany).not.toHaveBeenCalled();
-    prisma.socialEvent.findMany.mockResolvedValueOnce([{ id: 'ev3', title: 'Milad', date: new Date('2026-11-06T00:00:00.000Z'), time: '17:00', place: null, businessId: 'biz-1', business: { ownerId: 'u1' } }] as never);
+    const event = (id: string, date: string, ownerId: string, eventDaysBefore?: number) => ({ id, title: 'Milad', date: new Date(`${date}T00:00:00.000Z`), time: '17:00', place: null, businessId: 'biz-1', business: { ownerId, owner: { notificationPrefs: eventDaysBefore ? { eventDaysBefore } : null } } });
+    prisma.socialEvent.findMany.mockResolvedValueOnce([event('ev3', '2026-11-06', 'u1'), event('ev4', '2026-11-08', 'u1'), event('ev5', '2026-11-08', 'u2', 3)] as never);
     await service.sendReminders(new Date('2026-11-05T04:00:00.000Z'));
-    expect(prisma.userNotification.createManyAndReturn).toHaveBeenCalledWith(expect.objectContaining({ data: [expect.objectContaining({ userId: 'u1', type: 'EVENT', key: 'event:ev3:2026-11-06' })], skipDuplicates: true }));
+    // A day before by default; three days before for the owner who asked.
+    expect(prisma.userNotification.createManyAndReturn).toHaveBeenCalledWith(
+      expect.objectContaining({ data: [expect.objectContaining({ userId: 'u1', type: 'EVENT', key: 'event:ev3:2026-11-06' }), expect.objectContaining({ userId: 'u2', key: 'event:ev5:2026-11-08' })], skipDuplicates: true }),
+    );
   });
 });
