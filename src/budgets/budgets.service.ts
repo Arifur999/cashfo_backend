@@ -255,7 +255,25 @@ export class BudgetsService {
   }
 
   // "Set monthly budget": makes the month's plan or replaces its figures.
+  // An edit that picked another month (from*) moves its plan there, notes
+  // and all, unless that month has a plan of its own.
   async saveMonthlyPlan(businessId: string, dto: SaveMonthlyPlanDto) {
+    if ((dto.fromMonth === undefined) !== (dto.fromYear === undefined)) throw new BadRequestException('Send both fromMonth and fromYear, or neither');
+    if (dto.fromMonth !== undefined && dto.fromYear !== undefined && (dto.fromMonth !== dto.month || dto.fromYear !== dto.year)) {
+      const from = { year: dto.fromYear, month: dto.fromMonth };
+      await this.prisma.$transaction(async (tx) => {
+        const plan = await tx.incomeGoal.findUnique({ where: { businessId_year_month: { businessId, ...from } } });
+        if (!plan) throw new NotFoundException('That plan no longer exists');
+        const taken = await tx.incomeGoal.findUnique({ where: { businessId_year_month: { businessId, year: dto.year, month: dto.month } } });
+        if (taken) throw new ConflictException('That month already has a plan');
+        // Two moves into the same month at once: the unique key refuses the second (409).
+        await tx.incomeGoal.update({
+          where: { id: plan.id },
+          data: { year: dto.year, month: dto.month, amount: dto.incomeTarget, expenseBudget: dto.expenseBudget },
+        });
+      });
+      return this.getMonthlyPlan(businessId, dto.year, dto.month);
+    }
     await this.prisma.incomeGoal.upsert({
       where: { businessId_year_month: { businessId, year: dto.year, month: dto.month } },
       create: { businessId, year: dto.year, month: dto.month, amount: dto.incomeTarget, expenseBudget: dto.expenseBudget },

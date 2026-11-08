@@ -7,7 +7,8 @@ const money = (value: number | null) => ({ _sum: { amount: value === null ? null
 
 const setup = () => {
   const prisma = {
-    incomeGoal: { findMany: vi.fn(), findUnique: vi.fn(), upsert: vi.fn() },
+    incomeGoal: { findMany: vi.fn(), findUnique: vi.fn(), upsert: vi.fn(), update: vi.fn() },
+    $transaction: vi.fn(),
     transactionEntry: { aggregate: vi.fn(), groupBy: vi.fn() },
     budgetCategory: { findUnique: vi.fn().mockResolvedValue(null), findMany: vi.fn(), create: vi.fn((args: unknown) => Promise.resolve(args)) },
   };
@@ -15,8 +16,17 @@ const setup = () => {
   prisma.transactionEntry.aggregate.mockImplementation(({ where }: { where: { transaction: { transactionType: string } } }) =>
     Promise.resolve(money(where.transaction.transactionType === 'INCOME' ? 120500 : 63000)),
   );
+  prisma.$transaction.mockImplementation((run: (tx: typeof prisma) => unknown) => run(prisma));
   return { service: new BudgetsService(prisma as never), prisma };
 };
+
+const plan = (month: number, year: number) => ({
+  id: `g-${year}-${month}`,
+  month,
+  year,
+  amount: new Prisma.Decimal(135000),
+  expenseBudget: new Prisma.Decimal(72000),
+});
 
 describe('monthly plans', () => {
   it('reads a month with no plan as null figures and its real totals', async () => {
@@ -51,6 +61,52 @@ describe('monthly plans', () => {
       update: { amount: 135000, expenseBudget: 72000 },
     });
     expect(saved).toMatchObject({ id: 'g1', incomeTarget: '135000.00', expenseBudget: '72000.00', earned: '120500.00', spent: '63000.00' });
+  });
+
+  it('moves an edited plan to the month picked, notes and all', async () => {
+    const { service, prisma } = setup();
+    prisma.incomeGoal.findUnique.mockImplementation(({ where }: { where: { businessId_year_month: { year: number; month: number } } }) => {
+      const { year, month } = where.businessId_year_month;
+      // The plan is in October; November is free until it lands there.
+      if (month === 10) return Promise.resolve(plan(10, 2026));
+      return Promise.resolve(prisma.incomeGoal.update.mock.calls.length ? plan(month, year) : null);
+    });
+    await service.saveMonthlyPlan('biz-1', { month: 11, year: 2026, incomeTarget: 140000, expenseBudget: 70000, fromMonth: 10, fromYear: 2026 });
+    expect(prisma.incomeGoal.update).toHaveBeenCalledWith({
+      where: { id: 'g-2026-10' },
+      data: { year: 2026, month: 11, amount: 140000, expenseBudget: 70000 },
+    });
+    expect(prisma.incomeGoal.upsert).not.toHaveBeenCalled();
+  });
+
+  it("won't move a plan onto a month that has one", async () => {
+    const { service, prisma } = setup();
+    prisma.incomeGoal.findUnique.mockImplementation(({ where }: { where: { businessId_year_month: { year: number; month: number } } }) =>
+      Promise.resolve(plan(where.businessId_year_month.month, where.businessId_year_month.year)),
+    );
+    await expect(service.saveMonthlyPlan('biz-1', { month: 9, year: 2026, incomeTarget: 1, expenseBudget: 1, fromMonth: 10, fromYear: 2026 })).rejects.toThrow(
+      'That month already has a plan',
+    );
+    expect(prisma.incomeGoal.update).not.toHaveBeenCalled();
+  });
+
+  it('says so when the plan to move is gone', async () => {
+    const { service, prisma } = setup();
+    prisma.incomeGoal.findUnique.mockResolvedValue(null);
+    await expect(service.saveMonthlyPlan('biz-1', { month: 9, year: 2026, incomeTarget: 1, expenseBudget: 1, fromMonth: 10, fromYear: 2026 })).rejects.toThrow(
+      'That plan no longer exists',
+    );
+  });
+
+  it('treats a plan edited in its own month as a plain save, and wants both from fields', async () => {
+    const { service, prisma } = setup();
+    prisma.incomeGoal.findUnique.mockResolvedValue(plan(10, 2026));
+    await service.saveMonthlyPlan('biz-1', { month: 10, year: 2026, incomeTarget: 1, expenseBudget: 1, fromMonth: 10, fromYear: 2026 });
+    expect(prisma.incomeGoal.upsert).toHaveBeenCalledTimes(1);
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+    await expect(service.saveMonthlyPlan('biz-1', { month: 10, year: 2026, incomeTarget: 1, expenseBudget: 1, fromMonth: 9 })).rejects.toThrow(
+      'Send both fromMonth and fromYear',
+    );
   });
 
   it('lists every plan newest first, an old plan without a budget reading null', async () => {
