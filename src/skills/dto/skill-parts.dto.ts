@@ -99,6 +99,10 @@ export class UpdateSkillNoteDto {
   title?: string;
 
   @ValidateIf(whenSent)
+  @Matches(DAY, { message: 'date must look like 2026-11-14' })
+  date?: string;
+
+  @ValidateIf(whenSent)
   @IsString()
   @MaxLength(SKILL_LIMITS.noteText + 200)
   text?: string;

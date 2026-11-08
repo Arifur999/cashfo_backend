@@ -521,7 +521,8 @@ export class SkillsService {
     const text = dto.text !== undefined ? cleanLongText(dto.text, 'note', SKILL_LIMITS.noteText) : note.text;
     if (!text) throw new BadRequestException('Write the note first');
     const title = noteTitle(dto.title !== undefined ? cleanOptionalText(dto.title, 'title', SKILL_LIMITS.noteTitle) : note.title, text);
-    return toNote(await this.prisma.skillNote.update({ where: { id: noteId }, data: { title, text } }));
+    const date = dto.date !== undefined ? asDate(pastDay(dto.date, dhakaDateKey(new Date()))) : note.date;
+    return toNote(await this.prisma.skillNote.update({ where: { id: noteId }, data: { title, text, date } }));
   }
 
   async removeNote(userId: string, id: string, noteId: string): Promise<{ id: string }> {
