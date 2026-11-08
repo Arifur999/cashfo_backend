@@ -37,10 +37,12 @@ describe('tickets with no reply', () => {
 
   it("waits on the customer's newest message, or the opening when nobody wrote", () => {
     expect(waitingForReply({ status: 'OPEN', createdAt: at('2026-10-02T01:00Z'), newest: null })).toEqual(at('2026-10-02T01:00Z'));
-    expect(waitingForReply({ status: 'IN_PROGRESS', createdAt: at('2026-10-01T00:00Z'), newest: { senderType: 'USER', createdAt: at('2026-10-02T03:00Z') } })).toEqual(
-      at('2026-10-02T03:00Z'),
-    );
-    expect(waitingForReply({ status: 'IN_PROGRESS', createdAt: at('2026-10-01T00:00Z'), newest: { senderType: 'ADMIN', createdAt: at('2026-10-02T03:00Z') } })).toBeNull();
+    expect(
+      waitingForReply({ status: 'IN_PROGRESS', createdAt: at('2026-10-01T00:00Z'), newest: { senderType: 'USER', createdAt: at('2026-10-02T03:00Z') } }),
+    ).toEqual(at('2026-10-02T03:00Z'));
+    expect(
+      waitingForReply({ status: 'IN_PROGRESS', createdAt: at('2026-10-01T00:00Z'), newest: { senderType: 'ADMIN', createdAt: at('2026-10-02T03:00Z') } }),
+    ).toBeNull();
     expect(waitingForReply({ status: 'RESOLVED', createdAt: at('2026-10-01T00:00Z'), newest: null })).toBeNull();
   });
 
@@ -80,7 +82,10 @@ describe('accountsByPlan', () => {
 
 describe('lastFullMonths', () => {
   it('leaves out the month still running and compares the last two whole ones', () => {
-    const trend = ['2026-03', '2026-04', '2026-05', '2026-06', '2026-07', '2026-08', '2026-09', '2026-10'].map((month, i) => ({ month, amount: 1000 * (i + 1) }));
+    const trend = ['2026-03', '2026-04', '2026-05', '2026-06', '2026-07', '2026-08', '2026-09', '2026-10'].map((month, i) => ({
+      month,
+      amount: 1000 * (i + 1),
+    }));
     trend[6].amount = 72_155;
     trend[5].amount = 64_120;
     const { months, changePct } = lastFullMonths(trend, '2026-10', 6);

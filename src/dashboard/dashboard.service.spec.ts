@@ -119,11 +119,19 @@ describe('DashboardService.summary', () => {
     expect(summary.system).toBeNull();
   });
 
-  it("names what each recent change was on, who made it and why, leaving sign-ins out", async () => {
+  it('names what each recent change was on, who made it and why, leaving sign-ins out', async () => {
     const { service, prisma } = setup();
     const at = new Date('2026-10-02T05:00:00.000Z');
     prisma.auditLog.findMany.mockResolvedValue([
-      { id: 'l1', action: 'USER_SUSPENDED', entityType: 'User', entityId: 'u-abir', newValue: { reason: 'Spam invites' }, createdAt: at, adminUser: { name: 'Imran', role: 'SUPPORT_ADMIN' } },
+      {
+        id: 'l1',
+        action: 'USER_SUSPENDED',
+        entityType: 'User',
+        entityId: 'u-abir',
+        newValue: { reason: 'Spam invites' },
+        createdAt: at,
+        adminUser: { name: 'Imran', role: 'SUPPORT_ADMIN' },
+      },
     ]);
     Object.assign(prisma.user, { findMany: vi.fn().mockResolvedValue([{ id: 'u-abir', name: 'Abir Hasan', createdAt: at }]) });
     const summary = await service.summary({ id: 'admin-1', role: 'SUPER_ADMIN' });
@@ -131,5 +139,93 @@ describe('DashboardService.summary', () => {
     expect(summary.recentAuditLogs).toEqual([
       expect.objectContaining({ id: 'l1', entityLabel: 'Abir Hasan', adminName: 'Imran', adminRole: 'SUPPORT_ADMIN', reason: 'Spam invites' }),
     ]);
+  });
+});
+
+describe('DashboardService.overview', () => {
+  // NOW is 2 Oct 2026 12:00 in Dhaka.
+  const withHistory = () => {
+    const ctx = setup();
+    const { prisma } = ctx;
+    Object.assign(prisma, {
+      userSession: { findMany: vi.fn().mockResolvedValue([{ userId: 'a' }, { userId: 'b' }, { userId: 'c' }]) },
+      refund: { aggregate: vi.fn().mockResolvedValue({ _sum: { amount: 10 } }) },
+    });
+    prisma.subscriptionPlan.findMany.mockResolvedValue([
+      { id: 'free', name: 'Free', price: 0, billingCycle: 'FREE' },
+      { id: 'monthly', name: 'Monthly Pro', price: 199, billingCycle: 'MONTHLY' },
+      { id: 'yearly', name: 'Yearly Pro', price: 1920, billingCycle: 'YEARLY' },
+    ]);
+    Object.assign(prisma.payment, {
+      findMany: vi
+        .fn()
+        // Who had paid: one monthly payer in late August, one yearly payer in March.
+        .mockResolvedValueOnce([
+          {
+            userId: 'm1',
+            platformUserId: null,
+            planId: 'monthly',
+            paidAt: new Date('2026-08-20T06:00:00.000Z'),
+            createdAt: new Date('2026-08-20T06:00:00.000Z'),
+          },
+          { userId: 'y1', platformUserId: null, planId: 'yearly', paidAt: null, createdAt: new Date('2026-03-05T06:00:00.000Z') },
+        ])
+        // The revenue chart's payments.
+        .mockResolvedValueOnce([
+          { amount: 199, createdAt: new Date('2026-08-20T06:00:00.000Z'), refund: null },
+          { amount: 199, createdAt: new Date('2026-08-25T06:00:00.000Z'), refund: { amount: 50, status: 'COMPLETED' } },
+        ]),
+      aggregate: vi
+        .fn()
+        .mockResolvedValueOnce({ _sum: { amount: 398 } })
+        .mockResolvedValueOnce({ _sum: { amount: 0 } }),
+    });
+    return ctx;
+  };
+
+  it('counts a month gone by from what was paid then', async () => {
+    const { service, prisma } = withHistory();
+    prisma.user.count.mockResolvedValue(10);
+    const overview = await service.overview({ id: 'admin-1', role: 'SUPER_ADMIN' }, { from: '2026-08-01', to: '2026-08-31' });
+
+    expect(overview.range).toEqual({ from: '2026-08-01', to: '2026-08-31', kind: 'month', unit: 'day', isNow: false });
+    expect(overview.signups.points).toHaveLength(31);
+    expect(overview.active).toEqual({ count: 3, accounts: 10, pct: 30 });
+    // On 31 August: the monthly payer (paid 20 Aug) and the yearly one.
+    expect(overview.money?.paidUsers).toEqual({
+      total: 2,
+      pctOfAccounts: 20,
+      byPlan: [
+        { planId: 'monthly', planName: 'Monthly Pro', count: 1 },
+        { planId: 'yearly', planName: 'Yearly Pro', count: 1 },
+      ],
+    });
+    expect(overview.money?.mrr).toBe(359);
+    // On 1 August only the yearly payer was paid up.
+    expect(overview.money?.mrrChange).toEqual({ pct: 124.4, amount: 199, before: 160 });
+    expect(overview.money?.accountsByPlan.map((plan) => plan.count)).toEqual([8, 1, 1]);
+    expect(overview.money?.revenue.months.map((row) => row.month)).toEqual(['2026-03', '2026-04', '2026-05', '2026-06', '2026-07', '2026-08']);
+    expect(overview.money?.revenue.months.at(-1)?.amount).toBe('348.00');
+    expect(overview.money?.revenue).toMatchObject({ total: '388.00', previous: { from: '2026-07-01', to: '2026-07-31', total: '-10.00' } });
+    // The live subscriptions are only read for a period that runs to today.
+    expect(prisma.userSubscription.groupBy).not.toHaveBeenCalled();
+  });
+
+  it('counts the running month from the live subscriptions', async () => {
+    const { service, prisma } = withHistory();
+    Object.assign(prisma.userSubscription, { findMany: vi.fn().mockResolvedValue([{ lockedPrice: 199, plan: { price: 199, billingCycle: 'MONTHLY' } }]) });
+    const overview = await service.overview({ id: 'admin-1', role: 'SUPER_ADMIN' }, { from: '2026-10-01', to: '2026-10-31' });
+    expect(overview.range).toMatchObject({ to: '2026-10-02', isNow: true });
+    expect(overview.money?.paidUsers.byPlan).toEqual([{ planId: 'monthly', planName: 'Monthly Pro', count: 2 }]);
+    expect(overview.money?.mrr).toBe(199);
+    expect(prisma.userSubscription.groupBy).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps the money from a support admin and refuses a backwards period', async () => {
+    const { service } = withHistory();
+    const overview = await service.overview({ id: 'admin-2', role: 'SUPPORT_ADMIN' }, { from: '2026-09-01', to: '2026-09-30' });
+    expect(overview.money).toBeNull();
+    expect(overview.system).toBeNull();
+    await expect(service.overview({ id: 'admin-1', role: 'SUPER_ADMIN' }, { from: '2026-09-30', to: '2026-09-01' })).rejects.toThrow('on or before');
   });
 });

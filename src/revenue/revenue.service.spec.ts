@@ -1,6 +1,6 @@
 import { RevenueService } from './revenue.service.js';
 
-vi.mock('./mrr.js', () => ({ computeMrr: vi.fn().mockResolvedValue(299), PAID_SUBSCRIPTION_WHERE: {} }));
+vi.mock('./mrr.js', () => ({ computeMrr: vi.fn().mockResolvedValue(299), PAID_SUBSCRIPTION_WHERE: {}, REVENUE_STATUSES: ['SUCCESS', 'REFUNDED'] }));
 
 const NOW = new Date('2026-10-20T06:00:00.000Z');
 
@@ -33,7 +33,12 @@ describe('RevenueService.overview', () => {
       payment: {
         findMany: vi
           .fn()
-          .mockResolvedValue([payment('u-new-1', '2026-10-05T06:00:00.000Z'), payment('u-new-2', '2026-10-12T06:00:00.000Z'), payment('u-old', '2026-09-25T06:00:00.000Z'), payment('u-old', '2026-10-15T06:00:00.000Z')]),
+          .mockResolvedValue([
+            payment('u-new-1', '2026-10-05T06:00:00.000Z'),
+            payment('u-new-2', '2026-10-12T06:00:00.000Z'),
+            payment('u-old', '2026-09-25T06:00:00.000Z'),
+            payment('u-old', '2026-10-15T06:00:00.000Z'),
+          ]),
       },
       referral: { count: vi.fn().mockResolvedValue(1) },
     };
