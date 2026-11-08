@@ -1719,6 +1719,7 @@ model BookGoal {
 enum SkillUnit {
   LESSONS
   HOURS
+  CHAPTERS
 }
 
 enum SkillStatus {
@@ -1751,9 +1752,75 @@ model Skill {
   completedAt    DateTime?
   createdAt      DateTime    @default(now())
   updatedAt      DateTime    @updatedAt
+  // The v16 Skills pages. Its group (SKILL_CATEGORIES), a link to the
+  // course, the reason it is learned, the day it should be done by.
+  category       String      @default("life")
+  link           String      @default("")
+  why            String      @default("")
+  targetDate     DateTime?   @db.Date
+  // Put down for now: still LEARNING, shown under Up next until resumed.
+  pausedAt       DateTime?
+  // Ground covered before it was tracked here ("Already done"), in its unit
+  // (minutes for HOURS). progress = base + every day logged, capped at the
+  // target (the target itself once COMPLETED).
+  base           Int         @default(0)
+  // Deleted, kept a while so the delete can be undone; purged by
+  // housekeeping (SkillsHousekeeping). Every read leaves these out.
+  deletedAt      DateTime?
   logs           SkillLog[]
+  steps          SkillStep[]
+  notes          SkillNote[]
+  resources      SkillResource[]
 
   @@index([userId, status])
+}
+
+// One step on a skill's roadmap, ticked off when done.
+model SkillStep {
+  id        String    @id @default(uuid())
+  skillId   String
+  skill     Skill     @relation(fields: [skillId], references: [id], onDelete: Cascade)
+  title     String
+  position  Int
+  done      Boolean   @default(false)
+  doneOn    DateTime? @db.Date
+  createdAt DateTime  @default(now())
+
+  @@index([skillId, position])
+}
+
+// A note written while learning: a title (made from the text when left
+// out), the text, and the day.
+model SkillNote {
+  id        String   @id @default(uuid())
+  skillId   String
+  skill     Skill    @relation(fields: [skillId], references: [id], onDelete: Cascade)
+  date      DateTime @db.Date
+  title     String
+  text      String
+  createdAt DateTime @default(now())
+
+  @@index([skillId, date])
+}
+
+enum SkillResourceKind {
+  COURSE
+  VIDEO
+  BOOK
+  LINK
+}
+
+// A course, video, book or link the skill is learned from.
+model SkillResource {
+  id        String            @id @default(uuid())
+  skillId   String
+  skill     Skill             @relation(fields: [skillId], references: [id], onDelete: Cascade)
+  kind      SkillResourceKind
+  title     String
+  url       String            @default("")
+  createdAt DateTime          @default(now())
+
+  @@index([skillId, createdAt])
 }
 
 // How much was learned on a calendar day (Asia/Dhaka), per skill -- drives the
@@ -1767,6 +1834,8 @@ model SkillLog {
   userId  String
   date    DateTime @db.Date
   amount  Int // lessons, or minutes, in the skill's unit
+  // What was learned that day (the practice entry's note).
+  note    String   @default("")
 
   @@unique([skillId, date])
   @@index([userId, date])
