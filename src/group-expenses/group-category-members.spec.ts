@@ -27,7 +27,10 @@ const setup = (category: Record<string, unknown> = {}) => {
       create: vi.fn(async ({ data }: { data: unknown }) => data),
       update: vi.fn(async ({ data }: { data: unknown }) => data),
     },
-    groupExpense: { create: vi.fn(async ({ data }: { data: unknown }) => data) },
+    groupExpense: { create: vi.fn(async ({ data }: { data: unknown }) => data), updateMany: vi.fn() },
+    groupSettings: { findUnique: vi.fn().mockResolvedValue(null) },
+    groupActivity: { create: vi.fn() },
+    $transaction: vi.fn(async (work: (tx: unknown) => unknown) => work(prisma)),
   };
   return { service: new GroupExpensesService(prisma as never), prisma };
 };

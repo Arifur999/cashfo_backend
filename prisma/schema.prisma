@@ -1943,6 +1943,7 @@ model Business {
   groupExpenseCategoryOptions GroupExpenseCategoryOption[]
   groupMonthlyBudgets         GroupMonthlyBudget[]
   groupSettings               GroupSettings?
+  groupActivities             GroupActivity[]
   groupMeals                  GroupMeal[]
 
   @@index([ownerId])
@@ -2864,9 +2865,21 @@ model GroupMember {
   // between. Null joinedOn = from the start; null leftOn = still here.
   joinedOn      DateTime?               @db.Date
   leftOn        DateTime?               @db.Date
+  // Member: gives money to an accountant. Accountant: keeps cash and does
+  // the bazar (up to 2 active in a group).
+  role          GroupMemberRole         @default(MEMBER)
+  // The group's owner (the signed-in customer): can't be removed or made
+  // inactive.
+  isOwner       Boolean                 @default(false)
+  // Who this member's share covers ("Khaled, wife and daughter").
+  household     String?
+  // Their percent of costs shared by the cost split, when the group's split
+  // is CUSTOM (active members add up to 100).
+  costPercent   Decimal?                @db.Decimal(5, 2)
   createdAt     DateTime                @default(now())
   updatedAt     DateTime                @updatedAt
-  contributions GroupContribution[]
+  contributions GroupContribution[]     @relation("ContributionMember")
+  received      GroupContribution[]     @relation("ContributionReceiver")
   // GroupExpense.paidByMemberId: who paid it -- out of their own pocket
   // when the expense says so (paidFrom MEMBER), which credits them.
   expensesPaid  GroupExpense[]
@@ -2881,17 +2894,34 @@ model GroupMember {
 // mess, the day its month starts, who holds the cash, and meal counting
 // with what each meal counts for.
 model GroupSettings {
-  id                 String    @id @default(uuid())
-  businessId         String    @unique
-  business           Business  @relation(fields: [businessId], references: [id])
-  kind               GroupKind @default(FAMILY)
-  monthStartDay      Int       @default(1) // 1-28
+  id                 String         @id @default(uuid())
+  businessId         String         @unique
+  business           Business       @relation(fields: [businessId], references: [id])
+  kind               GroupKind      @default(FAMILY)
+  monthStartDay      Int            @default(1) // 1-28
   cashHolderMemberId String?
-  mealsOn            Boolean   @default(false)
-  breakfastUnits     Decimal   @default(0.5) @db.Decimal(4, 2)
-  lunchUnits         Decimal   @default(1) @db.Decimal(4, 2)
-  dinnerUnits        Decimal   @default(1) @db.Decimal(4, 2)
-  updatedAt          DateTime  @updatedAt
+  mealsOn            Boolean        @default(false)
+  breakfastUnits     Decimal        @default(0.5) @db.Decimal(4, 2)
+  lunchUnits         Decimal        @default(1) @db.Decimal(4, 2)
+  dinnerUnits        Decimal        @default(1) @db.Decimal(4, 2)
+  // How costs shared "by cost split" are weighted: everyone the same, or
+  // each active member's costPercent.
+  costSplit          GroupCostSplit @default(EQUAL)
+  // Warn once this much of a month's budget is spent; null = never.
+  budgetWarnPercent  Int?           @default(90)
+  // Paused: kept out of new entries and listed last. Nothing is deleted.
+  pausedAt           DateTime?
+  updatedAt          DateTime       @updatedAt
+}
+
+enum GroupCostSplit {
+  EQUAL
+  CUSTOM
+}
+
+enum GroupMemberRole {
+  MEMBER
+  ACCOUNTANT
 }
 
 enum GroupKind {
@@ -2962,19 +2992,27 @@ enum GroupMemberStatus {
 }
 
 model GroupContribution {
-  id            String                @id @default(uuid())
-  businessId    String
-  business      Business              @relation(fields: [businessId], references: [id])
-  groupMemberId String
-  groupMember   GroupMember           @relation(fields: [groupMemberId], references: [id])
-  amount        Decimal               @db.Decimal(14, 2)
-  kind          GroupContributionKind @default(DEPOSIT)
-  date          DateTime              @db.Date
-  note          String?
-  createdAt     DateTime              @default(now())
+  id                 String                @id @default(uuid())
+  businessId         String
+  business           Business              @relation(fields: [businessId], references: [id])
+  groupMemberId      String
+  groupMember        GroupMember           @relation("ContributionMember", fields: [groupMemberId], references: [id])
+  amount             Decimal               @db.Decimal(14, 2)
+  kind               GroupContributionKind @default(DEPOSIT)
+  date               DateTime              @db.Date
+  note               String?
+  // The accountant whose cash it went into ("Given to"); null on older rows,
+  // which count as the cash holder's.
+  receivedByMemberId String?
+  receivedBy         GroupMember?          @relation("ContributionReceiver", fields: [receivedByMemberId], references: [id])
+  // The same id on both rows of one settle-up, so Undo removes the pair.
+  settleGroupId      String?
+  createdAt          DateTime              @default(now())
 
   @@index([businessId, date])
   @@index([groupMemberId])
+  @@index([businessId, receivedByMemberId])
+  @@index([settleGroupId])
 }
 
 model GroupExpense {
@@ -3021,10 +3059,39 @@ model GroupExpenseCategoryOption {
   // "Only selected": the members a new expense in it is shared by, equally
   // (defaultSplit EQUAL). Empty = everyone in the group that day.
   defaultMemberIds String[]   @default([])
+  // Hidden: not offered for new expenses; old records keep it.
+  hidden           Boolean    @default(false)
   createdAt        DateTime   @default(now())
   updatedAt        DateTime   @updatedAt
 
   @@unique([businessId, name])
+}
+
+// Group Expense's activity log: who added, changed or deleted what, and
+// when a month was closed. Written by every change; never edited.
+model GroupActivity {
+  id          String              @id @default(uuid())
+  businessId  String
+  business    Business            @relation(fields: [businessId], references: [id])
+  actorUserId String?
+  action      GroupActivityAction
+  // EXPENSE, CONTRIBUTION, MEMBER, CATEGORY, BUDGET, SETTINGS, SPLIT, MONTH
+  entity      String
+  entityId    String?
+  // What it was about: { name, amount, category, member, date, note, ... }.
+  summary     Json
+  // What changed: [{ field, from, to }].
+  change      Json?
+  createdAt   DateTime            @default(now())
+
+  @@index([businessId, createdAt])
+}
+
+enum GroupActivityAction {
+  ADDED
+  EDITED
+  DELETED
+  MONTH
 }
 
 // A manually-entered monthly budget target (Month + Year + amount, typed in
