@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
-import { BillingCycle, FlagStatus, Prisma, Severity, UserStatus } from '@prisma/client';
+import { BillingCycle, FlagStatus, Prisma, Severity } from '@prisma/client';
 import { AnalyticsService } from '../analytics/analytics.service.js';
+import { DELETED_STATUSES, goneBy, liveAt, SIGNED_UP } from '../common/customer-counts.js';
 import { dhakaDateKey } from '../common/dhaka.js';
 import { AdminRole, END_USER_WHERE } from '../common/roles.js';
 import { payerIdOf, requesterNames } from '../admin-feed/requester-names.js';
@@ -36,22 +37,8 @@ const NEWEST_MESSAGE = { where: { isInternal: false }, orderBy: { createdAt: 'de
 // The support team's goal: an answer within a day.
 const REPLY_GOAL_MS = DAY_MS;
 const SIGN_IN_ACTIONS = ['ADMIN_LOGIN'];
-// Every customer who signed up: a live workspace, or purged (no workspaces
-// left) -- the Users list's "All" tab.
-const SIGNED_UP: Prisma.UserWhereInput = { ...END_USER_WHERE, OR: [{ ownedBusinesses: { some: { deletedAt: null } } }, { status: UserStatus.DELETED }] };
-// Customers whose account is gone or going: left out of "Accounts by plan".
-const DELETED_STATUSES: UserStatus[] = [UserStatus.DELETED, UserStatus.PENDING_DELETION];
 // The earliest day the period picker may start on.
 const EARLIEST_DAY = '2000-01-01';
-
-// Gone by `at`: deleted, or asked to be, before then. A deleted account with
-// no request time on it counts as gone all along.
-const goneBy = (at: Date): Prisma.UserWhereInput => ({
-  status: { in: DELETED_STATUSES },
-  OR: [{ deletionRequestedAt: null }, { deletionRequestedAt: { lt: at } }],
-});
-// Customers who had signed up by `at` and were still there.
-const liveAt = (at: Date): Prisma.UserWhereInput => ({ ...SIGNED_UP, createdAt: { lt: at }, NOT: goneBy(at) });
 
 export interface DashboardAdmin {
   id: string;
