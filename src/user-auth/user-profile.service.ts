@@ -11,11 +11,32 @@ import { customerCode } from '../common/districts.js';
 import { dhakaDateKey } from '../common/dhaka.js';
 import { profileDetailsProblem } from './profile-rules.js';
 
-const preferencesOf = (user: Pick<User, 'digitStyle' | 'numberGrouping' | 'dateStyle' | 'weekStart'>) => ({
+const PREFERENCE_FIELDS = {
+  digitStyle: true,
+  numberGrouping: true,
+  dateStyle: true,
+  weekStart: true,
+  roundAmounts: true,
+  startPage: true,
+  rowsPerPage: true,
+  compactTables: true,
+  sidebarCollapsed: true,
+  fiscalYearStart: true,
+  showHijri: true,
+} as const;
+
+const preferencesOf = (user: Pick<User, keyof typeof PREFERENCE_FIELDS>) => ({
   digitStyle: user.digitStyle,
   numberGrouping: user.numberGrouping,
   dateStyle: user.dateStyle,
   weekStart: user.weekStart,
+  roundAmounts: user.roundAmounts,
+  startPage: user.startPage,
+  rowsPerPage: user.rowsPerPage,
+  compactTables: user.compactTables,
+  sidebarCollapsed: user.sidebarCollapsed,
+  fiscalYearStart: user.fiscalYearStart,
+  showHijri: user.showHijri,
 });
 
 // The signed-in user's own account details: the /me payload with their
@@ -104,6 +125,8 @@ export class UserProfileService {
         role: m.role,
         isDefault: m.business.isDefault,
         hasPinLock: m.business.pinHash !== null,
+        // Settings › App preferences: the wallet picked first for a new entry.
+        defaultAccountId: m.defaultAccountId,
         trialEndsAt: m.business.trialEndsAt,
       })),
       impersonatedBy: impersonatedBy ? { name: admin?.name ?? 'An admin', email: admin?.email ?? null } : null,
@@ -120,8 +143,15 @@ export class UserProfileService {
         ...(dto.numberGrouping !== undefined && { numberGrouping: dto.numberGrouping }),
         ...(dto.dateStyle !== undefined && { dateStyle: dto.dateStyle }),
         ...(dto.weekStart !== undefined && { weekStart: dto.weekStart }),
+        ...(dto.roundAmounts !== undefined && { roundAmounts: dto.roundAmounts }),
+        ...(dto.startPage !== undefined && { startPage: dto.startPage }),
+        ...(dto.rowsPerPage !== undefined && { rowsPerPage: dto.rowsPerPage }),
+        ...(dto.compactTables !== undefined && { compactTables: dto.compactTables }),
+        ...(dto.sidebarCollapsed !== undefined && { sidebarCollapsed: dto.sidebarCollapsed }),
+        ...(dto.fiscalYearStart !== undefined && { fiscalYearStart: dto.fiscalYearStart }),
+        ...(dto.showHijri !== undefined && { showHijri: dto.showHijri }),
       },
-      select: { digitStyle: true, numberGrouping: true, dateStyle: true, weekStart: true },
+      select: PREFERENCE_FIELDS,
     });
     return preferencesOf(user);
   }
@@ -141,7 +171,9 @@ export class UserProfileService {
   // number typed another way keeps it.
   async updateProfile(userId: string, dto: UpdateProfileDto) {
     const touchesPhones = dto.phone !== undefined || dto.phone2 !== undefined || dto.phone2WhatsApp !== undefined;
-    const current = touchesPhones ? await this.prisma.user.findUniqueOrThrow({ where: { id: userId }, select: { phone: true, phoneVerifiedAt: true, phone2: true } }) : null;
+    const current = touchesPhones
+      ? await this.prisma.user.findUniqueOrThrow({ where: { id: userId }, select: { phone: true, phoneVerifiedAt: true, phone2: true } })
+      : null;
     const keepsVerified = !!current?.phoneVerifiedAt && !!dto.phone && canonicalPhone(dto.phone) === current.phone;
     // The second number: a real mobile, not the main one again.
     const phone2 = dto.phone2 === undefined ? undefined : dto.phone2 === '' ? null : canonicalPhone(dto.phone2);
@@ -164,7 +196,15 @@ export class UserProfileService {
         ...((dto.phone2WhatsApp !== undefined || phone2 !== undefined) && { phone2WhatsApp: Boolean(phone2After) && (dto.phone2WhatsApp ?? false) }),
       },
     });
-    return { id: user.id, name: user.name, email: user.email, phone: user.phone, phoneVerifiedAt: user.phoneVerifiedAt, avatarUrl: user.avatarUrl, address: user.address };
+    return {
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      phone: user.phone,
+      phoneVerifiedAt: user.phoneVerifiedAt,
+      avatarUrl: user.avatarUrl,
+      address: user.address,
+    };
   }
 
   async updateAvatar(userId: string, avatarUrl: string | null) {

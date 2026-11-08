@@ -911,6 +911,17 @@ model User {
   numberGrouping          NumberGrouping           @default(LAKH)
   dateStyle               DateStyle                @default(D_MMM_YYYY)
   weekStart               WeekStart                @default(SATURDAY)
+  // Settings › App preferences (v16): amounts without paisa, where the app
+  // opens after sign-in, rows on a page of the long lists, tighter tables,
+  // the sidebar folded at first, the year reports count from, and the Hijri
+  // date beside dates. Saved to the account, so every device opens alike.
+  roundAmounts            Boolean                  @default(false)
+  startPage               StartPage                @default(DASHBOARD)
+  rowsPerPage             Int                      @default(20)
+  compactTables           Boolean                  @default(false)
+  sidebarCollapsed        Boolean                  @default(false)
+  fiscalYearStart         FiscalYearStart          @default(JULY)
+  showHijri               Boolean                  @default(false)
   // Password Manager: how long an unlock lasts (1-30 minutes; null = the
   // server's VAULT_TOKEN_EXPIRES_IN), and the wrong unlock tries counted
   // in the current 10-minute window (vaultUnlockFailedAt = its first).
@@ -1947,6 +1958,9 @@ model BusinessMember {
   invitedAt  DateTime?
   joinedAt   DateTime     @default(now())
   status     MemberStatus @default(ACTIVE)
+  // Settings › App preferences › Default account for new transactions:
+  // the wallet picked first when this member adds income or an expense.
+  defaultAccountId String?
 
   // @@unique below already gives an index with businessId as its leftmost
   // column (covers "all members of a business" lookups), so only userId
@@ -3345,6 +3359,19 @@ model DataBackup {
   createdAt  DateTime       @default(now())
 
   @@index([userId, createdAt])
+}
+
+enum StartPage {
+  DASHBOARD
+  REPORTS
+  INCOME_EXPENSE
+  GROUP
+  CALENDAR
+}
+
+enum FiscalYearStart {
+  JANUARY
+  JULY
 }
 
 enum Gender {

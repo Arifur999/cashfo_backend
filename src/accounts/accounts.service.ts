@@ -145,7 +145,9 @@ export class AccountsService {
     const dates = dayWindow(filters);
     const period = dates ? await this.periodTotals(businessId, accounts, dates) : null;
 
-    const byId = new Map(accounts.map((a) => [a.id, { ...a, ...(period && periodFigures(a.accountType, period.get(a.id))), children: [] as (typeof accounts)[number][] }]));
+    const byId = new Map(
+      accounts.map((a) => [a.id, { ...a, ...(period && periodFigures(a.accountType, period.get(a.id))), children: [] as (typeof accounts)[number][] }]),
+    );
     const roots: (typeof accounts)[number][] = [];
     for (const account of accounts) {
       const node = byId.get(account.id)!;
@@ -173,6 +175,19 @@ export class AccountsService {
   // 6) -- keeps Income/Expense/Equity accounts out of "which account did
   // the money land in" style dropdowns, and vice versa. ACTIVE only, since
   // an archived account should never be selectable for a new transaction.
+  // Settings › App preferences: a member's own default wallet here; it must
+  // be one of this workspace's active money accounts.
+  async setDefaultAccount(businessId: string, userId: string, accountId: string | null) {
+    if (accountId) {
+      const wallet = await this.prisma.account.count({
+        where: { id: accountId, businessId, status: 'ACTIVE', accountType: 'ASSET', accountSubtype: { in: MONEY_ACCOUNT_SUBTYPES } },
+      });
+      if (wallet === 0) throw new BadRequestException("Pick one of this workspace's wallets.");
+    }
+    await this.prisma.businessMember.update({ where: { businessId_userId: { businessId, userId } }, data: { defaultAccountId: accountId } });
+    return { defaultAccountId: accountId };
+  }
+
   async listMoneyAccounts(businessId: string) {
     return this.prisma.account.findMany({
       where: { businessId, status: 'ACTIVE', accountType: 'ASSET', accountSubtype: { in: MONEY_ACCOUNT_SUBTYPES } },

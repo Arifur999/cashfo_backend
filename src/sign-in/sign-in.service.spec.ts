@@ -55,7 +55,7 @@ describe('SignInService', () => {
       audience: 'user',
       accessToken: 'u',
       refreshToken: 'r',
-      account: { id: 'user-1', name: 'U', email: 'u@x.co', role: 'USER' },
+      account: { id: 'user-1', name: 'U', email: 'u@x.co', role: 'USER', startPage: 'DASHBOARD' },
       defaultBusinessId: 'biz-1',
     });
     expect(adminAuth.login).not.toHaveBeenCalled();
