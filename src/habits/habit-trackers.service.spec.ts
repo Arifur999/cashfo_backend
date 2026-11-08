@@ -82,14 +82,18 @@ describe('HabitTrackersService.remove: Namaz and Ramadan sheets, as before', () 
 
     // Only the orphan ticks are cleared, and the delete stays conditional.
     expect(prisma.habitMonthCheck.deleteMany).toHaveBeenCalledWith({ where: { trackerId: 'trk-1', item: { notIn: sheet(category).items } } });
-    expect(prisma.habitMonthTracker.deleteMany).toHaveBeenCalledWith({ where: { id: 'trk-1', userId: 'user-1', checks: { none: {} }, paraLogs: { none: {} } } });
+    expect(prisma.habitMonthTracker.deleteMany).toHaveBeenCalledWith({
+      where: { id: 'trk-1', userId: 'user-1', checks: { none: {} }, paraLogs: { none: {} } },
+    });
     expect(prisma.$transaction).not.toHaveBeenCalled();
   });
 
   it.each(['Namaz', 'Ramadan'] as const)('deletes an empty %s sheet', async (category) => {
     const { service, prisma } = setup({ tracker: sheet(category) });
     await expect(service.remove('user-1', 'trk-1')).resolves.toEqual({ id: 'trk-1' });
-    expect(prisma.habitMonthTracker.deleteMany).toHaveBeenCalledWith({ where: { id: 'trk-1', userId: 'user-1', checks: { none: {} }, paraLogs: { none: {} } } });
+    expect(prisma.habitMonthTracker.deleteMany).toHaveBeenCalledWith({
+      where: { id: 'trk-1', userId: 'user-1', checks: { none: {} }, paraLogs: { none: {} } },
+    });
     expect(prisma.$transaction).not.toHaveBeenCalled();
   });
 
@@ -104,7 +108,11 @@ describe('HabitTrackersService: made-up fasts and the Get ready list', () => {
   const setupRamadan = (category: 'Namaz' | 'Ramadan' = 'Ramadan') => {
     const tracker = { ...sheet(category), fastsMadeUp: 0, checks: [], paraLogs: [] };
     const prisma = {
-      habitMonthTracker: { findUnique: vi.fn().mockResolvedValue(tracker), findFirst: vi.fn().mockResolvedValue(tracker), update: vi.fn().mockResolvedValue(tracker) },
+      habitMonthTracker: {
+        findUnique: vi.fn().mockResolvedValue(tracker),
+        findFirst: vi.fn().mockResolvedValue(tracker),
+        update: vi.fn().mockResolvedValue(tracker),
+      },
       ramadanPrep: { findUnique: vi.fn().mockResolvedValue(null), upsert: vi.fn() },
     };
     return { service: new HabitTrackersService(prisma as never), prisma };
@@ -116,6 +124,16 @@ describe('HabitTrackersService: made-up fasts and the Get ready list', () => {
     expect(prisma.habitMonthTracker.update).toHaveBeenCalledWith({ where: { id: 'trk-1' }, data: { fastsMadeUp: 2 } });
     await expect(service.setFastsMadeUp('user-1', 'trk-1', 31)).rejects.toThrow('At most 30 fasts');
     await expect(setupRamadan('Namaz').service.setFastsMadeUp('user-1', 'trk-1', 1)).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('keeps a goal on a Namaz month only, and shows it on Namaz alone', async () => {
+    const { service, prisma } = setupRamadan('Namaz');
+    prisma.habitMonthTracker.findUnique.mockResolvedValue({ ...sheet('Namaz'), fastsMadeUp: 0, checks: [], paraLogs: [], goalPct: 90 });
+    await expect(service.setGoal('user-1', 'trk-1', 90)).resolves.toMatchObject({ goalPct: 90 });
+    expect(prisma.habitMonthTracker.update).toHaveBeenCalledWith({ where: { id: 'trk-1' }, data: { goalPct: 90 } });
+    await service.setGoal('user-1', 'trk-1', null);
+    expect(prisma.habitMonthTracker.update).toHaveBeenLastCalledWith({ where: { id: 'trk-1' }, data: { goalPct: null } });
+    await expect(setupRamadan('Ramadan').service.setGoal('user-1', 'trk-1', 50)).rejects.toBeInstanceOf(BadRequestException);
   });
 
   it('reads an empty list before any tick, and keeps each step once', async () => {
@@ -179,7 +197,10 @@ describe('HabitTrackersService: a challenge starts, ends early and restarts', ()
     const { service, prisma } = setupChallenge(challenge({ endedOnDay: 3 }));
     await service.restartChallenge('user-1', 'trk-1');
     expect(prisma.habitMonthCheck.deleteMany).toHaveBeenCalledWith({ where: { trackerId: 'trk-1' } });
-    expect(prisma.habitMonthTracker.update).toHaveBeenCalledWith({ where: { id: 'trk-1' }, data: { startsOn: new Date('2026-11-04T00:00:00.000Z'), endedOnDay: null } });
+    expect(prisma.habitMonthTracker.update).toHaveBeenCalledWith({
+      where: { id: 'trk-1' },
+      data: { startsOn: new Date('2026-11-04T00:00:00.000Z'), endedOnDay: null },
+    });
     expect(prisma.$transaction).toHaveBeenCalledWith(['clear', 'update']);
   });
 
