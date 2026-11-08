@@ -1,4 +1,4 @@
-import { collectedOf, currentGroupMonth, groupMonthPeriod, monthKeyText, owing, parseMonthKey } from './group-summary.js';
+import { collectedOf, contributedBy, currentGroupMonth, groupMonthPeriod, monthKeyText, owing, parseMonthKey } from './group-summary.js';
 
 const day = (date: Date) => date.toISOString().slice(0, 10);
 
@@ -36,5 +36,14 @@ describe('card figures', () => {
 
   it('adds up the money in', () => {
     expect(collectedOf(members)).toBe('66000.00');
+  });
+
+  it('counts who among those sharing put money in', () => {
+    const rows = [
+      { sharing: true, grossDeposited: '5000.00' },
+      { sharing: true, grossDeposited: '0.00' },
+      { sharing: false, grossDeposited: '300.00' },
+    ];
+    expect(contributedBy(rows)).toEqual({ count: 1, of: 2 });
   });
 });

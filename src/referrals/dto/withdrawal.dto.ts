@@ -1,5 +1,19 @@
 import { Type } from 'class-transformer';
-import { ArrayMaxSize, ArrayMinSize, IsArray, IsInt, IsNotEmpty, IsString, Matches, Max, MaxLength, Min, ValidateIf, ValidateNested } from 'class-validator';
+import {
+  ArrayMaxSize,
+  ArrayMinSize,
+  IsArray,
+  IsBoolean,
+  IsInt,
+  IsNotEmpty,
+  IsString,
+  Matches,
+  Max,
+  MaxLength,
+  Min,
+  ValidateIf,
+  ValidateNested,
+} from 'class-validator';
 import { IsMoney, whenSent } from '../../common/dto.js';
 import { MAX_WITHDRAWAL_LINES } from '../referral-money.js';
 
@@ -38,6 +52,14 @@ export class StartWithdrawalDto {
   @ValidateNested()
   @Type(() => IncomeTargetDto)
   income?: IncomeTargetDto;
+}
+
+// Send the code again; byEmail sends it to the member's email this time
+// (Withdraw's "Send by email instead").
+export class ResendWithdrawalCodeDto {
+  @ValidateIf(whenSent)
+  @IsBoolean()
+  byEmail?: boolean;
 }
 
 export class ConfirmWithdrawalDto {

@@ -7,9 +7,20 @@ import { CreateGroupExpenseCategoryDto } from './dto/create-group-expense-catego
 import { CreateGroupExpenseDto } from './dto/create-group-expense.dto.js';
 import { CreateGroupMemberDto } from './dto/create-group-member.dto.js';
 import { CreateGroupMonthBudgetDto } from './dto/create-group-month-budget.dto.js';
-import { ListGroupContributionsQueryDto, ListGroupExpensesQueryDto, ListGroupMealsQueryDto, ListGroupMembersQueryDto, SettlementQueryDto } from './dto/group-query.dto.js';
+import { GroupCategorySetupDto } from './dto/group-category-setup.dto.js';
+import { GroupCostSplitDto } from './dto/group-cost-split.dto.js';
+import {
+  GroupActivityQueryDto,
+  GroupCashbookQueryDto,
+  ListGroupContributionsQueryDto,
+  ListGroupExpensesQueryDto,
+  ListGroupMealsQueryDto,
+  ListGroupMembersQueryDto,
+  SettlementQueryDto,
+} from './dto/group-query.dto.js';
 import { SetGroupMealsDto } from './dto/group-meal.dto.js';
 import { SettleUpDto } from './dto/settle-up.dto.js';
+import { CreateGroupCashHandoverDto, UpdateGroupCashHandoverDto } from './dto/group-cash-handover.dto.js';
 import { UpdateGroupSettingsDto } from './dto/group-settings.dto.js';
 import { UpdateGroupContributionDto } from './dto/update-group-contribution.dto.js';
 import { UpdateGroupExpenseCategoryDto } from './dto/update-group-expense-category.dto.js';
@@ -52,20 +63,27 @@ export class GroupExpensesController {
 
   @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
   @Post('members')
-  createMember(@Param('businessId') businessId: string, @Body() dto: CreateGroupMemberDto) {
-    return this.groupExpensesService.createMember(businessId, dto);
+  createMember(@Param('businessId') businessId: string, @Body() dto: CreateGroupMemberDto, @CurrentUser() user: RequestUser) {
+    return this.groupExpensesService.createMember(businessId, dto, user.id);
   }
 
   @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
   @Patch('members/:id')
-  updateMember(@Param('businessId') businessId: string, @Param('id') id: string, @Body() dto: UpdateGroupMemberDto) {
-    return this.groupExpensesService.updateMember(businessId, id, dto);
+  updateMember(@Param('businessId') businessId: string, @Param('id') id: string, @Body() dto: UpdateGroupMemberDto, @CurrentUser() user: RequestUser) {
+    return this.groupExpensesService.updateMember(businessId, id, dto, user.id);
   }
 
   @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
   @Delete('members/:id')
-  deleteMember(@Param('businessId') businessId: string, @Param('id') id: string) {
-    return this.groupExpensesService.deleteMember(businessId, id);
+  deleteMember(@Param('businessId') businessId: string, @Param('id') id: string, @CurrentUser() user: RequestUser) {
+    return this.groupExpensesService.deleteMember(businessId, id, user.id);
+  }
+
+  // Members > Cost split: equal, or a percent for each active member.
+  @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
+  @Put('cost-split')
+  setCostSplit(@Param('businessId') businessId: string, @Body() dto: GroupCostSplitDto, @CurrentUser() user: RequestUser) {
+    return this.groupExpensesService.setCostSplit(businessId, dto, user.id);
   }
 
   // Same "upload before the record exists" shape as ContactsController's own
@@ -91,26 +109,38 @@ export class GroupExpensesController {
 
   @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
   @Post('contributions')
-  createContribution(@Param('businessId') businessId: string, @Body() dto: CreateGroupContributionDto) {
-    return this.groupExpensesService.createContribution(businessId, dto);
+  createContribution(@Param('businessId') businessId: string, @Body() dto: CreateGroupContributionDto, @CurrentUser() user: RequestUser) {
+    return this.groupExpensesService.createContribution(businessId, dto, user.id);
   }
 
   @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
   @Post('settle-up')
-  settleUp(@Param('businessId') businessId: string, @Body() dto: SettleUpDto) {
-    return this.groupExpensesService.settleUp(businessId, dto);
+  settleUp(@Param('businessId') businessId: string, @Body() dto: SettleUpDto, @CurrentUser() user: RequestUser) {
+    return this.groupExpensesService.settleUp(businessId, dto, user.id);
+  }
+
+  // Undo a settle-up: both its rows go together.
+  @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
+  @Delete('settle-up/:settleGroupId')
+  undoSettleUp(@Param('businessId') businessId: string, @Param('settleGroupId') settleGroupId: string, @CurrentUser() user: RequestUser) {
+    return this.groupExpensesService.undoSettleUp(businessId, settleGroupId, user.id);
   }
 
   @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
   @Patch('contributions/:id')
-  updateContribution(@Param('businessId') businessId: string, @Param('id') id: string, @Body() dto: UpdateGroupContributionDto) {
-    return this.groupExpensesService.updateContribution(businessId, id, dto);
+  updateContribution(
+    @Param('businessId') businessId: string,
+    @Param('id') id: string,
+    @Body() dto: UpdateGroupContributionDto,
+    @CurrentUser() user: RequestUser,
+  ) {
+    return this.groupExpensesService.updateContribution(businessId, id, dto, user.id);
   }
 
   @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
   @Delete('contributions/:id')
-  deleteContribution(@Param('businessId') businessId: string, @Param('id') id: string) {
-    return this.groupExpensesService.deleteContribution(businessId, id);
+  deleteContribution(@Param('businessId') businessId: string, @Param('id') id: string, @CurrentUser() user: RequestUser) {
+    return this.groupExpensesService.deleteContribution(businessId, id, user.id);
   }
 
   // ---- Expense categories ----
@@ -125,20 +155,32 @@ export class GroupExpensesController {
 
   @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
   @Post('expenses/categories')
-  createExpenseCategory(@Param('businessId') businessId: string, @Body() dto: CreateGroupExpenseCategoryDto) {
-    return this.groupExpensesService.createExpenseCategory(businessId, dto);
+  createExpenseCategory(@Param('businessId') businessId: string, @Body() dto: CreateGroupExpenseCategoryDto, @CurrentUser() user: RequestUser) {
+    return this.groupExpensesService.createExpenseCategory(businessId, dto, user.id);
+  }
+
+  // New group, step 3: the family's own list, once, in place of the defaults.
+  @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
+  @Post('expenses/categories/setup')
+  setupExpenseCategories(@Param('businessId') businessId: string, @Body() dto: GroupCategorySetupDto, @CurrentUser() user: RequestUser) {
+    return this.groupExpensesService.setupExpenseCategories(businessId, dto, user.id);
   }
 
   @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
   @Patch('expenses/categories/:id')
-  updateExpenseCategory(@Param('businessId') businessId: string, @Param('id') id: string, @Body() dto: UpdateGroupExpenseCategoryDto) {
-    return this.groupExpensesService.updateExpenseCategory(businessId, id, dto);
+  updateExpenseCategory(
+    @Param('businessId') businessId: string,
+    @Param('id') id: string,
+    @Body() dto: UpdateGroupExpenseCategoryDto,
+    @CurrentUser() user: RequestUser,
+  ) {
+    return this.groupExpensesService.updateExpenseCategory(businessId, id, dto, user.id);
   }
 
   @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
   @Delete('expenses/categories/:id')
-  deleteExpenseCategory(@Param('businessId') businessId: string, @Param('id') id: string) {
-    return this.groupExpensesService.deleteExpenseCategory(businessId, id);
+  deleteExpenseCategory(@Param('businessId') businessId: string, @Param('id') id: string, @CurrentUser() user: RequestUser) {
+    return this.groupExpensesService.deleteExpenseCategory(businessId, id, user.id);
   }
 
   // ---- Expenses ----
@@ -150,20 +192,20 @@ export class GroupExpensesController {
 
   @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
   @Post('expenses')
-  createExpense(@Param('businessId') businessId: string, @Body() dto: CreateGroupExpenseDto) {
-    return this.groupExpensesService.createExpense(businessId, dto);
+  createExpense(@Param('businessId') businessId: string, @Body() dto: CreateGroupExpenseDto, @CurrentUser() user: RequestUser) {
+    return this.groupExpensesService.createExpense(businessId, dto, user.id);
   }
 
   @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
   @Patch('expenses/:id')
-  updateExpense(@Param('businessId') businessId: string, @Param('id') id: string, @Body() dto: UpdateGroupExpenseDto) {
-    return this.groupExpensesService.updateExpense(businessId, id, dto);
+  updateExpense(@Param('businessId') businessId: string, @Param('id') id: string, @Body() dto: UpdateGroupExpenseDto, @CurrentUser() user: RequestUser) {
+    return this.groupExpensesService.updateExpense(businessId, id, dto, user.id);
   }
 
   @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
   @Delete('expenses/:id')
-  deleteExpense(@Param('businessId') businessId: string, @Param('id') id: string) {
-    return this.groupExpensesService.deleteExpense(businessId, id);
+  deleteExpense(@Param('businessId') businessId: string, @Param('id') id: string, @CurrentUser() user: RequestUser) {
+    return this.groupExpensesService.deleteExpense(businessId, id, user.id);
   }
 
   // ---- Month budgets ----
@@ -179,20 +221,25 @@ export class GroupExpensesController {
 
   @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
   @Post('month-budgets')
-  createMonthBudget(@Param('businessId') businessId: string, @Body() dto: CreateGroupMonthBudgetDto) {
-    return this.groupExpensesService.createMonthBudget(businessId, dto);
+  createMonthBudget(@Param('businessId') businessId: string, @Body() dto: CreateGroupMonthBudgetDto, @CurrentUser() user: RequestUser) {
+    return this.groupExpensesService.createMonthBudget(businessId, dto, user.id);
   }
 
   @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
   @Patch('month-budgets/:id')
-  updateMonthBudget(@Param('businessId') businessId: string, @Param('id') id: string, @Body() dto: UpdateGroupMonthBudgetDto) {
-    return this.groupExpensesService.updateMonthBudget(businessId, id, dto);
+  updateMonthBudget(
+    @Param('businessId') businessId: string,
+    @Param('id') id: string,
+    @Body() dto: UpdateGroupMonthBudgetDto,
+    @CurrentUser() user: RequestUser,
+  ) {
+    return this.groupExpensesService.updateMonthBudget(businessId, id, dto, user.id);
   }
 
   @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
   @Delete('month-budgets/:id')
-  deleteMonthBudget(@Param('businessId') businessId: string, @Param('id') id: string) {
-    return this.groupExpensesService.deleteMonthBudget(businessId, id);
+  deleteMonthBudget(@Param('businessId') businessId: string, @Param('id') id: string, @CurrentUser() user: RequestUser) {
+    return this.groupExpensesService.deleteMonthBudget(businessId, id, user.id);
   }
 
   // ---- Settings ----
@@ -204,8 +251,8 @@ export class GroupExpensesController {
 
   @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
   @Put('settings')
-  updateSettings(@Param('businessId') businessId: string, @Body() dto: UpdateGroupSettingsDto) {
-    return this.groupExpensesService.updateSettings(businessId, dto);
+  updateSettings(@Param('businessId') businessId: string, @Body() dto: UpdateGroupSettingsDto, @CurrentUser() user: RequestUser) {
+    return this.groupExpensesService.updateSettings(businessId, dto, user.id);
   }
 
   // ---- Meals ----
@@ -217,8 +264,42 @@ export class GroupExpensesController {
 
   @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
   @Put('meals')
-  setMeals(@Param('businessId') businessId: string, @Body() dto: SetGroupMealsDto) {
-    return this.groupExpensesService.setMeals(businessId, dto);
+  setMeals(@Param('businessId') businessId: string, @Body() dto: SetGroupMealsDto, @CurrentUser() user: RequestUser) {
+    return this.groupExpensesService.setMeals(businessId, dto, user.id);
+  }
+
+  // ---- Cash handovers ----
+
+  @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
+  @Post('handovers')
+  createHandover(@Param('businessId') businessId: string, @Body() dto: CreateGroupCashHandoverDto, @CurrentUser() user: RequestUser) {
+    return this.groupExpensesService.createHandover(businessId, dto, user.id);
+  }
+
+  @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
+  @Patch('handovers/:id')
+  updateHandover(@Param('businessId') businessId: string, @Param('id') id: string, @Body() dto: UpdateGroupCashHandoverDto, @CurrentUser() user: RequestUser) {
+    return this.groupExpensesService.updateHandover(businessId, id, dto, user.id);
+  }
+
+  @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
+  @Delete('handovers/:id')
+  deleteHandover(@Param('businessId') businessId: string, @Param('id') id: string, @CurrentUser() user: RequestUser) {
+    return this.groupExpensesService.deleteHandover(businessId, id, user.id);
+  }
+
+  // ---- Cash book ----
+
+  @Get('cashbook')
+  getCashbook(@Param('businessId') businessId: string, @Query() query: GroupCashbookQueryDto) {
+    return this.groupExpensesService.getCashbook(businessId, query);
+  }
+
+  // ---- Activity log ----
+
+  @Get('activity')
+  listActivity(@Param('businessId') businessId: string, @Query() query: GroupActivityQueryDto) {
+    return this.groupExpensesService.listActivity(businessId, query);
   }
 
   // ---- Settlement ----

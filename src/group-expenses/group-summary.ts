@@ -47,6 +47,12 @@ export function owing(members: SummaryMember[]): { count: number; total: string;
   return { count: due.length, total: (paisa / 100).toFixed(2), names: due.map((member) => member.name) };
 }
 
+// How many of the members sharing the month have put money in ("6 of 8 paid").
+export function contributedBy(members: { sharing: boolean; grossDeposited: string }[]): { count: number; of: number } {
+  const sharing = members.filter((member) => member.sharing);
+  return { count: sharing.filter((member) => Number(member.grossDeposited) > 0).length, of: sharing.length };
+}
+
 // Money in over the month, net of returns.
 export const collectedOf = (members: SummaryMember[]): string =>
   (members.reduce((sum, member) => sum + Math.round(Number(member.contributed) * 100), 0) / 100).toFixed(2);

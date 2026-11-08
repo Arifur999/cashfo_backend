@@ -64,6 +64,18 @@ export class AssetsController {
   }
 
   @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
+  @Patch(':id/value/:entryId')
+  editValueUpdate(@Param('businessId') businessId: string, @Param('id') id: string, @Param('entryId') entryId: string, @Body() dto: UpdateAssetValueDto) {
+    return this.assetsService.editValueUpdate(businessId, id, entryId, dto);
+  }
+
+  @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
+  @Delete(':id/value/:entryId')
+  deleteValueUpdate(@Param('businessId') businessId: string, @Param('id') id: string, @Param('entryId') entryId: string) {
+    return this.assetsService.deleteValueUpdate(businessId, id, entryId);
+  }
+
+  @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
   @Patch(':id')
   update(@Param('businessId') businessId: string, @Param('id') id: string, @Body() dto: UpdateAssetDto) {
     return this.assetsService.update(businessId, id, dto);
