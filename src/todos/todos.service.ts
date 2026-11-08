@@ -374,6 +374,14 @@ export class TodosService {
     return this.get(userId, listId);
   }
 
+  // updateItem() for a task found by its id alone; answers with the list it
+  // was on.
+  async updateTask(userId: string, itemId: string, dto: UpdateTodoItemDto): Promise<TodoListView> {
+    const item = await this.prisma.todoItem.findFirst({ where: { id: itemId, list: { userId } }, select: { listId: true } });
+    if (!item) throw new NotFoundException('Task not found');
+    return this.updateItem(userId, item.listId, itemId, dto);
+  }
+
   async removeItem(userId: string, listId: string, itemId: string): Promise<TodoListView> {
     await this.requireItem(userId, listId, itemId);
     await this.prisma.todoItem.delete({ where: { id: itemId } });

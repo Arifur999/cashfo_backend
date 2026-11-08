@@ -61,6 +61,13 @@ export class TodosController {
     return this.todosService.moveItems(user.id, dto);
   }
 
+  // The same change as PATCH :id/items/:itemId, found by the task alone (an
+  // Undo doesn't know which day's list the task is on by now).
+  @Patch('items/:itemId')
+  updateTask(@CurrentUser() user: RequestUser, @Param('itemId', ParseUUIDPipe) itemId: string, @Body() dto: UpdateTodoItemDto) {
+    return this.todosService.updateTask(user.id, itemId, dto);
+  }
+
   @Get(':id')
   get(@CurrentUser() user: RequestUser, @Param('id', ParseUUIDPipe) id: string) {
     return this.todosService.get(user.id, id);
