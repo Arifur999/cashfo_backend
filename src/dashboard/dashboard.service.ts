@@ -188,17 +188,7 @@ export class DashboardService {
       seesTickets ? this.unanswered() : null,
     ]);
 
-    let accounts = null;
-    if (money) {
-      const paidTotal = money.paidByPlan.reduce((sum, row) => sum + row.count, 0);
-      accounts = {
-        paidUsers: { total: paidTotal, pctOfAccounts: shareOf(paidTotal, liveAccounts), byPlan: money.paidByPlan },
-        // Every live account under its plan; on a day gone by, the free
-        // plan is whoever wasn't inside a paid period then.
-        accountsByPlan: accountsByPlan(money.plans, money.planCounts(liveAccounts)),
-        deletedLeftOut: money.deletedLeftOut,
-      };
-    }
+    const paidTotal = money ? money.paidByPlan.reduce((sum, row) => sum + row.count, 0) : 0;
 
     return {
       range,
@@ -220,7 +210,11 @@ export class DashboardService {
         ),
       },
       money: money && {
-        ...accounts,
+        paidUsers: { total: paidTotal, pctOfAccounts: shareOf(paidTotal, liveAccounts), byPlan: money.paidByPlan },
+        // Every live account under its plan; on a day gone by, the free
+        // plan is whoever wasn't inside a paid period then.
+        accountsByPlan: accountsByPlan(money.plans, money.planCounts(liveAccounts)),
+        deletedLeftOut: money.deletedLeftOut,
         mrr: money.mrr,
         arr: Math.round(money.mrr * 12 * 100) / 100,
         mrrChange: money.mrrChange,
