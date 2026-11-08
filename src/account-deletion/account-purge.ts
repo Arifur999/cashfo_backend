@@ -25,6 +25,8 @@ export async function deleteWorkspaces(tx: Prisma.TransactionClient, businessIds
   await tx.groupSettlement.deleteMany({ where: { businessId: inIds } });
   await tx.groupExpense.deleteMany({ where: { businessId: inIds } });
   await tx.groupContribution.deleteMany({ where: { businessId: inIds } });
+  await tx.groupCashHandover.deleteMany({ where: { businessId: inIds } });
+  await tx.groupActivity.deleteMany({ where: { businessId: inIds } });
   await tx.groupMeal.deleteMany({ where: { businessId: inIds } });
   await tx.groupExpenseCategoryOption.deleteMany({ where: { businessId: inIds } });
   await tx.groupMonthlyBudget.deleteMany({ where: { businessId: inIds } });

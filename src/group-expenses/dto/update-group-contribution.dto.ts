@@ -1,5 +1,5 @@
 import { GroupContributionKind } from '@prisma/client';
-import { IsDateString, IsEnum, IsNotEmpty, IsNumberString, IsOptional, IsString } from 'class-validator';
+import { IsDateString, IsEnum, IsNotEmpty, IsNumberString, IsOptional, IsString, IsUUID, ValidateIf } from 'class-validator';
 
 export class UpdateGroupContributionDto {
   @IsOptional()
@@ -24,4 +24,10 @@ export class UpdateGroupContributionDto {
   @IsOptional()
   @IsEnum(GroupContributionKind)
   kind?: GroupContributionKind;
+
+  // The accountant it was given to ("Given to"); null for none. Left out on
+  // a new deposit or return, the group's cash holder.
+  @ValidateIf((_, value) => value !== undefined && value !== null)
+  @IsUUID()
+  receivedByMemberId?: string | null;
 }

@@ -1,4 +1,5 @@
-import { IsBoolean, IsDateString, IsOptional } from 'class-validator';
+import { IsBoolean, IsDateString, IsOptional, ValidateIf } from 'class-validator';
+import { IsMoney, whenSent } from '../../common/dto.js';
 
 export class CloseSettlementDto {
   @IsDateString()
@@ -12,4 +13,10 @@ export class CloseSettlementDto {
   @IsOptional()
   @IsBoolean()
   carryForward?: boolean;
+
+  // The next month's budget, set while closing ("Create November and close
+  // October"); left out, nothing is set.
+  @ValidateIf(whenSent)
+  @IsMoney()
+  nextBudgetAmount?: number;
 }
