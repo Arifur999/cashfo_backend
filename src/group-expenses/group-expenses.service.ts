@@ -1146,6 +1146,8 @@ export class GroupExpensesService {
   }
 
   async createHandover(businessId: string, dto: CreateGroupCashHandoverDto, actorUserId: string | null = null) {
+    // The DTO's pattern lets "0" through; handing over nothing isn't a handover.
+    if (!(Number(dto.amount) > 0)) throw new BadRequestException('The amount must be more than zero.');
     const { from, to } = await this.requireHolders(businessId, dto.fromMemberId, dto.toMemberId);
     const created = await this.prisma.groupCashHandover.create({
       data: {
@@ -1173,6 +1175,7 @@ export class GroupExpensesService {
     if (!current || current.businessId !== businessId) {
       throw new NotFoundException('Handover not found');
     }
+    if (dto.amount !== undefined && !(Number(dto.amount) > 0)) throw new BadRequestException('The amount must be more than zero.');
     const fromMemberId = dto.fromMemberId ?? current.fromMemberId;
     const toMemberId = dto.toMemberId ?? current.toMemberId;
     if (fromMemberId !== current.fromMemberId || toMemberId !== current.toMemberId) await this.requireHolders(businessId, fromMemberId, toMemberId);
