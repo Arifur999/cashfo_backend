@@ -71,6 +71,8 @@ export interface SkillSummary {
   lastPractised: string | null; // YYYY-MM-DD
   steps: { done: number; total: number; next: string | null };
   lastNote: { title: string; text: string; date: string } | null;
+  notes: number;
+  resources: number;
 }
 
 export interface SkillsOverview {
@@ -185,6 +187,9 @@ export class SkillsService {
       WHERE s."userId" = ${userId} AND s."deletedAt" IS NULL
       ORDER BY n."skillId", n."date" DESC, n."createdAt" DESC`;
 
+    const noteCounts = await this.prisma.skillNote.groupBy({ by: ['skillId'], where: { skill: live }, _count: { _all: true } });
+    const resourceCounts = await this.prisma.skillResource.groupBy({ by: ['skillId'], where: { skill: live }, _count: { _all: true } });
+
     const unitOf = new Map(skills.map((skill) => [skill.id, skill.unit]));
     const week: WeekDay[] = Array.from({ length: 7 }, (_, i) => ({
       date: dayKey(new Date(asDate(today).getTime() - (6 - i) * DAY_MS)),
@@ -211,6 +216,8 @@ export class SkillsService {
         lastPractised: total?._max.date ? dayKey(total._max.date) : null,
         steps: { done: mine.filter((step) => step.done).length, total: mine.length, next: mine.find((step) => !step.done)?.title ?? null },
         lastNote: note ? { title: note.title, text: note.text, date: dayKey(note.date) } : null,
+        notes: noteCounts.find((row) => row.skillId === skill.id)?._count._all ?? 0,
+        resources: resourceCounts.find((row) => row.skillId === skill.id)?._count._all ?? 0,
       };
     }
 
