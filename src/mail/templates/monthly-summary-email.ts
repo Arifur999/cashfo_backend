@@ -17,6 +17,11 @@ export interface MonthlySummaryEmail {
   // The app's reports, and Settings > App to stop these emails.
   link: string;
   settingsLink: string;
+  // A day's or a week's summary (Settings › Notifications) instead of a
+  // month's; `month` then names the day or the week.
+  kind?: 'month' | 'day' | 'week';
+  // What is due next ("Pay Islami Bank ৳ 5,000 on 15 Nov"), at most a few.
+  upcoming?: string[];
 }
 
 // Settings > App > Reminders > "Monthly summary by email": last month's
@@ -28,9 +33,17 @@ export function renderMonthlySummaryEmail(
   platformName: string,
 ): { subject: string; html: string; text: string } {
   const en = locale === 'en';
-  const subject = en ? `Your ${email.month} summary` : `আপনার ${email.month} মাসের সারসংক্ষেপ`;
+  const kind = email.kind ?? 'month';
+  const subject =
+    kind === 'month'
+      ? en
+        ? `Your ${email.month} summary`
+        : `আপনার ${email.month} মাসের সারসংক্ষেপ`
+      : en
+        ? `Your ${kind === 'day' ? 'day' : 'week'}: ${email.month}`
+        : `আপনার ${kind === 'day' ? 'দিন' : 'সপ্তাহ'}: ${email.month}`;
   const greeting = en ? `Hi ${email.name},` : `প্রিয় ${email.name},`;
-  const body = en ? `Here is how ${email.month} went in ${email.workspaceName}.` : `${email.workspaceName}-এ ${email.month} মাস যেমন গেল:`;
+  const body = en ? `Here is how ${email.month} went in ${email.workspaceName}.` : `${email.workspaceName}-এ ${email.month}${kind === 'month' ? ' মাস' : ''} যেমন গেল:`;
   const taka = (amount: string) => `${en ? 'TK' : '৳'} ${amount}`;
   const rows: [string, string][] = en
     ? [
@@ -47,9 +60,16 @@ export function renderMonthlySummaryEmail(
       ];
   const topTitle = en ? 'Where most of the money went' : 'সবচেয়ে বেশি খরচ যেখানে';
   const button = en ? 'Open my reports' : 'আমার রিপোর্ট খুলুন';
-  const stop = en
-    ? 'You get this email because the monthly summary is on in Settings > App.'
-    : 'সেটিংস > অ্যাপ-এ মাসিক সারসংক্ষেপ চালু আছে বলে এই ইমেইল পাচ্ছেন।';
+  const stop =
+    kind === 'month'
+      ? en
+        ? 'You get this email because the monthly summary is on in Settings > App.'
+        : 'সেটিংস > অ্যাপ-এ মাসিক সারসংক্ষেপ চালু আছে বলে এই ইমেইল পাচ্ছেন।'
+      : en
+        ? `You get this email because the ${kind === 'day' ? 'daily' : 'weekly'} summary is on in Settings > Notifications.`
+        : `সেটিংস > নোটিফিকেশনে ${kind === 'day' ? 'দৈনিক' : 'সাপ্তাহিক'} সারাংশ চালু আছে বলে এই ইমেইল পাচ্ছেন।`;
+  const upcomingTitle = en ? 'Coming up' : 'সামনে যা আছে';
+  const upcoming = email.upcoming ?? [];
   const stopLink = en ? 'Turn it off' : 'বন্ধ করুন';
   const top = email.topExpenses;
 
@@ -60,6 +80,7 @@ export function renderMonthlySummaryEmail(
     '',
     ...rows.map(([label, value]) => `${label}: ${value}`),
     ...(top.length > 0 ? ['', `${topTitle}:`, ...top.map((row) => `- ${row.name}: ${taka(row.amount)}`)] : []),
+    ...(upcoming.length > 0 ? ['', `${upcomingTitle}:`, ...upcoming.map((line) => `- ${line}`)] : []),
     '',
     email.link,
     '',
@@ -82,6 +103,12 @@ export function renderMonthlySummaryEmail(
       <table style="font-size: 14px; color: #374151; border-collapse: collapse; width: 100%;">
         ${top.map((row) => `<tr><td style="padding: 4px 0;">${escapeHtml(row.name)}</td><td style="padding: 4px 0; text-align: right;">${escapeHtml(taka(row.amount))}</td></tr>`).join('')}
       </table>`
+          : ''
+      }
+      ${
+        upcoming.length > 0
+          ? `<p style="color: #111827; font-size: 14px; font-weight: 600; margin-top: 20px;">${escapeHtml(upcomingTitle)}</p>
+      <ul style="font-size: 14px; color: #374151; padding-left: 18px;">${upcoming.map((line) => `<li style="padding: 2px 0;">${escapeHtml(line)}</li>`).join('')}</ul>`
           : ''
       }
       <p style="margin: 24px 0;">

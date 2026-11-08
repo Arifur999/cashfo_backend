@@ -51,6 +51,9 @@ export async function purgeUser(tx: Prisma.TransactionClient, userId: string, em
   // Seats in other people's workspaces.
   await tx.businessMember.deleteMany({ where: { userId } });
 
+  // Copies of their records (Settings › Data & privacy).
+  await tx.dataBackup.deleteMany({ where: { userId } });
+
   // The personal apps.
   await tx.vaultEntry.deleteMany({ where: { userId } });
   await tx.habit.deleteMany({ where: { userId } });

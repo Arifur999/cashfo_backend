@@ -1,4 +1,5 @@
 import { UserNotificationsService } from './user-notifications.service.js';
+import { resolvePrefs } from '../notification-prefs/notification-prefs.js';
 
 const user = { id: 'u1', sessionId: 's1' } as never;
 
@@ -48,6 +49,7 @@ const setup = ({
     announcements as never,
     { configured: false } as never,
     unlocks as never,
+    { get: vi.fn().mockResolvedValue(resolvePrefs(null)) } as never,
   );
   return { service, prisma, budgets, unlocks };
 };

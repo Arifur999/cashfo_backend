@@ -34,6 +34,7 @@ const setup = ({
     },
     savingsGoalEntry: { findFirst: vi.fn().mockResolvedValue(savingsEntry) },
     zakatPayment: { findUnique: vi.fn().mockResolvedValue(null) },
+    eventGift: { findUnique: vi.fn().mockResolvedValue(null) },
     asset: { findFirst: vi.fn().mockResolvedValue(asset) },
     account: { count: vi.fn().mockResolvedValue(referralAccounts) },
     $queryRaw: vi.fn().mockResolvedValue([]),
@@ -106,6 +107,7 @@ describe("TransactionsService entries' accounts", () => {
       },
       savingsGoalEntry: { findMany: vi.fn().mockResolvedValue([]) },
       zakatPayment: { findMany: vi.fn().mockResolvedValue([]) },
+      eventGift: { findMany: vi.fn().mockResolvedValue([]) },
       asset: { findMany: vi.fn().mockResolvedValue([]) },
     };
     return { service: new TransactionsService(prisma as never, {} as never), prisma };

@@ -6,6 +6,8 @@ import { OneTimeCodesModule } from '../one-time-codes/one-time-codes.module.js';
 import { SettingsModule } from '../settings/settings.module.js';
 import { UploadsModule } from '../uploads/uploads.module.js';
 import { UserAuthController } from './user-auth.controller.js';
+import { RecoveryEmailController } from './recovery-email.controller.js';
+import { RecoveryEmailService } from './recovery-email.service.js';
 import { UserAuthService } from './user-auth.service.js';
 import { PhoneController } from './phone.controller.js';
 import { PhoneService } from './phone.service.js';
@@ -34,8 +36,8 @@ import { SystemMessagesModule } from '../system-messages/system-messages.module.
   // first device row). OneTimeCodesModule: the emailed code a password reset
   // asks for when the owner turned that on (Settings > Security > Alerts).
   imports: [AccountsModule, UploadsModule, SettingsModule, MailModule, EmailVerificationModule, OneTimeCodesModule, SmsModule, SystemMessagesModule],
-  controllers: [UserAuthController, PhoneController],
-  providers: [UserAuthService, PhoneService, UserProfileService, UserSessionsService, UserProvisioningService, SecurityAlertsService, UserAuthGuard, LoginRateLimitFilter],
+  controllers: [UserAuthController, PhoneController, RecoveryEmailController],
+  providers: [UserAuthService, PhoneService, UserProfileService, UserSessionsService, UserProvisioningService, SecurityAlertsService, UserAuthGuard, LoginRateLimitFilter, RecoveryEmailService],
   // UserAuthService: the unified sign-in (SignInModule) hands end users to it.
   // SecurityAlertsService: a wrong two-step code counts as a failed try.
   exports: [UserAuthGuard, UserAuthService, SecurityAlertsService],

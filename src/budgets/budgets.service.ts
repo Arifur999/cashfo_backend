@@ -32,6 +32,29 @@ export const nextCategoryColor = (used: string[]): string => {
   return free ?? BUDGET_CATEGORY_COLORS[used.length % BUDGET_CATEGORY_COLORS.length];
 };
 
+// An expense category the app files money under by itself (Zakat, Gifts),
+// made the first time it is needed, after the workspace's own. Safe to run
+// twice at once: the name is unique per workspace and type.
+export async function ensureExpenseCategory(client: Prisma.TransactionClient | PrismaService, businessId: string, name: string, icon: string) {
+  await ensureCategory(client, businessId, 'EXPENSE', name, icon);
+}
+
+export async function ensureCategory(
+  client: Prisma.TransactionClient | PrismaService,
+  businessId: string,
+  type: 'INCOME' | 'EXPENSE',
+  name: string,
+  icon: string | null,
+) {
+  const exists = await client.budgetCategory.count({ where: { businessId, type, name } });
+  if (exists) return;
+  const siblings = await client.budgetCategory.findMany({ where: { businessId, type }, select: { color: true } });
+  await client.budgetCategory.createMany({
+    data: [{ businessId, type, name, icon, color: nextCategoryColor(siblings.map((s) => s.color)), displayOrder: siblings.length }],
+    skipDuplicates: true,
+  });
+}
+
 @Injectable()
 export class BudgetsService {
   constructor(private readonly prisma: PrismaService) {}
@@ -208,7 +231,10 @@ export class BudgetsService {
     const sum = (transactionType: TransactionType) =>
       this.prisma.transactionEntry.aggregate({
         _sum: { amount: true },
-        where: { entryType: 'DEBIT', transaction: { businessId, status: 'POSTED', reversalOfId: null, transactionType, transactionDate: monthBounds(year, month) } },
+        where: {
+          entryType: 'DEBIT',
+          transaction: { businessId, status: 'POSTED', reversalOfId: null, transactionType, transactionDate: monthBounds(year, month) },
+        },
       });
     const [income, expense] = await Promise.all([sum('INCOME'), sum('EXPENSE')]);
     return { earned: (income._sum.amount ?? new Prisma.Decimal(0)).toFixed(2), spent: (expense._sum.amount ?? new Prisma.Decimal(0)).toFixed(2) };
@@ -395,7 +421,11 @@ export class BudgetsService {
     const word = category.type === 'INCOME' ? 'income' : 'expense';
     if (!moveTo) {
       const others = await this.prisma.budgetCategory.count({ where: { businessId, type: category.type, id: { not: id } } });
-      throw new BadRequestException(others ? `Transactions use this category. Pick the ${word} category they move to.` : `This is the only ${word} category. Add another one first, then delete this.`);
+      throw new BadRequestException(
+        others
+          ? `Transactions use this category. Pick the ${word} category they move to.`
+          : `This is the only ${word} category. Add another one first, then delete this.`,
+      );
     }
     const target = await this.prisma.budgetCategory.findUnique({ where: { id: moveTo } });
     if (!target || target.businessId !== businessId || target.type !== category.type || target.id === id) {
@@ -415,7 +445,10 @@ export class BudgetsService {
   // How many standing transactions file under a category.
   private useCount(businessId: string, category: { name: string; type: BudgetCategoryType }): Promise<number> {
     return this.prisma.transactionEntry.count({
-      where: { categoryId: category.name, transaction: { businessId, status: 'POSTED', reversalOfId: null, transactionType: TRANSACTION_TYPE_FOR[category.type] } },
+      where: {
+        categoryId: category.name,
+        transaction: { businessId, status: 'POSTED', reversalOfId: null, transactionType: TRANSACTION_TYPE_FOR[category.type] },
+      },
     });
   }
 

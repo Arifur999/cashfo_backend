@@ -1,8 +1,11 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Put, Query } from '@nestjs/common';
 import { MemberRole } from '@prisma/client';
 import { AccountBalanceService } from './account-balance.service.js';
 import { AccountsService } from './accounts.service.js';
 import { CreateAccountDto } from './dto/create-account.dto.js';
+import { DefaultAccountDto } from './dto/default-account.dto.js';
+import { CurrentUser } from '../user-auth/decorators/current-user.decorator.js';
+import type { RequestUser } from '../user-auth/interfaces/request-user.interface.js';
 import { LedgerQueryDto } from './dto/ledger-query.dto.js';
 import { ListAccountsQueryDto } from './dto/list-accounts-query.dto.js';
 import { SummaryQueryDto } from './dto/summary-query.dto.js';
@@ -25,6 +28,13 @@ export class AccountsController {
 
   // With ?dateFrom/?dateTo, every account also carries periodDebit,
   // periodCredit and periodNet for that period (see AccountsService.list()).
+  // The wallet this member's new entries start from (Settings › App
+  // preferences); a member's own choice, so any member may set it.
+  @Put('default')
+  setDefault(@Param('businessId') businessId: string, @CurrentUser() user: RequestUser, @Body() dto: DefaultAccountDto) {
+    return this.accountsService.setDefaultAccount(businessId, user.id, dto.accountId);
+  }
+
   @Get()
   list(@Param('businessId') businessId: string, @Query() query: ListAccountsQueryDto) {
     return this.accountsService.list(businessId, query);

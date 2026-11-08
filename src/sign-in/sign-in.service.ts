@@ -1,5 +1,5 @@
 import { BadRequestException, Injectable, UnauthorizedException } from '@nestjs/common';
-import type { Role, User } from '@prisma/client';
+import type { Role, StartPage, User } from '@prisma/client';
 import { AdminAuthService } from '../admin-auth/admin-auth.service.js';
 import { AuthSessionsService, type ClientInfo } from '../auth/auth-sessions.service.js';
 import { isAdminRole } from '../common/roles.js';
@@ -18,7 +18,7 @@ export interface SignInResult {
   audience: SignInAudience;
   accessToken: string;
   refreshToken: string;
-  account: { id: string; name: string; email: string; role: Role };
+  account: { id: string; name: string; email: string; role: Role; startPage?: StartPage };
   // End users only: the workspace the app opens first.
   defaultBusinessId?: string;
   // End users only: this sign-in restored an account that was waiting out
@@ -122,7 +122,7 @@ export class SignInService {
     if (isAdminRole(account.role)) {
       return this.adminResult(await this.adminAuth.finishSignIn(account, sessionId, client)) as SignInResult;
     }
-    return this.userResult(await this.userAuth.finishSignIn(account, sessionId, client)) as SignInResult;
+    return (await this.userResult(await this.userAuth.finishSignIn(account, sessionId, client))) as SignInResult;
   }
 
   private adminResult(result: TwoStepPending | AdminSignedIn): SignInResult | TwoStepPending {
@@ -131,14 +131,16 @@ export class SignInService {
     return { audience: 'admin', accessToken, refreshToken, account: adminUser };
   }
 
-  private userResult(result: TwoStepPending | UserSignedIn): SignInResult | TwoStepPending {
+  private async userResult(result: TwoStepPending | UserSignedIn): Promise<SignInResult | TwoStepPending> {
     if (isTwoStepPending(result)) return result;
     const { accessToken, refreshToken, user, defaultBusinessId, restoredFromDeletion } = result;
+    // Where the app opens (Settings › App preferences › First page).
+    const start = await this.prisma.user.findUnique({ where: { id: user.id }, select: { startPage: true } });
     return {
       audience: 'user',
       accessToken,
       refreshToken,
-      account: { id: user.id, name: user.name, email: user.email, role: 'USER' },
+      account: { id: user.id, name: user.name, email: user.email, role: 'USER', startPage: start?.startPage ?? 'DASHBOARD' },
       defaultBusinessId,
       ...(restoredFromDeletion && { restoredFromDeletion: true }),
     };

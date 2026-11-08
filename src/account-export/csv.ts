@@ -4,7 +4,7 @@ const NUMBER = /^-?\d+(\.\d+)?$/;
 // A cell a spreadsheet would run as a formula ("=HYPERLINK(...)").
 const FORMULA_START = /^[=+\-@\t\r]/;
 
-function cellText(value: CsvCell): string {
+export function cellText(value: CsvCell): string {
   if (value === null || value === undefined) return '';
   if (value instanceof Date) return value.toISOString();
   if (typeof value === 'object') return value.toFixed(2);

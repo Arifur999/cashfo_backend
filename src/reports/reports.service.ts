@@ -234,6 +234,13 @@ export class ReportsService {
   // each standing transaction once, as getCategoryBreakdown() counts it.
   // Nothing is capped: the table is the place a customer goes for every row.
   // `accountId` keeps only the transactions that touched that wallet.
+  // Each month's money per category in paisa, for the months from `from`
+  // up to (not including) `before`: what AI Insights compares.
+  async categoryByMonth(businessId: string, type: 'INCOME' | 'EXPENSE', from: Date, before: Date): Promise<{ month: string; category: string; amount: number }[]> {
+    const rows = await this.categoryMoney(businessId, type, { from, before }, { byMonth: true });
+    return rows.map((row) => ({ month: row.month ?? '', category: row.category ?? UNCATEGORISED, amount: Math.round(Number(row.amount ?? 0) * 100) }));
+  }
+
   async getMonthlyBreakdown(businessId: string, query: MonthlyBreakdownQueryDto) {
     const buckets = monthBucketsBetween(query.dateFrom, query.dateTo);
     if (buckets.length === 0) throw new BadRequestException(`Pick a range of 1 to ${MAX_REPORT_MONTHS} months, oldest day first`);

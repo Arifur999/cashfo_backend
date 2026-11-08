@@ -1,7 +1,9 @@
 import { Transform } from 'class-transformer';
-import { IsNotEmpty, IsOptional, IsString, MaxLength } from 'class-validator';
-import { trim } from '../../common/dto.js';
+import { IsBoolean, IsDateString, IsIn, IsNotEmpty, IsOptional, IsString, Matches, MaxLength, ValidateIf } from 'class-validator';
+import { trim, whenSent } from '../../common/dto.js';
+import { DISTRICTS } from '../../common/districts.js';
 
+// An empty string clears an optional text (null is not sent by the page).
 export class UpdateProfileDto {
   @IsOptional()
   @IsString()
@@ -21,4 +23,34 @@ export class UpdateProfileDto {
   @IsString()
   @MaxLength(200)
   address?: string;
+
+  @IsOptional()
+  @Transform(trim)
+  @IsString()
+  @MaxLength(40)
+  occupation?: string;
+
+  // YYYY-MM-DD; the person must be 13 or older (checked in the service).
+  @IsOptional()
+  @ValidateIf((_, value) => value !== '')
+  @IsDateString({ strict: true })
+  @Matches(/^\d{4}-\d{2}-\d{2}$/)
+  dateOfBirth?: string;
+
+  @IsOptional()
+  @IsIn(['', 'MALE', 'FEMALE', 'UNSAID'])
+  gender?: '' | 'MALE' | 'FEMALE' | 'UNSAID';
+
+  @IsOptional()
+  @IsIn(['', ...DISTRICTS])
+  district?: string;
+
+  // A second Bangladesh mobile number, or "" to clear it.
+  @IsOptional()
+  @IsString()
+  phone2?: string;
+
+  @ValidateIf(whenSent)
+  @IsBoolean()
+  phone2WhatsApp?: boolean;
 }

@@ -11,5 +11,7 @@ import { ReportsService } from './reports.service.js';
 @Module({
   controllers: [ReportsController],
   providers: [ReportsService],
+  // AI Insights reads its month-by-category money.
+  exports: [ReportsService],
 })
 export class ReportsModule {}

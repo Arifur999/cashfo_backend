@@ -7,6 +7,11 @@ import { BudgetCategoryType, WorkspaceType } from '@prisma/client';
 // Zakat paid on the Zakat page (ZakatService keeps the category itself).
 export const ZAKAT_CATEGORY = 'Zakat';
 
+// A cash gift given at an event, when it is added to Transactions
+// (EventsService makes the category on first use). Not reserved: a
+// customer's own "Gifts" is the same money.
+export const GIFTS_CATEGORY = 'Gifts';
+
 // A charge (a bank or service fee) paid with a transfer or a loan entry:
 // CHARGE_CATEGORY unless another built-in one or an expense category of the
 // workspace was picked.

@@ -829,6 +829,20 @@ model User {
   // avatar; null shows a gradient), and a one-line address.
   coverUrl                String?
   address                 String?
+  // Settings › Profile: what the person tells about themselves. Only they
+  // see these; the district sets local prices and the Zakat nisab.
+  occupation              String?
+  dateOfBirth             DateTime?                @db.Date
+  gender                  Gender?
+  district                String?
+  // A second number (or the one on WhatsApp), for when the main is off.
+  phone2                  String?
+  phone2WhatsApp          Boolean                  @default(false)
+  // Settings › Security › Recovery: a second address, proved with a code
+  // sent to it, that password reset links go to as well.
+  recoveryEmail           String?
+  // The customer's number support asks for: "SM-" and 100000 more than it.
+  customerNumber          Int                      @unique @default(autoincrement())
   // When the person turned on their shareable profile card (a public page
   // at /card/<referralCode> with their name, photos and an invite); null
   // while it is off, and then that page shows nothing.
@@ -897,6 +911,17 @@ model User {
   numberGrouping          NumberGrouping           @default(LAKH)
   dateStyle               DateStyle                @default(D_MMM_YYYY)
   weekStart               WeekStart                @default(SATURDAY)
+  // Settings › App preferences (v16): amounts without paisa, where the app
+  // opens after sign-in, rows on a page of the long lists, tighter tables,
+  // the sidebar folded at first, the year reports count from, and the Hijri
+  // date beside dates. Saved to the account, so every device opens alike.
+  roundAmounts            Boolean                  @default(false)
+  startPage               StartPage                @default(DASHBOARD)
+  rowsPerPage             Int                      @default(20)
+  compactTables           Boolean                  @default(false)
+  sidebarCollapsed        Boolean                  @default(false)
+  fiscalYearStart         FiscalYearStart          @default(JULY)
+  showHijri               Boolean                  @default(false)
   // Password Manager: how long an unlock lasts (1-30 minutes; null = the
   // server's VAULT_TOKEN_EXPIRES_IN), and the wrong unlock tries counted
   // in the current 10-minute window (vaultUnlockFailedAt = its first).
@@ -914,7 +939,32 @@ model User {
   // Settings > App > Reminders: last month's summary by email on the 1st
   // (Dhaka), and the 'YYYY-MM' it was last sent for, so it goes once.
   monthlySummaryEmail     Boolean                  @default(false)
+  // AI Insights: turned on by the person (off until then), and the
+  // sections of their records it may read. Password Manager is never read.
+  aiInsights              Boolean                  @default(false)
+  aiReads                 AiSection[]              @default([TRANSACTIONS, BUDGET, SAVINGS, LOANS])
+  // The 7 AM bell row with what needs attention (AI settings).
+  aiMorning               Boolean                  @default(false)
+  // Settings › Notifications: each alert's channels, quiet hours, reminder
+  // days and the summary (notification-prefs.ts); null is the defaults.
+  notificationPrefs       Json?
   monthlySummarySentFor   String?
+  // The Dhaka day the last daily or weekly summary was sent (claimed), so
+  // two servers or two ticks never send it twice.
+  periodSummarySentOn     String?
+  // Settings › Data & privacy: which pages they open and what breaks may be
+  // counted (never amounts or names), and their name shown to members of
+  // their groups (initials when off).
+  shareUsage              Boolean                  @default(true)
+  showNameInGroups        Boolean                  @default(true)
+  // Settings › Data & privacy › Backup and restore: an automatic copy at
+  // 2:00 at night (Dhaka), daily or weekly, the newest backupKeep kept.
+  backupAuto              Boolean                  @default(true)
+  backupEvery             BackupEvery              @default(WEEKLY)
+  backupKeep              Int                      @default(5)
+  // The Dhaka day the last automatic backup was claimed, so two servers or
+  // two ticks never take it twice.
+  autoBackupOn            String?
   createdAt               DateTime                 @default(now())
   updatedAt               DateTime                 @updatedAt
   memberships             BusinessMember[]
@@ -970,6 +1020,7 @@ model User {
   adminNotesAbout         AdminNote[]              @relation("AdminNoteSubject")
   adminNotesWritten       AdminNote[]              @relation("AdminNoteAuthor")
   emailVerificationTokens EmailVerificationToken[]
+  dataBackups             DataBackup[]
 
   // No separate @@index([email]) -- @unique above already creates a unique
   // index covering lookups by email (same reasoning as PlatformUser).
@@ -1880,6 +1931,9 @@ model Business {
   zakatProfile                ZakatProfile?
   zakatExtras                 ZakatExtra[]
   zakatPayments               ZakatPayment[]
+  eventPeople                 EventPerson[]
+  socialEvents                SocialEvent[]
+  eventGifts                  EventGift[]
   assets                      Asset[]
   assetCategoryOptions        AssetCategoryOption[]
   groupMembers                GroupMember[]
@@ -1904,6 +1958,9 @@ model BusinessMember {
   invitedAt  DateTime?
   joinedAt   DateTime     @default(now())
   status     MemberStatus @default(ACTIVE)
+  // Settings › App preferences › Default account for new transactions:
+  // the wallet picked first when this member adds income or an expense.
+  defaultAccountId String?
 
   // @@unique below already gives an index with businessId as its leftmost
   // column (covers "all members of a business" lookups), so only userId
@@ -2096,6 +2153,9 @@ model Transaction {
   // reversalOfId above (queried directly, in-memory here, when needed).
   dueDate                DateTime?          @db.Date
   appliedToTransactionId String?
+  // The file it came from (Settings › Data & privacy › Import), so imported
+  // entries can be told apart and counted.
+  importedFrom           String?
   entries                TransactionEntry[]
 
   @@index([businessId, transactionDate])
@@ -2743,6 +2803,8 @@ enum OneTimeCodePurpose {
   PHONE_PASSWORD_RESET
   // The Password Manager's second unlock step, after the vault password.
   VAULT_UNLOCK
+  // Proving a recovery email with a code sent to it (Settings › Security).
+  RECOVERY_EMAIL
 }
 
 enum OneTimeCodeChannel {
@@ -3080,6 +3142,10 @@ enum UserNotificationType {
   IDEA
   // The zakat date is 30 or 3 days away and some zakat is left to give.
   ZAKAT
+  // An event the customer asked to be reminded of is tomorrow.
+  EVENT
+  // AI Insights' morning summary: what needs attention today.
+  INSIGHT
 }
 
 // A browser or phone that gets web push notifications for one customer
@@ -3241,4 +3307,160 @@ model ZakatPayment {
   createdAt     DateTime @default(now())
 
   @@index([businessId, dueDate])
+}
+
+// =====================================================================
+// Calendar & Events: invitations and the customer's own events
+// (weddings, aqiqahs, birthdays...), and the gifts given and received at
+// them -- who gave what, both ways, over the years. A record of social
+// giving, not a money posting: a cash gift does not move a wallet.
+// =====================================================================
+
+enum SocialEventType {
+  WEDDING
+  HOLUD
+  AQIQAH
+  KHATNA
+  BIRTHDAY
+  MILAD
+  EID
+  OTHER
+}
+
+// GAVE: at someone else's event; GOT: at the customer's own.
+enum GiftDirection {
+  GAVE
+  GOT
+}
+
+// CASH, or an ITEM (a gold ring) written down at its value.
+enum GiftKind {
+  CASH
+  ITEM
+}
+
+// Settings › Data & privacy › Backup and restore: a copy of the money
+// records in every workspace the person owns, kept in Smartly (gzipped
+// JSON, one array of rows per table). Password Manager and the Habit
+// Tracker are not in it.
+model DataBackup {
+  id         String         @id @default(uuid())
+  userId     String
+  user       User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  kind       DataBackupKind
+  // Bytes stored (gzipped), and bytes of the records it holds.
+  size       Int
+  rawSize    Int
+  // sha-256 of the records: an automatic copy identical to the newest one
+  // is not kept twice.
+  hash       String
+  workspaces Int
+  data       Bytes
+  createdAt  DateTime       @default(now())
+
+  @@index([userId, createdAt])
+}
+
+enum StartPage {
+  DASHBOARD
+  REPORTS
+  INCOME_EXPENSE
+  GROUP
+  CALENDAR
+}
+
+enum FiscalYearStart {
+  JANUARY
+  JULY
+}
+
+enum Gender {
+  MALE
+  FEMALE
+  UNSAID
+}
+
+enum DataBackupKind {
+  AUTO
+  MANUAL
+  // Taken just before a restore, so the restore can be undone.
+  BEFORE_RESTORE
+}
+
+enum BackupEvery {
+  DAILY
+  WEEKLY
+}
+
+// The parts of a person's records AI Insights may read (User.aiReads).
+enum AiSection {
+  TRANSACTIONS
+  SAVINGS
+  LOANS
+  GROUPS
+  BUDGET
+  ASSETS
+}
+
+// Someone gifts go to or come from: a cousin, a colleague.
+model EventPerson {
+  id         String        @id @default(uuid())
+  businessId String
+  business   Business      @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  name       String
+  // How they are related ("Cousin", "Uncle"), as typed.
+  relation   String?
+  createdAt  DateTime      @default(now())
+  updatedAt  DateTime      @updatedAt
+  hosted     SocialEvent[]
+  gifts      EventGift[]
+
+  @@index([businessId])
+}
+
+model SocialEvent {
+  id         String          @id @default(uuid())
+  businessId String
+  business   Business        @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  type       SocialEventType
+  title      String
+  date       DateTime        @db.Date
+  // "HH:MM" in Asia/Dhaka, when given.
+  time       String?
+  place      String?
+  // Whose event it is; null for the customer's own.
+  hostId     String?
+  host       EventPerson?    @relation(fields: [hostId], references: [id], onDelete: SetNull)
+  remind     Boolean         @default(true)
+  createdAt  DateTime        @default(now())
+  updatedAt  DateTime        @updatedAt
+  gifts      EventGift[]
+
+  @@index([businessId, date])
+  @@index([hostId])
+}
+
+model EventGift {
+  id         String        @id @default(uuid())
+  businessId String
+  business   Business      @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  eventId    String
+  event      SocialEvent   @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  personId   String
+  person     EventPerson   @relation(fields: [personId], references: [id], onDelete: Cascade)
+  direction  GiftDirection
+  kind       GiftKind
+  // The item, for an ITEM gift ("Gold ring").
+  item       String?
+  // Cash given, or what the item is worth.
+  amount     Decimal       @db.Decimal(14, 2)
+  note       String?
+  // Cash given that was also added to Transactions: its expense, which
+  // only deleting the gift (or its event) voids.
+  transactionId String?    @unique
+  createdAt  DateTime      @default(now())
+
+  @@index([businessId])
+  @@index([eventId])
+  @@index([personId])
 }

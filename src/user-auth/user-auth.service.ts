@@ -270,6 +270,9 @@ export class UserAuthService {
       const resetUrl = `${frontendUrl}/reset-password?token=${rawToken}`;
       try {
         await this.mailService.sendPasswordResetEmail(user.email, user.name, resetUrl);
+        // And to the recovery email (Settings › Security), for someone who
+        // has lost their main inbox.
+        if (user.recoveryEmail) await this.mailService.sendPasswordResetEmail(user.recoveryEmail, user.name, resetUrl);
       } catch (err: unknown) {
         // Unlike the welcome email, this one isn't fire-and-forget -- but a
         // send failure still must not change the generic response below, or

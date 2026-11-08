@@ -2,7 +2,7 @@ import { BadRequestException, ConflictException, Injectable, NotFoundException }
 import { Prisma, type ZakatGroup, type ZakatMetal, type ZakatProfile } from '@prisma/client';
 import { MONEY_ACCOUNT_SUBTYPES } from '../accounts/accounts.service.js';
 import { fromPaisa, toPaisa } from '../billing/pricing.js';
-import { nextCategoryColor } from '../budgets/budgets.service.js';
+import { ensureExpenseCategory } from '../budgets/budgets.service.js';
 import { dhakaDateKey } from '../common/dhaka.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { ReceivablesPayablesService } from '../receivables-payables/receivables-payables.service.js';
@@ -434,7 +434,7 @@ export class ZakatService {
         throw new BadRequestException("This wallet doesn't have that much. Pick another wallet or give less.");
       }
       const expenseAccountId = await this.expenseAccountId(tx, businessId);
-      await this.ensureZakatCategory(tx, businessId);
+      await ensureExpenseCategory(tx, businessId, ZAKAT_CATEGORY, 'heart');
       const posted = await this.transactions.createTransaction(
         businessId,
         {
@@ -533,22 +533,4 @@ export class ZakatService {
     return account.id;
   }
 
-  private async ensureZakatCategory(client: Client, businessId: string) {
-    const exists = await client.budgetCategory.count({ where: { businessId, type: 'EXPENSE', name: ZAKAT_CATEGORY } });
-    if (exists) return;
-    const siblings = await client.budgetCategory.findMany({ where: { businessId, type: 'EXPENSE' }, select: { color: true } });
-    await client.budgetCategory.createMany({
-      data: [
-        {
-          businessId,
-          type: 'EXPENSE',
-          name: ZAKAT_CATEGORY,
-          icon: 'heart',
-          color: nextCategoryColor(siblings.map((s) => s.color)),
-          displayOrder: siblings.length,
-        },
-      ],
-      skipDuplicates: true,
-    });
-  }
 }

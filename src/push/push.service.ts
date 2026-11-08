@@ -1,4 +1,6 @@
 import { Injectable, Logger, type OnModuleInit } from '@nestjs/common';
+import type { AlertKey } from '../notification-prefs/notification-prefs.js';
+import { NotificationPrefsService } from '../notification-prefs/notification-prefs.service.js';
 import webpush from 'web-push';
 import { PrismaService } from '../prisma/prisma.service.js';
 import type { SubscribePushDto } from './dto/push-subscription.dto.js';
@@ -16,6 +18,9 @@ const MAX_USER_AGENT_LENGTH = 512;
 export interface PushMessage {
   userId: string;
   build: (locale: PushLocale) => PushPayload;
+  // The Settings › Notifications switch it belongs to: off there (or in
+  // quiet hours), it isn't sent.
+  alert?: AlertKey;
 }
 
 // Web push (the `web-push` package) to customers' browsers and phones. Off
@@ -25,7 +30,10 @@ export class PushService implements OnModuleInit {
   private readonly logger = new Logger(PushService.name);
   private publicKeyValue: string | null = null;
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly prefs: NotificationPrefsService,
+  ) {}
 
   onModuleInit() {
     const publicKey = process.env.VAPID_PUBLIC_KEY?.trim();
@@ -94,6 +102,9 @@ export class PushService implements OnModuleInit {
   async send(messages: PushMessage[]): Promise<number> {
     if (!this.enabled || messages.length === 0) return 0;
     try {
+      const choices = await this.prefs.forUsers([...new Set(messages.filter((message) => message.alert).map((message) => message.userId))]);
+      messages = messages.filter((message) => !message.alert || this.prefs.allowed(choices.get(message.userId), message.alert, 'push'));
+      if (messages.length === 0) return 0;
       const userIds = [...new Set(messages.map((message) => message.userId))];
       const subscriptions = await this.prisma.pushSubscription.findMany({ where: { userId: { in: userIds } } });
       const byUser = new Map<string, typeof subscriptions>();
