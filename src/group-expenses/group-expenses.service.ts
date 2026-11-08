@@ -1444,6 +1444,44 @@ export class GroupExpensesService {
     return closed;
   }
 
+  // Reopens a closed month (the v16 FamilySettlement board's Reopen month):
+  // its record goes, and so do the balances it carried into the next month
+  // (the CARRY rows its close wrote, found by their day and note), so the
+  // live numbers rule again. Only the newest closed month reopens: a later
+  // one started from this one's balances.
+  async reopenSettlement(businessId: string, settlementId: string, userId: string) {
+    const reopened = await this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`group-settlement:${businessId}`}))`;
+      const settlement = await tx.groupSettlement.findFirst({ where: { id: settlementId, businessId } });
+      if (!settlement) throw new NotFoundException('Closed month not found');
+      const later = await tx.groupSettlement.findFirst({ where: { businessId, periodStart: { gt: settlement.periodEnd } }, orderBy: { periodStart: 'desc' } });
+      if (later) {
+        throw new ConflictException(`Reopen ${dayKey(later.periodStart).slice(0, 7)} first: it starts from this month's balances.`);
+      }
+      let carried = 0;
+      if (settlement.carriedForward) {
+        const next = new Date(settlement.periodEnd.getTime() + DAY_MS);
+        const label = `Carried from ${dayKey(settlement.periodStart)} to ${dayKey(settlement.periodEnd)}`;
+        ({ count: carried } = await tx.groupContribution.deleteMany({ where: { businessId, kind: 'CARRY', date: next, note: label } }));
+      }
+      await tx.groupSettlementMember.deleteMany({ where: { settlementId: settlement.id } });
+      await tx.groupSettlement.delete({ where: { id: settlement.id } });
+      return { settlement, carried };
+    });
+    await this.record(businessId, userId, {
+      action: 'MONTH',
+      entity: 'MONTH',
+      entityId: reopened.settlement.id,
+      summary: {
+        periodStart: dayKey(reopened.settlement.periodStart),
+        periodEnd: dayKey(reopened.settlement.periodEnd),
+        reopened: true,
+        carriedRemoved: reopened.carried,
+      },
+    });
+    return { id: reopened.settlement.id, reopened: true };
+  }
+
   // Shared by getSettlement() (live, uncommitted numbers for the current or
   // any requested period) and closeSettlement() (same computation, then
   // persisted as a locked snapshot) -- one source of truth for the math

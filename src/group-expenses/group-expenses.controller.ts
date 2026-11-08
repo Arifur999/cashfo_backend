@@ -404,4 +404,11 @@ export class GroupExpensesController {
   closeSettlement(@Param('businessId') businessId: string, @Body() dto: CloseSettlementDto, @CurrentUser() user: RequestUser) {
     return this.groupExpensesService.closeSettlement(businessId, dto, user.id);
   }
+
+  // Reopen the newest closed month.
+  @RequireRole(MemberRole.OWNER)
+  @Post('settlement/:id/reopen')
+  reopenSettlement(@Param('businessId') businessId: string, @Param('id') id: string, @CurrentUser() user: RequestUser) {
+    return this.groupExpensesService.reopenSettlement(businessId, id, user.id);
+  }
 }
