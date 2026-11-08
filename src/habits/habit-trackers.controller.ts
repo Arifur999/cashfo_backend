@@ -10,6 +10,7 @@ import { CreateCustomTrackerDto } from './dto/create-custom-tracker.dto.js';
 import { CreateHabitTrackerDto } from './dto/create-habit-tracker.dto.js';
 import { CreateRamadanTrackerDto } from './dto/create-ramadan-tracker.dto.js';
 import { RamadanPrepQueryDto, SaveRamadanPrepDto, SetFastsMadeUpDto } from './dto/ramadan-prep.dto.js';
+import { SetTrackerGoalDto } from './dto/set-tracker-goal.dto.js';
 import { SetHabitTrackerCheckDto } from './dto/set-habit-tracker-check.dto.js';
 import { SetRamadanParasDto } from './dto/set-ramadan-paras.dto.js';
 import { HabitTrackersService } from './habit-trackers.service.js';
@@ -86,6 +87,11 @@ export class HabitTrackersController {
   @Post(':id/restart')
   restartChallenge(@CurrentUser() user: RequestUser, @Param('id', ParseUUIDPipe) id: string) {
     return this.habitTrackersService.restartChallenge(user.id, id);
+  }
+
+  @Put(':id/goal')
+  setGoal(@CurrentUser() user: RequestUser, @Param('id', ParseUUIDPipe) id: string, @Body() dto: SetTrackerGoalDto) {
+    return this.habitTrackersService.setGoal(user.id, id, dto.goalPct);
   }
 
   @Put(':id/fasts-made-up')

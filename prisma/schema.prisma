@@ -1487,6 +1487,9 @@ model HabitMonthTracker {
   // Ramadan only: the fasts missed on this sheet that were made up after it
   // (Ramadan › Today's "I kept one").
   fastsMadeUp Int               @default(0)
+  // Namaz only: the share of the month's prayers the person means to pray
+  // (1-100), or null for none.
+  goalPct     Int?
   // Others only: the Dhaka date day 1 falls on (today or tomorrow, as it was
   // started; Restart moves it to today). Rows from before it was kept carry
   // the UTC date of createdAt, the day the app always counted from.
