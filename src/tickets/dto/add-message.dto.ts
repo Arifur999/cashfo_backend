@@ -1,3 +1,4 @@
+import { Transform } from 'class-transformer';
 import { IsBoolean, IsEnum, IsNotEmpty, IsOptional, IsString, MaxLength, ValidateIf } from 'class-validator';
 import { TicketStatus } from '@prisma/client';
 import { whenSent } from '../../common/dto.js';
@@ -13,8 +14,10 @@ export class AddMessageDto {
   attachmentUrl?: string;
 
   // A note for the other admins: kept on the ticket, never shown to the
-  // customer, and no bell or email goes out for it.
+  // customer, and no bell or email goes out for it. A multipart body (a
+  // reply with a picture) carries it as "true"/"false".
   @ValidateIf(whenSent)
+  @Transform(({ value }: { value: unknown }) => (value === 'true' ? true : value === 'false' ? false : value))
   @IsBoolean()
   isInternal?: boolean;
 

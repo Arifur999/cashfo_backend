@@ -475,6 +475,16 @@ describe('TicketsService.addMessage', () => {
     expect(note.prisma.userNotification.createMany).not.toHaveBeenCalled();
   });
 
+  it('a reply can carry one picture, saved with the message; a note cannot', async () => {
+    const { service, prisma } = setupWrite();
+    const file = { mimetype: 'image/png', size: 3, buffer: Buffer.from([1, 2, 3]) } as Express.Multer.File;
+    await service.addMessage('t1', { message: 'Here is where to tap' }, 'admin-nadia', undefined, file);
+    expect(prisma.ticketMessage.create.mock.calls[0][0].data).toMatchObject({ attachment: { create: { mimeType: 'image/png', size: 3 } } });
+
+    await expect(service.addMessage('t1', { message: 'See this', isInternal: true }, 'admin-nadia', undefined, file)).rejects.toThrow("can't carry a picture");
+    expect(prisma.ticketMessage.create).toHaveBeenCalledTimes(1);
+  });
+
   it('nextStatus: the picked status wins; a reply opens work; a note changes nothing', () => {
     expect(nextStatus('OPEN', false)).toBe('IN_PROGRESS');
     expect(nextStatus('OPEN', true)).toBe('OPEN');

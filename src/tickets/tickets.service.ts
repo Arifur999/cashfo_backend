@@ -322,12 +322,23 @@ export class TicketsService {
   // leaves the ticket as it was; only a status sent with it moves it.
   // `status` is the reply box's "After sending, set to", applied once the
   // message is saved and audited like a status change from update().
-  async addMessage(id: string, dto: AddMessageDto, adminId: string, ipAddress?: string) {
-    const ticket = await this.requireTicket(id);
+  async addMessage(id: string, dto: AddMessageDto, adminId: string, ipAddress?: string, file?: Express.Multer.File) {
     const isInternal = dto.isInternal === true;
+    // A picture goes to the customer with a reply; notes stay words only.
+    if (file && isInternal) throw new BadRequestException("A note for admins can't carry a picture");
+    const ticket = await this.requireTicket(id);
 
     const message = await this.prisma.ticketMessage.create({
-      data: { ticketId: id, senderType: 'ADMIN', senderId: adminId, message: dto.message, attachmentUrl: dto.attachmentUrl, isInternal },
+      data: {
+        ticketId: id,
+        senderType: 'ADMIN',
+        senderId: adminId,
+        message: dto.message,
+        attachmentUrl: dto.attachmentUrl,
+        isInternal,
+        ...(file && { attachment: { create: { mimeType: file.mimetype, size: file.size, data: new Uint8Array(file.buffer) } } }),
+      },
+      include: { attachment: { select: { id: true, mimeType: true, size: true } } },
     });
 
     const status = nextStatus(ticket.status, isInternal, dto.status);
