@@ -298,8 +298,8 @@ export class GroupExpensesController {
   // ---- Activity log ----
 
   @Get('activity')
-  listActivity(@Param('businessId') businessId: string, @Query() query: GroupActivityQueryDto) {
-    return this.groupExpensesService.listActivity(businessId, query);
+  listActivity(@Param('businessId') businessId: string, @Query() query: GroupActivityQueryDto, @CurrentUser() user: RequestUser) {
+    return this.groupExpensesService.listActivity(businessId, query, user.id);
   }
 
   // ---- Settlement ----

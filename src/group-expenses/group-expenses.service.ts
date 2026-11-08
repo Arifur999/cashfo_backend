@@ -22,6 +22,7 @@ import { SetGroupMealsDto } from './dto/group-meal.dto.js';
 import { UpdateGroupSettingsDto } from './dto/group-settings.dto.js';
 import { SettleUpDto } from './dto/settle-up.dto.js';
 import { cashbook, cashByAccountant, cashMovements } from './group-cash.js';
+import { initialsOf } from './group-names.js';
 import { settleGroup } from './group-settlement.js';
 
 export interface SettlementMemberRow {
@@ -144,7 +145,10 @@ export class GroupExpensesService {
     }
   }
 
-  async listActivity(businessId: string, filters: { action?: GroupActivityAction; page?: number; limit?: number }) {
+  // viewerUserId: who is reading. Each line names the person who made the
+  // change; someone who turned off "Show my name in groups" (Settings ›
+  // Data & privacy) reads as their initials to everyone but themselves.
+  async listActivity(businessId: string, filters: { action?: GroupActivityAction; page?: number; limit?: number }, viewerUserId: string | null = null) {
     const page = filters.page ?? 1;
     const limit = filters.limit ?? 50;
     const where: Prisma.GroupActivityWhereInput = { businessId, ...(filters.action && { action: filters.action }) };
@@ -153,10 +157,17 @@ export class GroupExpensesService {
       this.prisma.groupActivity.count({ where }),
       this.prisma.groupMember.findMany({ where: { businessId, isOwner: true }, select: { name: true } }),
     ]);
-    // Only the owner signs in and records for everyone: their member name
-    // stands for "who".
+    // A line from before actors were known stands for the owner.
     const owner = actors[0]?.name ?? null;
-    return { data: data.map((row) => ({ ...row, actorName: owner })), meta: { page, limit, total, totalPages: Math.ceil(total / limit) } };
+    const actorIds = [...new Set(data.map((row) => row.actorUserId).filter((id): id is string => !!id))];
+    const users = actorIds.length
+      ? await this.prisma.user.findMany({ where: { id: { in: actorIds } }, select: { id: true, name: true, showNameInGroups: true } })
+      : [];
+    const nameOf = new Map(users.map((user) => [user.id, user.id === viewerUserId || user.showNameInGroups ? user.name : initialsOf(user.name)]));
+    return {
+      data: data.map((row) => ({ ...row, actorName: (row.actorUserId && nameOf.get(row.actorUserId)) || owner })),
+      meta: { page, limit, total, totalPages: Math.ceil(total / limit) },
+    };
   }
 
   // ---- Members ----
