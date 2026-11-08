@@ -1004,6 +1004,7 @@ model User {
   skillGoals              SkillGoal[]
   todoLists               TodoList[]
   todoRepeats             TodoRepeat[]
+  todoCategories          TodoCategory[]
   prayerSettings          PrayerSettings?
   qazaLogs                QazaLog[]
   notes                   Note[]
@@ -1741,14 +1742,19 @@ model SkillGoal {
 }
 
 // Habit Tracker -> To Do List: one list per (Asia/Dhaka) calendar date the user
-// picks, holding any number of check-off tasks. Unlike the habit trackers, a
-// list has no "protect ticked history" delete rule -- a to-do is disposable,
-// not a record, so it can be deleted at any time regardless of completed tasks.
+// picks, holding any number of check-off tasks, plus one dateless list for
+// "Someday". Unlike the habit trackers, a list has no "protect ticked
+// history" delete rule -- a to-do is disposable, not a record, so it can be
+// deleted at any time regardless of completed tasks.
 model TodoList {
   id        String     @id @default(uuid())
   userId    String
   user      User       @relation(fields: [userId], references: [id])
-  date      DateTime   @db.Date
+  // null on the Someday list.
+  date      DateTime?  @db.Date
+  // The owner's id on their Someday list, null on a day's list: the unique
+  // index keeps it to one Someday list per person.
+  somedayOf String?    @unique
   createdAt DateTime   @default(now())
   items     TodoItem[]
 
@@ -1756,27 +1762,60 @@ model TodoList {
   @@index([userId])
 }
 
+// A To Do List "list" (the board's Personal, Work, Home, Deen, or one the
+// person adds): a name and a colour a task is filed under. The four built-in
+// ones carry a key and are made the first time the lists are read; their
+// names are translated by the app. Not to be confused with TodoList, a day.
+model TodoCategory {
+  id        String       @id @default(uuid())
+  userId    String
+  user      User         @relation(fields: [userId], references: [id])
+  // personal, work, home or deen on a built-in list; null on one the person added.
+  key       String?
+  name      String
+  // A palette key (blue, violet, orange, green, pink, teal, yellow, indigo,
+  // emerald, purple), drawn with the app's own tints.
+  color     String
+  createdAt DateTime     @default(now())
+  items     TodoItem[]
+  repeats   TodoRepeat[]
+
+  @@unique([userId, key])
+  @@index([userId])
+}
+
 model TodoItem {
-  id           String       @id @default(uuid())
+  id           String        @id @default(uuid())
   listId       String
-  list         TodoList     @relation(fields: [listId], references: [id], onDelete: Cascade)
+  list         TodoList      @relation(fields: [listId], references: [id], onDelete: Cascade)
   text         String
-  completed    Boolean      @default(false)
-  priority     TodoPriority @default(MEDIUM)
+  completed    Boolean       @default(false)
+  priority     TodoPriority  @default(MEDIUM)
   // "HH:MM" on a 24-hour clock, Dhaka time; null = any time that day.
   dueTime      String?
   // A reminder this many minutes before dueTime (0 = at the time); null =
   // none. Only fires while dueTime is set (RemindersScheduler).
   remindBefore Int?
-  // The day the task was first planned for, once it has moved to another.
-  movedFrom    DateTime?    @db.Date
+  // The day the task was first planned for, once it was put off to a later one.
+  movedFrom    DateTime?     @db.Date
+  // How many times it was put off to a later day.
+  moveCount    Int           @default(0)
+  // When it was ticked off; null while open.
+  completedAt  DateTime?
+  // The list it is filed under; null reads as the built-in Personal list.
+  categoryId   String?
+  category     TodoCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  note         String        @default("")
+  // Smaller steps, in order: [{ "text": string, "done": boolean }].
+  steps        Json          @default("[]")
   // Set on a task a repeat rule added; one per rule per day.
   repeatId     String?
-  repeat       TodoRepeat?  @relation(fields: [repeatId], references: [id], onDelete: SetNull)
-  createdAt    DateTime     @default(now())
+  repeat       TodoRepeat?   @relation(fields: [repeatId], references: [id], onDelete: SetNull)
+  createdAt    DateTime      @default(now())
 
   @@unique([repeatId, listId])
   @@index([listId])
+  @@index([categoryId])
 }
 
 enum TodoPriority {
@@ -1803,6 +1842,11 @@ model TodoRepeat {
   dueTime       String?
   // Copied onto each copy, like dueTime.
   remindBefore  Int?
+  // Copied onto each copy too; the steps start unticked on every one.
+  categoryId    String?
+  category      TodoCategory?  @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  note          String         @default("")
+  steps         Json           @default("[]")
   kind          TodoRepeatKind
   // WEEKLY: 0 = Sunday ... 6 = Saturday.
   weekdays      Int[]
@@ -1817,6 +1861,7 @@ model TodoRepeat {
   items         TodoItem[]
 
   @@index([userId])
+  @@index([categoryId])
 }
 
 // Habit Tracker > Write > Notes (the NotesHome board): quick notes and

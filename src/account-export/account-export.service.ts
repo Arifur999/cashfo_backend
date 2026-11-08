@@ -2,6 +2,7 @@ import { BadRequestException, Injectable } from '@nestjs/common';
 import { Prisma, type Business } from '@prisma/client';
 import { dhakaDateKey } from '../common/dhaka.js';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { stepsOf } from '../todos/todo-text.js';
 import { cellText, day, toCsv, type CsvCell } from './csv.js';
 import { xlsxWorkbook, type SheetData } from './xlsx.js';
 import { zipFiles, type ZipEntry } from './zip.js';
@@ -312,7 +313,7 @@ export class AccountExportService {
       this.prisma.todoItem.findMany({
         where: { list: { userId } },
         orderBy: [{ list: { date: 'asc' } }, { createdAt: 'asc' }],
-        include: { list: { select: { date: true } } },
+        include: { list: { select: { date: true } }, category: { select: { name: true } } },
       }),
       this.prisma.todoRepeat.findMany({ where: { userId }, orderBy: { createdAt: 'asc' } }),
       this.prisma.book.findMany({ where: { userId }, orderBy: { createdAt: 'asc' }, include: { logs: { orderBy: { date: 'asc' } } } }),
@@ -405,8 +406,38 @@ export class AccountExportService {
       {
         name: 'todos.csv',
         ...table(
-          ['Date', 'Task', 'Done', 'Priority', 'Due time', 'Remind minutes before', 'Moved from', 'Repeats'],
-          todos.map((t) => [day(t.list.date), t.text, t.completed, t.priority, t.dueTime, t.remindBefore, day(t.movedFrom), t.repeatId ? 'yes' : null]),
+          [
+            'Date',
+            'Task',
+            'List',
+            'Done',
+            'Done at',
+            'Priority',
+            'Due time',
+            'Remind minutes before',
+            'Moved from',
+            'Times put off',
+            'Repeats',
+            'Steps',
+            'Note',
+          ],
+          todos.map((t) => [
+            t.list.date ? day(t.list.date) : 'Someday',
+            t.text,
+            t.category?.name ?? 'Personal',
+            t.completed,
+            t.completedAt,
+            t.priority,
+            t.dueTime,
+            t.remindBefore,
+            day(t.movedFrom),
+            t.moveCount,
+            t.repeatId ? 'yes' : null,
+            stepsOf(t.steps)
+              .map((step) => `${step.done ? '[x]' : '[ ]'} ${step.text}`)
+              .join('; '),
+            t.note,
+          ]),
         ),
       },
       {

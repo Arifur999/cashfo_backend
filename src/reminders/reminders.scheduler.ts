@@ -331,7 +331,8 @@ export class RemindersScheduler implements OnApplicationBootstrap, OnModuleDestr
     });
     const drafts: Draft[] = [];
     for (const item of items) {
-      if (!item.dueTime || item.remindBefore === null || !CLOCK_REGEX.test(item.dueTime)) continue;
+      // The day's list always has a date (the Someday list never matches the query).
+      if (!item.dueTime || item.remindBefore === null || !item.list.date || !CLOCK_REGEX.test(item.dueTime)) continue;
       const fire = beforeFire(dhakaInstant(dayOfDate(item.list.date), item.dueTime), item.remindBefore, now);
       if (!fire) continue;
       drafts.push({
