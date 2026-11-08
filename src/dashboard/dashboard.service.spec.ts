@@ -5,7 +5,11 @@ const NOW = new Date('2026-10-02T06:00:00.000Z');
 const setup = () => {
   const count = vi.fn().mockResolvedValue(0);
   const prisma = {
-    user: { count: vi.fn().mockResolvedValue(10), findMany: vi.fn().mockResolvedValue([{ createdAt: new Date('2026-10-01T06:00:00.000Z') }]) },
+    user: {
+      count: vi.fn().mockResolvedValue(10),
+      findFirst: vi.fn().mockResolvedValue({ createdAt: new Date('2025-01-04T20:00:00.000Z') }),
+      findMany: vi.fn().mockResolvedValue([{ createdAt: new Date('2026-10-01T06:00:00.000Z') }]),
+    },
     supportTicket: {
       count,
       findMany: vi.fn().mockResolvedValue([{ status: 'OPEN', createdAt: new Date('2026-10-02T00:00:00.000Z'), messages: [] }]),
@@ -189,6 +193,7 @@ describe('DashboardService.overview', () => {
     const overview = await service.overview({ id: 'admin-1', role: 'SUPER_ADMIN' }, { from: '2026-08-01', to: '2026-08-31' });
 
     expect(overview.range).toEqual({ from: '2026-08-01', to: '2026-08-31', kind: 'month', unit: 'day', isNow: false });
+    expect(overview.since).toBe('2025-01-05');
     expect(overview.signups.points).toHaveLength(31);
     expect(overview.active).toEqual({ count: 3, accounts: 10, pct: 30 });
     // On 31 August: the monthly payer (paid 20 Aug) and the yearly one.

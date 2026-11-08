@@ -97,7 +97,7 @@ describe('AnalyticsService with a period', () => {
           { userId: 'd', createdAt: at('2026-08-20T04:00:00.000Z'), lastUsedAt: at('2026-08-31T04:00:00.000Z') },
         ]),
       },
-      user: { count: vi.fn().mockResolvedValue(10) },
+      user: { count: vi.fn().mockResolvedValue(10), findFirst: vi.fn().mockResolvedValue({ createdAt: at('2025-01-05T04:00:00.000Z') }) },
     };
     const service = new AnalyticsService(prisma as never);
     await expect(service.periodSummary({ from: '2026-09-01', to: '2026-09-30' }, at('2026-10-28T06:00:00.000Z'))).resolves.toEqual({
@@ -105,6 +105,7 @@ describe('AnalyticsService with a period', () => {
       to: '2026-09-30',
       isNow: false,
       lastDay: '2026-09-30',
+      since: '2025-01-05',
       activeInPeriod: 3,
       activeLast7d: 1,
       activePrevious7d: 1,
@@ -114,7 +115,10 @@ describe('AnalyticsService with a period', () => {
   });
 
   it('reads a running period up to now, with yesterday as its last day', async () => {
-    const prisma = { userSession: { findMany: vi.fn().mockResolvedValue([]) }, user: { count: vi.fn().mockResolvedValue(0) } };
+    const prisma = {
+      userSession: { findMany: vi.fn().mockResolvedValue([]) },
+      user: { count: vi.fn().mockResolvedValue(0), findFirst: vi.fn().mockResolvedValue(null) },
+    };
     const service = new AnalyticsService(prisma as never);
     await expect(service.periodSummary({ from: '2026-10-01', to: '2026-10-31' }, at('2026-10-28T06:00:00.000Z'))).resolves.toMatchObject({
       to: '2026-10-28',

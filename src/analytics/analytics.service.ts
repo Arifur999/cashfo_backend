@@ -121,12 +121,14 @@ export class AnalyticsService {
     const twoWeeksFrom = new Date(end.getTime() - 14 * DAY_MS);
     const earliest = range.from < twoWeeksFrom ? range.from : twoWeeksFrom;
 
-    const [sessions, accounts] = await Promise.all([
+    const [sessions, accounts, first] = await Promise.all([
       this.prisma.userSession.findMany({
         where: { OR: [{ createdAt: { gte: earliest, lt: range.toExclusive } }, { lastUsedAt: { gte: earliest, lt: range.toExclusive } }] },
         select: { userId: true, createdAt: true, lastUsedAt: true },
       }),
       this.prisma.user.count({ where: liveAt(end) }),
+      // The first customer: months before them have nothing to show.
+      this.prisma.user.findFirst({ where: END_USER_WHERE, orderBy: { createdAt: 'asc' }, select: { createdAt: true } }),
     ]);
     const touches = sessions.flatMap((session) => [session.createdAt, session.lastUsedAt].map((at) => ({ userId: session.userId, at })));
     const activeIn = (from: Date, to: Date) => new Set(touches.filter((touch) => touch.at >= from && touch.at < to).map((touch) => touch.userId)).size;
@@ -136,6 +138,7 @@ export class AnalyticsService {
       to: toDay,
       isNow,
       lastDay,
+      since: first ? dhakaDateKey(first.createdAt) : null,
       activeInPeriod: activeIn(range.from, range.toExclusive),
       activeLast7d: activeIn(weekFrom, end),
       activePrevious7d: activeIn(twoWeeksFrom, weekFrom),

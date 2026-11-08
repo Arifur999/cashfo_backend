@@ -158,7 +158,9 @@ export class DashboardService {
     const end = range.isNow ? now : endExclusive;
     const inPeriod = { gte: start, lt: endExclusive };
 
-    const [total, signups, newLast7d, liveAccounts, active, money, attentionMoney, superParts, tickets] = await Promise.all([
+    const [first, total, signups, newLast7d, liveAccounts, active, money, attentionMoney, superParts, tickets] = await Promise.all([
+      // The first sign-up: months before it have nothing to show.
+      this.prisma.user.findFirst({ where: SIGNED_UP, orderBy: { createdAt: 'asc' }, select: { createdAt: true } }),
       this.prisma.user.count({ where: { ...SIGNED_UP, createdAt: { lt: end } } }),
       this.prisma.user.findMany({ where: { ...SIGNED_UP, createdAt: inPeriod }, select: { createdAt: true } }),
       this.prisma.user.count({ where: { ...SIGNED_UP, createdAt: { gte: dhakaStartOf(addDays(range.to, -6)), lt: endExclusive } } }),
@@ -179,6 +181,7 @@ export class DashboardService {
 
     return {
       range,
+      since: first ? dhakaDateKey(first.createdAt) : null,
       attention: {
         payoutRequests: attentionMoney?.payoutRequests ?? null,
         ticketsNoReply: tickets,
