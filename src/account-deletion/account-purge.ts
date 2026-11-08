@@ -64,6 +64,7 @@ export async function purgeUser(tx: Prisma.TransactionClient, userId: string, em
   await tx.qazaLog.deleteMany({ where: { userId } });
   await tx.book.deleteMany({ where: { userId } });
   await tx.bookGoal.deleteMany({ where: { userId } });
+  await tx.bookShelf.deleteMany({ where: { userId } });
   await tx.skill.deleteMany({ where: { userId } });
   await tx.skillGoal.deleteMany({ where: { userId } });
   await tx.todoList.deleteMany({ where: { userId } });

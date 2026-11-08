@@ -89,7 +89,7 @@ export class RemindersService {
         if (!found) throw new NotFoundException('Book not found');
         return;
       case 'SKILL':
-        found = await this.prisma.skill.findFirst({ where: { id: targetKey, userId }, select: { id: true } });
+        found = await this.prisma.skill.findFirst({ where: { id: targetKey, userId, deletedAt: null }, select: { id: true } });
         if (!found) throw new NotFoundException('Skill not found');
         return;
       case 'NAMAZ':
