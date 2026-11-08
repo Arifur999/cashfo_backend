@@ -5,7 +5,7 @@ import { dhakaToday } from '../common/dhaka.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import type { RequestUser } from '../user-auth/interfaces/request-user.interface.js';
 import { GroupExpensesService } from './group-expenses.service.js';
-import { collectedOf, currentGroupMonth, groupMonthPeriod, monthKeyText, owing, parseMonthKey, type MonthKey } from './group-summary.js';
+import { collectedOf, contributedBy, currentGroupMonth, groupMonthPeriod, monthKeyText, owing, parseMonthKey, type MonthKey } from './group-summary.js';
 
 export interface LockedGroupSummary {
   businessId: string;
@@ -39,9 +39,15 @@ export interface GroupSummary {
   budget: string | null;
   // Who still has to pay, and how much in all.
   toSettle: { count: number; total: string; names: string[] };
+  // How many sharing members put money in this month ("6 of 8 paid").
+  contributedBy: { count: number; of: number };
   // The month is over / a closed settlement covers it.
   ended: boolean;
   closed: boolean;
+  // Paused groups are kept out of new entries and listed last.
+  paused: boolean;
+  // The group's first month with any record ("Since Jan 2025"), or null.
+  firstMonth: string | null;
 }
 
 type Today = { year: number; month: number; day: number };
@@ -88,7 +94,7 @@ export class GroupSummaryService {
     const settings = await this.groups.getSettings(businessId);
     const key = asked ?? currentGroupMonth(today, settings.monthStartDay);
     const { periodStart, periodEnd } = groupMonthPeriod(key, settings.monthStartDay);
-    const [settlement, members, budget, closing] = await Promise.all([
+    const [settlement, members, budget, closing, firstContribution, firstExpense] = await Promise.all([
       this.groups.getSettlement(businessId, dayKey(periodStart), dayKey(periodEnd)),
       this.prisma.groupMember.findMany({ where: { businessId, status: 'ACTIVE' }, select: { shareUnits: true } }),
       this.prisma.groupMonthlyBudget.findUnique({
@@ -96,7 +102,10 @@ export class GroupSummaryService {
         select: { budgetAmount: true },
       }),
       this.prisma.groupSettlement.findFirst({ where: { businessId, periodStart: { lte: periodEnd }, periodEnd: { gte: periodStart } }, select: { id: true } }),
+      this.prisma.groupContribution.findFirst({ where: { businessId }, orderBy: { date: 'asc' }, select: { date: true } }),
+      this.prisma.groupExpense.findFirst({ where: { businessId }, orderBy: { date: 'asc' }, select: { date: true } }),
     ]);
+    const first = [firstContribution?.date, firstExpense?.date].filter((date): date is Date => !!date).sort((a, b) => a.getTime() - b.getTime())[0];
     const mealsOn = settings.mealsOn && Number(settlement.mealUnits) > 0;
     return {
       businessId,
@@ -118,6 +127,9 @@ export class GroupSummaryService {
       toSettle: owing(settlement.members),
       ended: dayKey(periodEnd) < `${today.year}-${pad(today.month)}-${pad(today.day)}`,
       closed: closing !== null,
+      contributedBy: contributedBy(settlement.members),
+      paused: !!settings.pausedAt,
+      firstMonth: first ? dayKey(first).slice(0, 7) : null,
     };
   }
 }

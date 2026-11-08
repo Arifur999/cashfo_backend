@@ -71,6 +71,13 @@ export class AssetsService {
         throw new ConflictException(`An asset category named "${dto.name}" already exists`);
       }
     }
+    // The forms need something to offer: the last switched-on type stays on.
+    if (dto.isActive === false && category.isActive) {
+      const on = await this.prisma.assetCategoryOption.count({ where: { businessId, isActive: true } });
+      if (on <= 1) {
+        throw new BadRequestException('Keep at least one category on for the forms.');
+      }
+    }
     // An asset names its type by the type's name, so a rename takes the
     // type's assets along in the same commit; before, they kept the old
     // name and dropped out of the type.
@@ -91,11 +98,16 @@ export class AssetsService {
   }
 
   // The last type stays: an asset needs one to be filed under, and an empty
-  // list is what brings the seven defaults back (listCategories()).
+  // list is what brings the seven defaults back (listCategories()). A type
+  // that still files assets (sold ones too: their history keeps it) stays
+  // until they are moved; switching it off is how it leaves the forms.
   async deleteCategory(businessId: string, id: string) {
-    await this.requireCategory(businessId, id);
+    const category = await this.requireCategory(businessId, id);
     if ((await this.prisma.assetCategoryOption.count({ where: { businessId } })) <= 1) {
       throw new BadRequestException('Keep at least one asset type.');
+    }
+    if ((await this.prisma.asset.count({ where: { businessId, category: category.name } })) > 0) {
+      throw new ConflictException('This category still has assets. Move them to another category first.');
     }
     await this.prisma.assetCategoryOption.delete({ where: { id } });
     return { id };
@@ -198,7 +210,7 @@ export class AssetsService {
         throw new BadRequestException('This asset has already been sold.');
       }
       if (isBeforePurchase(dto.date, asset.purchaseDate)) {
-        throw new BadRequestException('An asset can\'t be sold before the day it was bought.');
+        throw new BadRequestException("An asset can't be sold before the day it was bought.");
       }
       const depositAccount = await this.requirePaymentAccount(businessId, dto.soldAccountId, tx);
       const fixedAssetsAccount = await this.requireOrCreateFixedAssetsAccount(businessId, tx);
@@ -242,7 +254,7 @@ export class AssetsService {
       throw new BadRequestException('Cannot update the value of a sold asset.');
     }
     if (isBeforePurchase(dto.date, asset.purchaseDate)) {
-      throw new BadRequestException('A value can\'t be dated before the day the asset was bought.');
+      throw new BadRequestException("A value can't be dated before the day the asset was bought.");
     }
     // A value for an earlier day fills in the history; only the newest one
     // is what the asset is worth today.
@@ -258,6 +270,55 @@ export class AssetsService {
     });
   }
 
+  // Sets right a value update recorded by mistake: its value, day or note.
+  // The purchase's own row is where the asset starts (edit the purchase
+  // instead), a sold asset's history is closed, and the asset's value today
+  // follows whichever update is newest afterwards.
+  async editValueUpdate(businessId: string, id: string, entryId: string, dto: UpdateAssetValueDto) {
+    return this.prisma.$transaction(async (tx) => {
+      await this.requireValueUpdate(businessId, id, entryId, tx);
+      const asset = await this.requireAsset(businessId, id, tx);
+      if (isBeforePurchase(dto.date, asset.purchaseDate)) {
+        throw new BadRequestException("A value can't be dated before the day the asset was bought.");
+      }
+      await tx.assetValueHistory.update({ where: { id: entryId }, data: { value: dto.value, note: dto.note ?? null, recordedAt: new Date(dto.date) } });
+      return this.refreshCurrentValue(id, tx);
+    });
+  }
+
+  // Removes a value update recorded by mistake, on the same terms.
+  async deleteValueUpdate(businessId: string, id: string, entryId: string) {
+    return this.prisma.$transaction(async (tx) => {
+      await this.requireValueUpdate(businessId, id, entryId, tx);
+      await tx.assetValueHistory.delete({ where: { id: entryId } });
+      return this.refreshCurrentValue(id, tx);
+    });
+  }
+
+  private async requireValueUpdate(businessId: string, id: string, entryId: string, tx: Prisma.TransactionClient) {
+    const asset = await this.requireAsset(businessId, id, tx);
+    if (asset.status === 'SOLD') {
+      throw new BadRequestException("This asset is sold. Its value can't change.");
+    }
+    const rows = await tx.assetValueHistory.findMany({ where: { assetId: id }, select: { id: true, recordedAt: true, note: true } });
+    if (!rows.some((row) => row.id === entryId)) {
+      throw new NotFoundException('Value update not found');
+    }
+    if (purchaseRowOf(rows)?.id === entryId) {
+      throw new BadRequestException('This is where the asset starts. Edit the purchase instead.');
+    }
+  }
+
+  // The asset's value today is its newest update's.
+  private async refreshCurrentValue(id: string, tx: Prisma.TransactionClient) {
+    const newest = await tx.assetValueHistory.findFirst({ where: { assetId: id }, orderBy: VALUE_HISTORY_ORDER, select: { value: true } });
+    return tx.asset.update({
+      where: { id },
+      data: newest ? { currentValue: newest.value } : {},
+      include: { valueHistory: { orderBy: VALUE_HISTORY_ORDER } },
+    });
+  }
+
   // Corrects an asset's name, type and notes. The purchase date changes
   // only on an owned asset no wallet paid for (a paid purchase keeps its
   // posting's date, and a sale stays after its purchase), and never past a
@@ -266,7 +327,8 @@ export class AssetsService {
   // was added, and that check stays where it is.
   async update(businessId: string, id: string, dto: UpdateAssetDto) {
     const asset = await this.requireAsset(businessId, id);
-    const newDate = dto.purchaseDate !== undefined && dto.purchaseDate.slice(0, 10) !== asset.purchaseDate.toISOString().slice(0, 10) ? new Date(dto.purchaseDate) : null;
+    const newDate =
+      dto.purchaseDate !== undefined && dto.purchaseDate.slice(0, 10) !== asset.purchaseDate.toISOString().slice(0, 10) ? new Date(dto.purchaseDate) : null;
     let purchaseRowId: string | undefined;
     if (newDate) {
       if (asset.purchaseTransactionId) {
@@ -278,7 +340,7 @@ export class AssetsService {
       const history = await this.prisma.assetValueHistory.findMany({ where: { assetId: id }, select: { id: true, recordedAt: true, note: true } });
       purchaseRowId = purchaseRowOf(history)?.id;
       if (!canMovePurchaseTo(newDate, history, purchaseRowId)) {
-        throw new BadRequestException('The purchase date can\'t be later than a value recorded for the asset.');
+        throw new BadRequestException("The purchase date can't be later than a value recorded for the asset.");
       }
     }
     return this.prisma.$transaction(async (tx) => {

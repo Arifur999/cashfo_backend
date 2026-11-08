@@ -314,16 +314,34 @@ export class AccountsService {
       await this.refuseParentCycle(id, dto.parentId);
     }
 
-    return this.prisma.account.update({
-      where: { id },
-      data: {
-        ...(dto.name !== undefined && { name: dto.name }),
-        ...(dto.nameBn !== undefined && { nameBn: dto.nameBn }),
-        ...(dto.accountNumber !== undefined && { accountNumber: dto.accountNumber }),
-        ...(dto.color !== undefined && { color: dto.color }),
-        ...(dto.accountSubtype !== undefined && { accountSubtype: dto.accountSubtype }),
-        ...(dto.parentId !== undefined && { parentId: dto.parentId }),
-      },
+    const data: Prisma.AccountUncheckedUpdateInput = {
+      ...(dto.name !== undefined && { name: dto.name }),
+      ...(dto.nameBn !== undefined && { nameBn: dto.nameBn }),
+      ...(dto.accountNumber !== undefined && { accountNumber: dto.accountNumber }),
+      ...(dto.color !== undefined && { color: dto.color }),
+      ...(dto.accountSubtype !== undefined && { accountSubtype: dto.accountSubtype }),
+      ...(dto.parentId !== undefined && { parentId: dto.parentId }),
+    };
+    if (dto.openingBalance === undefined) return this.prisma.account.update({ where: { id }, data });
+
+    // Money wallets only (an older workspace's seeded Cash is one too, though
+    // marked a system account); a savings wallet's money belongs to goals.
+    if (account.accountType !== 'ASSET' || !subtype || !MONEY_ACCOUNT_SUBTYPES.includes(subtype)) {
+      throw new BadRequestException("Only a cash, bank or mobile banking account's opening balance can be changed.");
+    }
+    // An opening balance entered wrong, put right: the current balance moves
+    // by the same amount. Both are read and written under the row lock every
+    // posting takes, so a posting or a second edit at the same moment can't
+    // leave the two out of step.
+    const opening = new Prisma.Decimal(dto.openingBalance);
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM "Account" WHERE id = ${id} FOR UPDATE`;
+      const { openingBalance } = await tx.account.findUniqueOrThrow({ where: { id }, select: { openingBalance: true } });
+      const shift = opening.minus(openingBalance);
+      return tx.account.update({
+        where: { id },
+        data: { ...data, ...(!shift.isZero() && { openingBalance: opening, currentBalance: { increment: shift } }) },
+      });
     });
   }
 
