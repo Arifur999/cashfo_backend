@@ -324,7 +324,9 @@ export class AccountsService {
     };
     if (dto.openingBalance === undefined) return this.prisma.account.update({ where: { id }, data });
 
-    if (account.isSystemAccount || account.accountType !== 'ASSET' || !subtype || !MONEY_ACCOUNT_SUBTYPES.includes(subtype)) {
+    // Money wallets only (an older workspace's seeded Cash is one too, though
+    // marked a system account); a savings wallet's money belongs to goals.
+    if (account.accountType !== 'ASSET' || !subtype || !MONEY_ACCOUNT_SUBTYPES.includes(subtype)) {
       throw new BadRequestException("Only a cash, bank or mobile banking account's opening balance can be changed.");
     }
     // An opening balance entered wrong, put right: the current balance moves

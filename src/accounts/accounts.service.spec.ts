@@ -105,13 +105,19 @@ describe('AccountsService.update opening balance', () => {
     expect(tx.account.update).toHaveBeenCalledWith({ where: { id: 'w' }, data: {} });
   });
 
-  it("refuses a savings or system account's opening balance", async () => {
+  it("refuses a savings wallet's or the receivable's opening balance", async () => {
     const savings = lockedSetup({ ...wallet, accountSubtype: 'savings' }, '0');
     await expect(savings.service.update('biz-1', 'w', { openingBalance: '10' })).rejects.toThrow(BadRequestException);
-    const system = lockedSetup({ ...wallet, isSystemAccount: true }, '0');
+    const system = lockedSetup({ ...wallet, accountSubtype: 'receivable', isSystemAccount: true }, '0');
     await expect(system.service.update('biz-1', 'w', { openingBalance: '10' })).rejects.toThrow(BadRequestException);
     expect(savings.tx.account.update).not.toHaveBeenCalled();
     expect(system.tx.account.update).not.toHaveBeenCalled();
+  });
+
+  it("puts an older workspace's seeded Cash right too", async () => {
+    const { service, tx } = lockedSetup({ ...wallet, accountSubtype: 'cash', isSystemAccount: true }, '0');
+    await service.update('biz-1', 'w', { openingBalance: '300' });
+    expect(tx.account.update).toHaveBeenCalled();
   });
 });
 
