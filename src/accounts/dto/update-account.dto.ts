@@ -1,7 +1,7 @@
 import { Transform } from 'class-transformer';
-import { IsIn, IsNotEmpty, IsOptional, IsString, ValidateIf } from 'class-validator';
+import { IsIn, IsNotEmpty, IsOptional, IsString, Matches, ValidateIf } from 'class-validator';
 import { ACCOUNT_COLORS } from '../account-colors.js';
-import { trim } from '../../common/dto.js';
+import { MONEY_STRING_MESSAGE, MONEY_STRING_REGEX, trim, whenSent } from '../../common/dto.js';
 
 // accountType is deliberately NOT editable here -- see
 // AccountsService.update()'s comment for why (changing an account's type
@@ -27,6 +27,12 @@ export class UpdateAccountDto {
   @Transform(({ value }: { value: unknown }) => (typeof value === 'string' ? value.trim().toLowerCase() : value))
   @IsIn(ACCOUNT_COLORS, { message: 'Pick one of the card colours' })
   color?: string | null;
+
+  // A money account's opening balance, entered wrong and put right (Balance >
+  // Edit account). The current balance moves by the same amount.
+  @ValidateIf(whenSent)
+  @Matches(MONEY_STRING_REGEX, { message: `openingBalance ${MONEY_STRING_MESSAGE}` })
+  openingBalance?: string;
 
   @IsOptional()
   @IsString()

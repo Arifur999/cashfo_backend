@@ -6,7 +6,7 @@ import type { RequestUser } from '../user-auth/interfaces/request-user.interface
 import { CreatePayoutMethodDto, UpdatePayoutMethodDto } from './dto/payout-method.dto.js';
 import { CreateReferralLinkDto, UpdateReferralLinkDto } from './dto/referral-links.dto.js';
 import { EarningsQueryDto, FriendsQueryDto, InviteClickDto, ReferralProfileDto } from './dto/referral-pages.dto.js';
-import { ConfirmWithdrawalDto, PageQueryDto, RemindFriendsDto, StartWithdrawalDto } from './dto/withdrawal.dto.js';
+import { ConfirmWithdrawalDto, PageQueryDto, RemindFriendsDto, ResendWithdrawalCodeDto, StartWithdrawalDto } from './dto/withdrawal.dto.js';
 import { PayoutMethodsService } from './payout-methods.service.js';
 import { ReferralEarningsService } from './referral-earnings.service.js';
 import { ReferralFriendsService } from './referral-friends.service.js';
@@ -144,8 +144,8 @@ export class ReferralsController {
   @Throttle(CODE_THROTTLE)
   @Post('withdrawals/start/:challengeId/resend')
   @HttpCode(200)
-  resendCode(@CurrentUser() user: RequestUser, @Param('challengeId') challengeId: string) {
-    return this.withdrawals.resend(user.id, challengeId);
+  resendCode(@CurrentUser() user: RequestUser, @Param('challengeId') challengeId: string, @Body() dto: ResendWithdrawalCodeDto) {
+    return this.withdrawals.resend(user.id, challengeId, dto.byEmail === true);
   }
 
   @Throttle({ default: { limit: 20, ttl: 15 * 60 * 1000 } })

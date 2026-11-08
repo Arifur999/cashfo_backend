@@ -1,5 +1,6 @@
-import { GroupMemberStatus } from '@prisma/client';
-import { IsDateString, IsEnum, IsNotEmpty, IsNumber, IsOptional, IsString, Max, Min, ValidateIf } from 'class-validator';
+import { GroupMemberRole, GroupMemberStatus } from '@prisma/client';
+import { IsDateString, IsEnum, IsNotEmpty, IsNumber, IsOptional, IsString, Max, MaxLength, Min, ValidateIf } from 'class-validator';
+import { whenSent } from '../../common/dto.js';
 
 export class UpdateGroupMemberDto {
   @IsOptional()
@@ -35,4 +36,14 @@ export class UpdateGroupMemberDto {
   @ValidateIf((_, value) => value !== undefined && value !== null)
   @IsDateString()
   leftOn?: string | null;
+
+  @ValidateIf(whenSent)
+  @IsEnum(GroupMemberRole)
+  role?: GroupMemberRole;
+
+  // null clears it.
+  @ValidateIf((_, value) => value !== undefined && value !== null)
+  @IsString()
+  @MaxLength(120)
+  household?: string | null;
 }

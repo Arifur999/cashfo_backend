@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import type { CommissionStatus, Prisma } from '@prisma/client';
 import { displayPaymentId } from '../billing/billing-text.js';
 import { fromPaisa, toPaisa } from '../billing/pricing.js';
-import { dhakaMonthStart } from '../common/dhaka.js';
+import { dhakaDayKeyStart, dhakaMonthStart } from '../common/dhaka.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import type { EarningsQueryDto } from './dto/referral-pages.dto.js';
 import { displayPayoutId } from './referral-money.js';
@@ -38,12 +38,24 @@ const csvCell = (value: unknown): string => {
   return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 };
 
-// The month a line belongs to: its payment's (a line with no payment, an
-// old bonus, goes by when it was made). "2026-10" on the Dhaka calendar.
-function monthWhere(month: string): Prisma.ReferralCommissionWhereInput {
-  const [year, m] = month.split('-').map(Number);
-  const range = { gte: dhakaMonthStart(year, m), lt: dhakaMonthStart(year, m + 1) };
-  return { OR: [{ payment: { paidAt: range } }, { paymentId: null, createdAt: range }] };
+// The day a line belongs to: its payment's (a line with no payment, an old
+// bonus, goes by when it was made), on the Dhaka calendar.
+const lineAt = (range: Prisma.DateTimeFilter): Prisma.ReferralCommissionWhereInput => ({
+  OR: [{ payment: { paidAt: range } }, { paymentId: null, createdAt: range }],
+});
+
+// The lines of a month ("2026-10") and/or a run of days (2026-08-01 to
+// 2026-10-28, both included); with neither, no narrowing.
+export function periodWhere(query: Pick<EarningsQueryDto, 'month' | 'dateFrom' | 'dateTo'>): Prisma.ReferralCommissionWhereInput[] {
+  const where: Prisma.ReferralCommissionWhereInput[] = [];
+  if (query.month) {
+    const [year, m] = query.month.split('-').map(Number);
+    where.push(lineAt({ gte: dhakaMonthStart(year, m), lt: dhakaMonthStart(year, m + 1) }));
+  }
+  if (query.dateFrom || query.dateTo) {
+    where.push(lineAt({ ...(query.dateFrom && { gte: dhakaDayKeyStart(query.dateFrom) }), ...(query.dateTo && { lt: dhakaDayKeyStart(query.dateTo, 1) }) }));
+  }
+  return where;
 }
 
 // "PAY-4QK2T8AB" (or part of it) finds the payment; anything else finds a
@@ -74,7 +86,7 @@ export const earningView = (line: Line) => ({
 });
 
 // Referrals > Earnings: every commission line, newest first, with the
-// totals by status for the filter cards (the month and search apply to
+// totals by status for the filter cards (the period and search apply to
 // those too; the status filter does not), and the statement download.
 @Injectable()
 export class ReferralEarningsService {
@@ -85,7 +97,7 @@ export class ReferralEarningsService {
     const limit = query.limit ?? 20;
     const base = this.where(userId, query);
     const where: Prisma.ReferralCommissionWhereInput = { AND: [base, ...(query.status ? [{ status: query.status }] : [])] };
-    const [rows, total, groups] = await Promise.all([
+    const [rows, total, groups, activeMonths] = await Promise.all([
       this.prisma.referralCommission.findMany({
         where,
         select: EARNING_SELECT,
@@ -95,11 +107,13 @@ export class ReferralEarningsService {
       }),
       this.prisma.referralCommission.count({ where }),
       this.prisma.referralCommission.groupBy({ by: ['status'], where: base, _sum: { amount: true }, _count: { _all: true } }),
+      this.activeMonths(userId),
     ]);
     const byStatus = new Map(groups.map((g) => [g.status, g]));
     return {
       data: rows.map(earningView),
       meta: { page, limit, total, totalPages: Math.ceil(total / limit) },
+      activeMonths,
       totals: Object.fromEntries(
         STATUSES.map((status) => {
           const g = byStatus.get(status);
@@ -149,9 +163,21 @@ export class ReferralEarningsService {
     return [header.join(','), ...lines].join('\r\n') + '\r\n';
   }
 
+  // Every month with a line of the member's (on the day lineAt() gives it),
+  // oldest first, with how many: the months the period picker offers.
+  private async activeMonths(userId: string): Promise<{ year: number; month: number; count: number }[]> {
+    const rows = await this.prisma.$queryRaw<{ month: string | null; count: number }[]>`
+      SELECT to_char(CASE WHEN c."paymentId" IS NULL THEN c."createdAt" ELSE p."paidAt" END + interval '6 hours', 'YYYY-MM') AS "month", COUNT(*)::int AS "count"
+      FROM "ReferralCommission" c LEFT JOIN "Payment" p ON p."id" = c."paymentId"
+      WHERE c."referrerId" = ${userId}
+      GROUP BY 1
+      ORDER BY 1`;
+    return rows.flatMap((row) => (row.month ? [{ year: Number(row.month.slice(0, 4)), month: Number(row.month.slice(5, 7)), count: row.count }] : []));
+  }
+
   private where(userId: string, query: EarningsQueryDto): Prisma.ReferralCommissionWhereInput {
     return {
-      AND: [{ referrerId: userId }, ...(query.month ? [monthWhere(query.month)] : []), ...(query.search ? [searchWhere(query.search)] : [])],
+      AND: [{ referrerId: userId }, ...periodWhere(query), ...(query.search ? [searchWhere(query.search)] : [])],
     };
   }
 }
