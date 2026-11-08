@@ -1,18 +1,28 @@
 import { ForbiddenException, HttpException, type ExecutionContext } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { AllowLockedWorkspace } from '../decorators/allow-locked-workspace.decorator.js';
+import { GroupMemberRoute } from '../decorators/group-member-route.decorator.js';
 import { BusinessMembershipGuard } from './business-membership.guard.js';
 
 class Routes {
   open() {}
   @AllowLockedWorkspace()
   verifyPin() {}
+  @GroupMemberRoute()
+  groupPage() {}
 }
 
-const setup = ({ pinHash = null as string | null, status = 'ACTIVE', opens = false, impersonatedBy = undefined as string | undefined } = {}) => {
+const setup = ({
+  pinHash = null as string | null,
+  status = 'ACTIVE',
+  opens = false,
+  impersonatedBy = undefined as string | undefined,
+  type = 'PERSONAL',
+  role = 'OWNER',
+} = {}) => {
   const prisma = {
     businessMember: {
-      findUnique: vi.fn().mockResolvedValue({ businessId: 'biz-1', userId: 'user-1', role: 'OWNER', status, business: { deletedAt: null, pinHash } }),
+      findUnique: vi.fn().mockResolvedValue({ businessId: 'biz-1', userId: 'user-1', role, status, business: { deletedAt: null, pinHash, type } }),
     },
   };
   const unlocks = { opens: vi.fn().mockReturnValue(opens) };
@@ -74,5 +84,18 @@ describe('BusinessMembershipGuard', () => {
   it('checks membership before the lock, so outsiders never learn of it', async () => {
     const { guard, context } = setup({ pinHash: 'pin-hash', status: 'REMOVED' });
     await expect(guard.canActivate(context())).rejects.toThrow(ForbiddenException);
+  });
+
+  it("keeps a group's Viewer or Editor to the group's own routes", async () => {
+    for (const role of ['STAFF', 'ACCOUNTANT']) {
+      const { guard, context } = setup({ type: 'GROUP', role });
+      expect(await statusOf(guard.canActivate(context()))).toBe(403);
+      await expect(guard.canActivate(context('groupPage'))).resolves.toBe(true);
+    }
+  });
+
+  it("lets a group's owner use every route of it", async () => {
+    const { guard, context } = setup({ type: 'GROUP' });
+    await expect(guard.canActivate(context())).resolves.toBe(true);
   });
 });

@@ -6,8 +6,10 @@ import { isAdminRole } from '../common/roles.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { isTwoStepPending, TwoStepService, type TwoStepPending } from '../two-step/two-step.service.js';
 import { LoginDto } from '../user-auth/dto/login.dto.js';
+import { canonicalPhone } from '../user-auth/phone.service.js';
 import { UserAuthService } from '../user-auth/user-auth.service.js';
 import type { ProvisionOptions } from '../user-auth/user-provisioning.service.js';
+import type { SignInDto } from './sign-in.dto.js';
 import type { TwoStepSignInDto } from './two-step-sign-in.dto.js';
 
 export type SignInAudience = 'admin' | 'user';
@@ -63,7 +65,8 @@ export class SignInService {
 
   // trustedDevices: the x-trusted-device header (the frontend forwards its
   // trustedDevice_* cookies there on sign-in calls).
-  async withPassword(dto: LoginDto, client: ClientInfo, trustedDevices?: string | string[]): Promise<SignInResult | TwoStepPending> {
+  async withPassword(form: SignInDto, client: ClientInfo, trustedDevices?: string | string[]): Promise<SignInResult | TwoStepPending> {
+    const dto: LoginDto = { email: await this.emailOf(form.email), password: form.password };
     if (await this.isAdmin({ email: dto.email })) {
       return this.adminResult(await this.adminAuth.login(dto, client, trustedDevices));
     }
@@ -144,6 +147,21 @@ export class SignInService {
       defaultBusinessId,
       ...(restoredFromDeletion && { restoredFromDeletion: true }),
     };
+  }
+
+  // The email an identifier stands for: an email as typed; a username (a
+  // group member's login); or a mobile number, when exactly one group
+  // member's login has it. Anything else goes on as typed and fails like an
+  // unknown email, with the same answer, so nothing says which logins exist.
+  private async emailOf(identifier: string): Promise<string> {
+    if (identifier.includes('@')) return identifier;
+    const phone = canonicalPhone(identifier);
+    if (phone) {
+      const logins = await this.prisma.user.findMany({ where: { phone, portalOnly: true }, select: { email: true }, take: 2 });
+      return logins.length === 1 ? logins[0].email : identifier;
+    }
+    const login = await this.prisma.user.findUnique({ where: { username: identifier }, select: { email: true } });
+    return login?.email ?? identifier;
   }
 
   private async isAdmin(where: { email: string } | { id: string }): Promise<boolean> {

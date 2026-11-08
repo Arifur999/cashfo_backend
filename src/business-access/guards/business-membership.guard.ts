@@ -3,6 +3,7 @@ import { Reflector } from '@nestjs/core';
 import { Request } from 'express';
 import { PrismaService } from '../../prisma/prisma.service.js';
 import { ALLOW_LOCKED_WORKSPACE } from '../decorators/allow-locked-workspace.decorator.js';
+import { GROUP_MEMBER_ROUTE } from '../decorators/group-member-route.decorator.js';
 import { RequestBusinessMember } from '../interfaces/request-business-member.interface.js';
 import { WORKSPACE_UNLOCK_HEADER, WorkspaceUnlockService } from '../workspace-unlock.service.js';
 import { RequestUser } from '../../user-auth/interfaces/request-user.interface.js';
@@ -44,12 +45,23 @@ export class BusinessMembershipGuard implements CanActivate {
 
     const membership = await this.prisma.businessMember.findUnique({
       where: { businessId_userId: { businessId, userId: user.id } },
-      include: { business: { select: { deletedAt: true, pinHash: true } } },
+      include: { business: { select: { deletedAt: true, pinHash: true, type: true } } },
     });
 
     // A deleted workspace is gone for everyone: without the deletedAt check
     // its owner could keep reading and posting into it by URL.
     if (!membership || membership.status !== 'ACTIVE' || membership.business.deletedAt) {
+      throw new ForbiddenException('You do not have access to this workspace');
+    }
+
+    // In a group, a member other than its owner (a Viewer or an Editor) opens
+    // only the group's own routes: the workspace's other modules stay the
+    // owner's even though the membership is real.
+    if (
+      membership.business.type === 'GROUP' &&
+      membership.role !== 'OWNER' &&
+      !this.reflector.getAllAndOverride<boolean>(GROUP_MEMBER_ROUTE, [context.getHandler(), context.getClass()])
+    ) {
       throw new ForbiddenException('You do not have access to this workspace');
     }
 

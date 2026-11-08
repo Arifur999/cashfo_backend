@@ -990,9 +990,17 @@ model User {
   // The Dhaka day the last automatic backup was claimed, so two servers or
   // two ticks never take it twice.
   autoBackupOn            String?
+  // A group member's login (Group Expense › member portal): made from the
+  // access link a group's owner sends. It signs in with its username (or
+  // its mobile number) and opens only the groups it was added to; its email
+  // is a never-delivered placeholder (src/group-access).
+  username                String?                  @unique
+  portalOnly              Boolean                  @default(false)
   createdAt               DateTime                 @default(now())
   updatedAt               DateTime                 @updatedAt
   memberships             BusinessMember[]
+  // The group member records this account signs in as.
+  groupMembers            GroupMember[]
   ownedBusinesses         Business[]               @relation("BusinessOwner")
   sessions                UserSession[]
   vaultEntries            VaultEntry[]
@@ -1971,6 +1979,7 @@ model Business {
   groupSettings               GroupSettings?
   groupActivities             GroupActivity[]
   groupMeals                  GroupMeal[]
+  groupAccessLinks            GroupAccessLink[]
 
   @@index([ownerId])
 }
@@ -2870,10 +2879,11 @@ model OneTimeCode {
 // (contributions), pool out (expenses), split the remainder equally"
 // ledger, not real bookkeeping -- forcing it through Account/Transaction,
 // or through Contact's debt-sign-convention (built for customer/supplier
-// trade), would distort both. Single-owner-entry model: GroupMember is a
-// plain name/phone record, not a User -- participants never log into the
-// app themselves, only the workspace owner (the sole BusinessMember on a
-// GROUP business) records contributions/expenses on their behalf.
+// trade), would distort both. GroupMember is a name/phone record; the
+// owner records for everyone. A member the owner gives access (Viewer or
+// Editor) gets an access link, makes a login with it (or adds the group to
+// the Smartly account they have) and is then a BusinessMember too: STAFF
+// for a Viewer, ACCOUNTANT for an Editor (src/group-access).
 // =====================================================================
 
 model GroupMember {
@@ -2891,9 +2901,17 @@ model GroupMember {
   // between. Null joinedOn = from the start; null leftOn = still here.
   joinedOn      DateTime?               @db.Date
   leftOn        DateTime?               @db.Date
-  // Member: gives money to an accountant. Accountant: keeps cash and does
-  // the bazar (up to 2 active in a group).
+  // Member: gives money to an accountant, no access. Viewer: may open the
+  // group and see everything. Accountant ("Editor"): keeps cash and does
+  // the bazar, and may add money entries in their own name (up to 2 active
+  // in a group).
   role          GroupMemberRole         @default(MEMBER)
+  // The login that opens the group as this member, once they used their
+  // access link. Its access lives on BusinessMember (status ACTIVE while
+  // the role gives access).
+  userId        String?
+  user          User?                   @relation(fields: [userId], references: [id], onDelete: SetNull)
+  accessLink    GroupAccessLink?
   // The group's owner (the signed-in customer): can't be removed or made
   // inactive.
   isOwner       Boolean                 @default(false)
@@ -2916,7 +2934,38 @@ model GroupMember {
   splits        GroupExpenseSplit[]
   meals         GroupMeal[]
 
+  // One login per member record, and a login is one member of a group.
+  @@unique([businessId, userId])
   @@index([businessId, status])
+  @@index([userId])
+}
+
+// An access link the owner sends a member (Members › Give access, or a
+// password reset). Only its SHA-256 is looked up; the token itself is kept
+// sealed (AES-GCM, GROUP_LINK_ENCRYPTION_KEY or the two-step key) so the
+// owner can copy it again while it waits, or null without a key. One live
+// link per member: a new one replaces the old, and using it deletes it.
+model GroupAccessLink {
+  id              String              @id @default(uuid())
+  businessId      String
+  business        Business            @relation(fields: [businessId], references: [id])
+  groupMemberId   String              @unique
+  groupMember     GroupMember         @relation(fields: [groupMemberId], references: [id], onDelete: Cascade)
+  kind            GroupAccessLinkKind
+  tokenHash       String              @unique
+  tokenSealed     String?
+  createdByUserId String
+  expiresAt       DateTime
+  createdAt       DateTime            @default(now())
+
+  @@index([businessId])
+}
+
+// JOIN: make a login (or add the group to a Smartly account). RESET: a new
+// password for the login the member already has.
+enum GroupAccessLinkKind {
+  JOIN
+  RESET
 }
 
 // A group's own settings (one row, made when first saved): a family or a
@@ -2951,6 +3000,7 @@ enum GroupCostSplit {
 enum GroupMemberRole {
   MEMBER
   ACCOUNTANT
+  VIEWER
 }
 
 enum GroupKind {
@@ -3023,17 +3073,20 @@ enum GroupMemberStatus {
 // Group cash moving from one holder to another (the v16 Cash book's "Hand
 // over cash"): it changes who keeps the cash, never anyone's balance.
 model GroupCashHandover {
-  id           String      @id @default(uuid())
-  businessId   String
-  business     Business    @relation(fields: [businessId], references: [id])
-  fromMemberId String
-  fromMember   GroupMember @relation("HandoverFrom", fields: [fromMemberId], references: [id])
-  toMemberId   String
-  toMember     GroupMember @relation("HandoverTo", fields: [toMemberId], references: [id])
-  amount       Decimal     @db.Decimal(14, 2)
-  date         DateTime    @db.Date
-  note         String?
-  createdAt    DateTime    @default(now())
+  id              String      @id @default(uuid())
+  businessId      String
+  business        Business    @relation(fields: [businessId], references: [id])
+  fromMemberId    String
+  fromMember      GroupMember @relation("HandoverFrom", fields: [fromMemberId], references: [id])
+  toMemberId      String
+  toMember        GroupMember @relation("HandoverTo", fields: [toMemberId], references: [id])
+  amount          Decimal     @db.Decimal(14, 2)
+  date            DateTime    @db.Date
+  note            String?
+  // Who recorded it (an Editor changes only their own); null = the owner,
+  // before logins existed.
+  createdByUserId String?
+  createdAt       DateTime    @default(now())
 
   @@index([businessId, date])
   @@index([fromMemberId])
@@ -3056,6 +3109,9 @@ model GroupContribution {
   receivedBy         GroupMember?          @relation("ContributionReceiver", fields: [receivedByMemberId], references: [id])
   // The same id on both rows of one settle-up, so Undo removes the pair.
   settleGroupId      String?
+  // Who recorded it (an Editor changes only their own); null = the owner,
+  // before logins existed.
+  createdByUserId    String?
   createdAt          DateTime              @default(now())
 
   @@index([businessId, date])
@@ -3065,26 +3121,29 @@ model GroupContribution {
 }
 
 model GroupExpense {
-  id             String              @id @default(uuid())
-  businessId     String
-  business       Business            @relation(fields: [businessId], references: [id])
-  amount         Decimal             @db.Decimal(14, 2)
-  date           DateTime            @db.Date
+  id              String              @id @default(uuid())
+  businessId      String
+  business        Business            @relation(fields: [businessId], references: [id])
+  amount          Decimal             @db.Decimal(14, 2)
+  date            DateTime            @db.Date
   // Loose string, NOT a categoryId FK to GroupExpenseCategoryOption -- same
   // "picker list is decoupled from what's stored" convention as
   // Asset.category/AssetCategoryOption (see that model's own comment):
   // deleting a category option must never break/cascade-delete existing
   // expenses, it should just stop being offered for NEW ones.
-  category       String              @default("Other")
-  description    String?
-  paidByMemberId String?
-  paidByMember   GroupMember?        @relation(fields: [paidByMemberId], references: [id])
+  category        String              @default("Other")
+  description     String?
+  paidByMemberId  String?
+  paidByMember    GroupMember?        @relation(fields: [paidByMemberId], references: [id])
   // FUND: out of the group's cash. MEMBER: out of paidByMember's pocket,
   // credited to them.
-  paidFrom       GroupPaidFrom       @default(FUND)
-  split          GroupSplit          @default(EQUAL)
-  splits         GroupExpenseSplit[]
-  createdAt      DateTime            @default(now())
+  paidFrom        GroupPaidFrom       @default(FUND)
+  split           GroupSplit          @default(EQUAL)
+  splits          GroupExpenseSplit[]
+  // Who recorded it (an Editor changes only their own); null = the owner,
+  // before logins existed.
+  createdByUserId String?
+  createdAt       DateTime            @default(now())
 
   @@index([businessId, date])
 }

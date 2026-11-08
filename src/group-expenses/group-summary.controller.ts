@@ -1,3 +1,4 @@
+import { GroupMemberRoute } from '../business-access/decorators/group-member-route.decorator.js';
 import { Controller, Get, Headers, Query, UseGuards } from '@nestjs/common';
 import { WORKSPACE_UNLOCK_HEADER } from '../business-access/workspace-unlock.service.js';
 import { CurrentUser } from '../user-auth/decorators/current-user.decorator.js';
@@ -10,6 +11,7 @@ import { GroupSummaryService } from './group-summary.service.js';
 // the one-workspace membership guard): the service picks the groups the
 // user is an active member of and keeps PIN-locked ones shut itself.
 @UseGuards(UserAuthGuard)
+@GroupMemberRoute()
 @Controller('api/businesses/groups')
 export class GroupSummaryController {
   constructor(private readonly summaryService: GroupSummaryService) {}

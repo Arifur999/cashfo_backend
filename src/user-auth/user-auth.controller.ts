@@ -1,3 +1,4 @@
+import { GroupMemberRoute } from '../business-access/decorators/group-member-route.decorator.js';
 import {
   BadRequestException,
   Body,
@@ -138,12 +139,14 @@ export class UserAuthController {
   }
 
   @UseGuards(UserAuthGuard)
+  @GroupMemberRoute()
   @Get('me')
   me(@CurrentUser() user: RequestUser) {
     return this.userProfileService.me(user.id, user.impersonatedBy);
   }
 
   @UseGuards(UserAuthGuard)
+  @GroupMemberRoute()
   @Patch('language')
   updateLanguage(@CurrentUser() user: RequestUser, @Body() dto: UpdateLanguageDto) {
     return this.userProfileService.updateLanguage(user.id, dto);
@@ -210,6 +213,7 @@ export class UserAuthController {
   // rather than the global 100 a minute.
   @Throttle({ default: { limit: 5, ttl: 15 * 60 * 1000 } })
   @UseGuards(UserAuthGuard)
+  @GroupMemberRoute()
   @Post('change-password')
   changePassword(@CurrentUser() user: RequestUser, @Body() dto: ChangePasswordDto) {
     return this.userAuthService.changePassword(user.id, user.sessionId, dto);
