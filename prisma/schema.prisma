@@ -2985,6 +2985,9 @@ model GroupSettings {
   // How costs shared "by cost split" are weighted: everyone the same, or
   // each active member's costPercent.
   costSplit          GroupCostSplit @default(EQUAL)
+  // The custom split was worked out from members' shares (and follows them
+  // when shares change); false: the owner set the percents by hand.
+  splitFromShares    Boolean        @default(false)
   // Warn once this much of a month's budget is spent; null = never.
   budgetWarnPercent  Int?           @default(90)
   // Paused: kept out of new entries and listed last. Nothing is deleted.

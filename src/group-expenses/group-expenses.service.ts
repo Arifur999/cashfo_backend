@@ -68,6 +68,15 @@ export interface SettlementResult {
 }
 
 // A group's settings before any are saved.
+// Shares as percents with two decimals, the last taking the rounding:
+// 3:1:4 is 37.5 · 12.5 · 50.
+export function percentsFromShares(shares: number[]): number[] {
+  const total = shares.reduce((sum, value) => sum + value, 0);
+  const hundredths = shares.map((value) => Math.floor((value * 10000) / total));
+  hundredths[hundredths.length - 1] += 10000 - hundredths.reduce((sum, value) => sum + value, 0);
+  return hundredths.map((value) => value / 100);
+}
+
 const DEFAULT_SETTINGS = {
   kind: 'FAMILY' as const,
   monthStartDay: 1,
@@ -77,6 +86,7 @@ const DEFAULT_SETTINGS = {
   lunchUnits: '1.00',
   dinnerUnits: '1.00',
   costSplit: 'EQUAL' as const,
+  splitFromShares: false,
   budgetWarnPercent: 90,
   pausedAt: null,
 };
@@ -237,6 +247,7 @@ export class GroupExpensesService {
       },
     });
     if (member.role === 'ACCOUNTANT') await this.keepCashHolder(businessId);
+    await this.followShares(businessId);
     await this.record(businessId, actorUserId, { action: 'ADDED', entity: 'MEMBER', entityId: member.id, summary: { member: member.name, role: member.role } });
     return member;
   }
@@ -280,6 +291,7 @@ export class GroupExpensesService {
       // A role without access, or an inactive member, can't log in any more.
       await this.access.sync(this.prisma, updated);
     }
+    if (dto.shareUnits !== undefined || dto.status !== undefined) await this.followShares(businessId);
     const change = changesOf(
       {
         name: current.name,
@@ -329,12 +341,14 @@ export class GroupExpensesService {
     ) {
       await this.prisma.groupMember.delete({ where: { id } });
       await this.keepCashHolder(businessId);
+      await this.followShares(businessId);
       await this.record(businessId, actorUserId, { action: 'DELETED', entity: 'MEMBER', entityId: id, summary: { member: member.name } });
       return { id, action: 'deleted' };
     }
 
     await this.prisma.groupMember.update({ where: { id }, data: { status: 'ARCHIVED', ...(!member.leftOn && { leftOn: dhakaDateOnly(new Date()) }) } });
     await this.keepCashHolder(businessId);
+    await this.followShares(businessId);
     await this.record(businessId, actorUserId, {
       action: 'EDITED',
       entity: 'MEMBER',
@@ -348,6 +362,36 @@ export class GroupExpensesService {
   // Members > Cost split: everyone the same, or a percent for each active
   // member adding up to 100. Closed months keep the split they were closed
   // with (their record is locked); open ones follow the new one.
+  // Shares and the cost split: an equal split, or one worked out from
+  // shares, follows the active members' shares (equal when they all match,
+  // else each one's shares as a percent); a custom split the owner set by
+  // hand is left alone -- a new member then has 0% until the owner edits
+  // it. Run after a member is added, changes shares, leaves or comes back.
+  async followShares(businessId: string): Promise<void> {
+    const settings = await this.prisma.groupSettings.findUnique({ where: { businessId }, select: { costSplit: true, splitFromShares: true } });
+    if (settings?.costSplit === 'CUSTOM' && !settings.splitFromShares) return;
+    const active = await this.prisma.groupMember.findMany({
+      where: { businessId, status: 'ACTIVE' },
+      orderBy: [{ isOwner: 'desc' }, { createdAt: 'asc' }],
+      select: { id: true, shareUnits: true },
+    });
+    const units = active.map((member) => Number(member.shareUnits) || 1);
+    if (active.length === 0 || units.every((value) => value === units[0])) {
+      if (settings?.costSplit === 'CUSTOM')
+        await this.prisma.groupSettings.update({ where: { businessId }, data: { costSplit: 'EQUAL', splitFromShares: false } });
+      return;
+    }
+    const percents = percentsFromShares(units);
+    await this.prisma.$transaction([
+      ...active.map((member, index) => this.prisma.groupMember.update({ where: { id: member.id }, data: { costPercent: percents[index] } })),
+      this.prisma.groupSettings.upsert({
+        where: { businessId },
+        update: { costSplit: 'CUSTOM', splitFromShares: true },
+        create: { businessId, costSplit: 'CUSTOM', splitFromShares: true },
+      }),
+    ]);
+  }
+
   async setCostSplit(businessId: string, dto: GroupCostSplitDto, actorUserId: string | null = null) {
     const active = await this.prisma.groupMember.findMany({ where: { businessId, status: 'ACTIVE' }, select: { id: true, name: true, costPercent: true } });
     const before = await this.prisma.groupSettings.findUnique({ where: { businessId }, select: { costSplit: true } });
@@ -360,16 +404,25 @@ export class GroupExpensesService {
       if (Math.abs(total - 10000) > 5) {
         throw new BadRequestException('The percents must add up to 100');
       }
+      // Set by hand: shares never change it again.
       await this.prisma.$transaction([
         ...active.map((member) => this.prisma.groupMember.update({ where: { id: member.id }, data: { costPercent: given.get(member.id) } })),
-        this.prisma.groupSettings.upsert({ where: { businessId }, update: { costSplit: 'CUSTOM' }, create: { businessId, costSplit: 'CUSTOM' } }),
+        this.prisma.groupSettings.upsert({
+          where: { businessId },
+          update: { costSplit: 'CUSTOM', splitFromShares: false },
+          create: { businessId, costSplit: 'CUSTOM' },
+        }),
       ]);
       const change = active
         .filter((member) => Number(member.costPercent ?? -1) !== given.get(member.id))
         .map((member) => ({ field: member.name, from: member.costPercent === null ? null : Number(member.costPercent), to: given.get(member.id) }));
       await this.record(businessId, actorUserId, { action: 'EDITED', entity: 'SPLIT', summary: { mode: 'CUSTOM' }, change });
     } else {
-      await this.prisma.groupSettings.upsert({ where: { businessId }, update: { costSplit: 'EQUAL' }, create: { businessId, costSplit: 'EQUAL' } });
+      await this.prisma.groupSettings.upsert({
+        where: { businessId },
+        update: { costSplit: 'EQUAL', splitFromShares: false },
+        create: { businessId, costSplit: 'EQUAL' },
+      });
       await this.record(businessId, actorUserId, {
         action: 'EDITED',
         entity: 'SPLIT',
