@@ -270,6 +270,55 @@ export class AssetsService {
     });
   }
 
+  // Sets right a value update recorded by mistake: its value, day or note.
+  // The purchase's own row is where the asset starts (edit the purchase
+  // instead), a sold asset's history is closed, and the asset's value today
+  // follows whichever update is newest afterwards.
+  async editValueUpdate(businessId: string, id: string, entryId: string, dto: UpdateAssetValueDto) {
+    return this.prisma.$transaction(async (tx) => {
+      await this.requireValueUpdate(businessId, id, entryId, tx);
+      const asset = await this.requireAsset(businessId, id, tx);
+      if (isBeforePurchase(dto.date, asset.purchaseDate)) {
+        throw new BadRequestException("A value can't be dated before the day the asset was bought.");
+      }
+      await tx.assetValueHistory.update({ where: { id: entryId }, data: { value: dto.value, note: dto.note ?? null, recordedAt: new Date(dto.date) } });
+      return this.refreshCurrentValue(id, tx);
+    });
+  }
+
+  // Removes a value update recorded by mistake, on the same terms.
+  async deleteValueUpdate(businessId: string, id: string, entryId: string) {
+    return this.prisma.$transaction(async (tx) => {
+      await this.requireValueUpdate(businessId, id, entryId, tx);
+      await tx.assetValueHistory.delete({ where: { id: entryId } });
+      return this.refreshCurrentValue(id, tx);
+    });
+  }
+
+  private async requireValueUpdate(businessId: string, id: string, entryId: string, tx: Prisma.TransactionClient) {
+    const asset = await this.requireAsset(businessId, id, tx);
+    if (asset.status === 'SOLD') {
+      throw new BadRequestException("This asset is sold. Its value can't change.");
+    }
+    const rows = await tx.assetValueHistory.findMany({ where: { assetId: id }, select: { id: true, recordedAt: true, note: true } });
+    if (!rows.some((row) => row.id === entryId)) {
+      throw new NotFoundException('Value update not found');
+    }
+    if (purchaseRowOf(rows)?.id === entryId) {
+      throw new BadRequestException('This is where the asset starts. Edit the purchase instead.');
+    }
+  }
+
+  // The asset's value today is its newest update's.
+  private async refreshCurrentValue(id: string, tx: Prisma.TransactionClient) {
+    const newest = await tx.assetValueHistory.findFirst({ where: { assetId: id }, orderBy: VALUE_HISTORY_ORDER, select: { value: true } });
+    return tx.asset.update({
+      where: { id },
+      data: newest ? { currentValue: newest.value } : {},
+      include: { valueHistory: { orderBy: VALUE_HISTORY_ORDER } },
+    });
+  }
+
   // Corrects an asset's name, type and notes. The purchase date changes
   // only on an owned asset no wallet paid for (a paid purchase keeps its
   // posting's date, and a sale stays after its purchase), and never past a
