@@ -838,6 +838,9 @@ model User {
   // A second number (or the one on WhatsApp), for when the main is off.
   phone2                  String?
   phone2WhatsApp          Boolean                  @default(false)
+  // Settings › Security › Recovery: a second address, proved with a code
+  // sent to it, that password reset links go to as well.
+  recoveryEmail           String?
   // The customer's number support asks for: "SM-" and 100000 more than it.
   customerNumber          Int                      @unique @default(autoincrement())
   // When the person turned on their shareable profile card (a public page
@@ -2786,6 +2789,8 @@ enum OneTimeCodePurpose {
   PHONE_PASSWORD_RESET
   // The Password Manager's second unlock step, after the vault password.
   VAULT_UNLOCK
+  // Proving a recovery email with a code sent to it (Settings › Security).
+  RECOVERY_EMAIL
 }
 
 enum OneTimeCodeChannel {

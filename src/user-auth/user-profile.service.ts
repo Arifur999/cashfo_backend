@@ -65,6 +65,8 @@ export class UserProfileService {
       district: user.district,
       phone2: user.phone2,
       phone2WhatsApp: user.phone2WhatsApp,
+      // Settings › Security › Recovery email (proved with a code).
+      recoveryEmail: user.recoveryEmail,
       customerCode: customerCode(user.customerNumber),
       // Whether the shareable profile card is on, and its code (the
       // referral code), for Settings > Profile.

@@ -37,6 +37,7 @@ export const anonymisedUser = (userId: string) => ({
   district: null,
   phone2: null,
   phone2WhatsApp: false,
+  recoveryEmail: null,
   profileCardSharedAt: null,
   referralCode: null,
   vaultPasswordHash: null,
