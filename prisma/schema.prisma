@@ -829,6 +829,17 @@ model User {
   // avatar; null shows a gradient), and a one-line address.
   coverUrl                String?
   address                 String?
+  // Settings › Profile: what the person tells about themselves. Only they
+  // see these; the district sets local prices and the Zakat nisab.
+  occupation              String?
+  dateOfBirth             DateTime?                @db.Date
+  gender                  Gender?
+  district                String?
+  // A second number (or the one on WhatsApp), for when the main is off.
+  phone2                  String?
+  phone2WhatsApp          Boolean                  @default(false)
+  // The customer's number support asks for: "SM-" and 100000 more than it.
+  customerNumber          Int                      @unique @default(autoincrement())
   // When the person turned on their shareable profile card (a public page
   // at /card/<referralCode> with their name, photos and an invite); null
   // while it is off, and then that page shows nothing.
@@ -3329,6 +3340,12 @@ model DataBackup {
   createdAt  DateTime       @default(now())
 
   @@index([userId, createdAt])
+}
+
+enum Gender {
+  MALE
+  FEMALE
+  UNSAID
 }
 
 enum DataBackupKind {

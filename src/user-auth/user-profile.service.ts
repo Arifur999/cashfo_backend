@@ -1,4 +1,4 @@
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, Injectable, UnauthorizedException } from '@nestjs/common';
 import type { User } from '@prisma/client';
 import { CredentialsService } from '../auth/credentials.service.js';
 import { MailService } from '../mail/mail.service.js';
@@ -7,6 +7,9 @@ import { UpdateLanguageDto } from './dto/update-language.dto.js';
 import { UpdatePreferencesDto } from './dto/update-preferences.dto.js';
 import { UpdateProfileDto } from './dto/update-profile.dto.js';
 import { canonicalPhone } from './phone.service.js';
+import { customerCode } from '../common/districts.js';
+import { dhakaDateKey } from '../common/dhaka.js';
+import { profileDetailsProblem } from './profile-rules.js';
 
 const preferencesOf = (user: Pick<User, 'digitStyle' | 'numberGrouping' | 'dateStyle' | 'weekStart'>) => ({
   digitStyle: user.digitStyle,
@@ -55,6 +58,14 @@ export class UserProfileService {
       avatarUrl: user.avatarUrl,
       coverUrl: user.coverUrl,
       address: user.address,
+      // Settings › Profile's details, and the number support asks for.
+      occupation: user.occupation,
+      dateOfBirth: user.dateOfBirth ? user.dateOfBirth.toISOString().slice(0, 10) : null,
+      gender: user.gender,
+      district: user.district,
+      phone2: user.phone2,
+      phone2WhatsApp: user.phone2WhatsApp,
+      customerCode: customerCode(user.customerNumber),
       // Whether the shareable profile card is on, and its code (the
       // referral code), for Settings > Profile.
       profileCard: { shared: user.profileCardSharedAt !== null, code: user.referralCode },
@@ -127,14 +138,28 @@ export class UserProfileService {
   // A new number loses the verification (PhoneService); the same verified
   // number typed another way keeps it.
   async updateProfile(userId: string, dto: UpdateProfileDto) {
-    const current = dto.phone !== undefined ? await this.prisma.user.findUniqueOrThrow({ where: { id: userId }, select: { phone: true, phoneVerifiedAt: true } }) : null;
+    const touchesPhones = dto.phone !== undefined || dto.phone2 !== undefined || dto.phone2WhatsApp !== undefined;
+    const current = touchesPhones ? await this.prisma.user.findUniqueOrThrow({ where: { id: userId }, select: { phone: true, phoneVerifiedAt: true, phone2: true } }) : null;
     const keepsVerified = !!current?.phoneVerifiedAt && !!dto.phone && canonicalPhone(dto.phone) === current.phone;
+    // The second number: a real mobile, not the main one again.
+    const phone2 = dto.phone2 === undefined ? undefined : dto.phone2 === '' ? null : canonicalPhone(dto.phone2);
+    const mainAfter = dto.phone === undefined ? (current?.phone ?? null) : dto.phone ? canonicalPhone(dto.phone) : null;
+    const problem = profileDetailsProblem({ dateOfBirth: dto.dateOfBirth, phone2Typed: dto.phone2, phone2, mainPhone: mainAfter }, dhakaDateKey(new Date()));
+    if (problem) throw new BadRequestException(problem);
+    const phone2After = phone2 === undefined ? (current?.phone2 ?? null) : phone2;
     const user = await this.prisma.user.update({
       where: { id: userId },
       data: {
         ...(dto.name !== undefined && { name: dto.name }),
         ...(dto.phone !== undefined && !keepsVerified && { phone: dto.phone || null, phoneVerifiedAt: null }),
         ...(dto.address !== undefined && { address: dto.address || null }),
+        ...(dto.occupation !== undefined && { occupation: dto.occupation || null }),
+        ...(dto.dateOfBirth !== undefined && { dateOfBirth: dto.dateOfBirth ? new Date(`${dto.dateOfBirth}T00:00:00.000Z`) : null }),
+        ...(dto.gender !== undefined && { gender: dto.gender || null }),
+        ...(dto.district !== undefined && { district: dto.district || null }),
+        ...(phone2 !== undefined && { phone2 }),
+        // WhatsApp goes with the second number: none, no WhatsApp.
+        ...((dto.phone2WhatsApp !== undefined || phone2 !== undefined) && { phone2WhatsApp: Boolean(phone2After) && (dto.phone2WhatsApp ?? false) }),
       },
     });
     return { id: user.id, name: user.name, email: user.email, phone: user.phone, phoneVerifiedAt: user.phoneVerifiedAt, avatarUrl: user.avatarUrl, address: user.address };
