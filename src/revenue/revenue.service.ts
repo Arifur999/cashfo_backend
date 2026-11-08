@@ -1,13 +1,10 @@
 import { Injectable } from '@nestjs/common';
-import { BillingCycle, PaymentStatus } from '@prisma/client';
+import { BillingCycle } from '@prisma/client';
 import { dhakaDateKey, dhakaMonthStart, dhakaToday } from '../common/dhaka.js';
 import { payerIdOf } from '../admin-feed/requester-names.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { monthEnds, paidPeopleAt } from '../subscription-plans/plan-history.js';
-import { computeMrr, PAID_SUBSCRIPTION_WHERE } from './mrr.js';
-
-// Payments that brought money in: refunds are subtracted separately.
-const REVENUE_STATUSES: PaymentStatus[] = [PaymentStatus.SUCCESS, PaymentStatus.REFUNDED];
+import { computeMrr, PAID_SUBSCRIPTION_WHERE, REVENUE_STATUSES } from './mrr.js';
 
 // How far back the MRR-by-month chart looks.
 const HISTORY_MONTHS = 6;

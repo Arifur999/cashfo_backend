@@ -3,6 +3,7 @@ import { CurrentAdmin } from '../admin-auth/decorators/current-admin.decorator.j
 import { AdminAuthGuard } from '../admin-auth/guards/admin-auth.guard.js';
 import type { RequestAdminUser } from '../admin-auth/interfaces/request-admin-user.interface.js';
 import { DashboardService } from './dashboard.service.js';
+import { DashboardOverviewQueryDto } from './dto/dashboard-overview-query.dto.js';
 import { DashboardQueryDto } from './dto/dashboard-query.dto.js';
 
 // No role restriction beyond auth -- every role sees the dashboard, just
@@ -15,5 +16,11 @@ export class DashboardController {
   @Get('summary')
   summary(@CurrentAdmin() admin: RequestAdminUser, @Query() query: DashboardQueryDto) {
     return this.dashboardService.summary(admin, query.period);
+  }
+
+  // The AdminDashboard board's figures for the period its picker shows.
+  @Get('overview')
+  overview(@CurrentAdmin() admin: RequestAdminUser, @Query() query: DashboardOverviewQueryDto) {
+    return this.dashboardService.overview(admin, query);
   }
 }

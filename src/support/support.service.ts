@@ -48,6 +48,7 @@ export class SupportService {
         platformUserId: userId,
         subject: subjectOf(dto.message),
         category: dto.category,
+        fromHelpPage: true,
         messages: {
           create: {
             senderType: 'USER',
@@ -63,7 +64,12 @@ export class SupportService {
   }
 
   async listMessages(userId: string) {
-    const tickets = await this.prisma.supportTicket.findMany({ where: { platformUserId: userId }, orderBy: { updatedAt: 'desc' }, take: 50, select: CONVERSATION_SELECT });
+    const tickets = await this.prisma.supportTicket.findMany({
+      where: { platformUserId: userId },
+      orderBy: { updatedAt: 'desc' },
+      take: 50,
+      select: CONVERSATION_SELECT,
+    });
     return tickets.map(toConversation);
   }
 
@@ -87,7 +93,10 @@ export class SupportService {
 
   // A screenshot from one of the customer's own messages.
   async attachment(userId: string, id: string) {
-    const attachment = await this.prisma.ticketAttachment.findFirst({ where: { id, message: { isInternal: false, ticket: { platformUserId: userId } } }, select: { mimeType: true, data: true } });
+    const attachment = await this.prisma.ticketAttachment.findFirst({
+      where: { id, message: { isInternal: false, ticket: { platformUserId: userId } } },
+      select: { mimeType: true, data: true },
+    });
     if (!attachment) throw new NotFoundException('Screenshot not found');
     return attachment;
   }
@@ -96,7 +105,11 @@ export class SupportService {
   // this customer voted for each and which are theirs.
   async listIdeas(userId: string) {
     const [ideas, votes] = await Promise.all([
-      this.prisma.featureRequest.findMany({ where: { status: { not: 'DECLINED' } }, orderBy: [{ voteCount: 'desc' }, { createdAt: 'desc' }], take: SHOWN_IDEAS }),
+      this.prisma.featureRequest.findMany({
+        where: { status: { not: 'DECLINED' } },
+        orderBy: [{ voteCount: 'desc' }, { createdAt: 'desc' }],
+        take: SHOWN_IDEAS,
+      }),
       this.prisma.featureRequestVote.findMany({ where: { platformUserId: userId }, select: { featureRequestId: true } }),
     ]);
     const voted = new Set(votes.map((vote) => vote.featureRequestId));

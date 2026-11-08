@@ -1,4 +1,21 @@
-import { Body, Controller, Delete, Get, Header, Param, ParseUUIDPipe, Patch, Post, Query, Req, StreamableFile, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Header,
+  Param,
+  ParseUUIDPipe,
+  Patch,
+  Post,
+  Query,
+  Req,
+  StreamableFile,
+  UploadedFile,
+  UseGuards,
+  UseInterceptors,
+} from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import type { Request } from 'express';
 import { AdminRole } from '../common/roles.js';
 import { CurrentAdmin } from '../admin-auth/decorators/current-admin.decorator.js';
@@ -6,6 +23,7 @@ import { Roles } from '../admin-auth/decorators/roles.decorator.js';
 import { AdminAuthGuard } from '../admin-auth/guards/admin-auth.guard.js';
 import { RolesGuard } from '../admin-auth/guards/roles.guard.js';
 import type { RequestAdminUser } from '../admin-auth/interfaces/request-admin-user.interface.js';
+import { screenshotMulterOptions } from '../support/screenshot-upload.js';
 import { AddMessageDto } from './dto/add-message.dto.js';
 import { AssignTicketDto } from './dto/assign-ticket.dto.js';
 import { CreateTicketDto } from './dto/create-ticket.dto.js';
@@ -92,8 +110,17 @@ export class TicketsController {
 
   @Roles(AdminRole.SUPER_ADMIN, AdminRole.SUPPORT_ADMIN)
   @Post(':id/messages')
-  addMessage(@Param('id') id: string, @Body() dto: AddMessageDto, @CurrentAdmin() admin: RequestAdminUser, @Req() req: Request) {
-    return this.ticketsService.addMessage(id, dto, admin.id, req.ip);
+  // JSON, or multipart with one picture in `file` (the same rules as a
+  // customer's screenshot: JPEG, PNG or WEBP, 5 MB at most).
+  @UseInterceptors(FileInterceptor('file', screenshotMulterOptions))
+  addMessage(
+    @Param('id') id: string,
+    @Body() dto: AddMessageDto,
+    @CurrentAdmin() admin: RequestAdminUser,
+    @Req() req: Request,
+    @UploadedFile() file?: Express.Multer.File,
+  ) {
+    return this.ticketsService.addMessage(id, dto, admin.id, req.ip, file);
   }
 
   @Roles(AdminRole.SUPER_ADMIN, AdminRole.SUPPORT_ADMIN)

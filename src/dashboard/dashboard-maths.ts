@@ -65,7 +65,10 @@ export interface PlanRow {
   billingCycle: string;
 }
 
-export function accountsByPlan(plans: PlanRow[], counts: Map<string | null, number>): { planId: string; name: string; price: string; billingCycle: string; count: number; pct: number }[] {
+export function accountsByPlan(
+  plans: PlanRow[],
+  counts: Map<string | null, number>,
+): { planId: string; name: string; price: string; billingCycle: string; count: number; pct: number }[] {
   const freeId = plans.find((plan) => plan.billingCycle === 'FREE')?.id ?? null;
   const merged = new Map<string, number>();
   for (const [planId, count] of counts) {
@@ -75,7 +78,14 @@ export function accountsByPlan(plans: PlanRow[], counts: Map<string | null, numb
   const total = [...merged.values()].reduce((sum, count) => sum + count, 0);
   return plans.map((plan) => {
     const count = merged.get(plan.id) ?? 0;
-    return { planId: plan.id, name: plan.name, price: Number(plan.price.toString()).toFixed(2), billingCycle: plan.billingCycle, count, pct: shareOf(count, total) };
+    return {
+      planId: plan.id,
+      name: plan.name,
+      price: Number(plan.price.toString()).toFixed(2),
+      billingCycle: plan.billingCycle,
+      count,
+      pct: shareOf(count, total),
+    };
   });
 }
 
