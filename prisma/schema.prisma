@@ -1000,6 +1000,7 @@ model User {
   habitMonthTrackers      HabitMonthTracker[]
   books                   Book[]
   bookGoals               BookGoal[]
+  bookShelves             BookShelf[]
   skills                  Skill[]
   skillGoals              SkillGoal[]
   todoLists               TodoList[]
@@ -1622,10 +1623,34 @@ model Book {
   // Put down for now (Reading now's "Pause"): still READING with its page
   // kept, shown under Up next until it is resumed or read on.
   pausedAt   DateTime?
+  // What the reader paid for it, when they remember (My books' Price).
+  price      Decimal?   @db.Decimal(12, 2)
+  // The shelf it stands on: a built-in key (BOOK_SHELVES) or the id of one
+  // of the reader's own BookShelf rows. A key that matches neither (a shelf
+  // since removed) reads as "other".
+  shelf      String     @default("other")
+  // The reader's summary of the whole book, and when it was last saved.
+  summary    String     @default("")
+  summaryAt  DateTime?
   logs       BookLog[]
   notes      BookNote[]
 
   @@index([userId, status])
+}
+
+// A shelf of the reader's own on My books ("Poetry"), beside the built-in
+// ones. `nameKey` is the name lower-cased, so one name is one shelf.
+model BookShelf {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  name      String
+  nameKey   String
+  // Key into the cover palette (BOOK_COLORS), handed out in turn.
+  color     String
+  createdAt DateTime @default(now())
+
+  @@unique([userId, nameKey])
 }
 
 // One (Asia/Dhaka) day's reading of a book: how far its current page went up
@@ -1640,19 +1665,37 @@ model BookLog {
   userId String
   date   DateTime @db.Date
   pages  Int
+  // The page that day's reading began on (Reading now's "Read before, up to
+  // page"), so the day can be corrected later; null on older rows.
+  fromPage Int?
 
   @@unique([bookId, date])
   @@index([userId, date])
 }
 
-// A note, or a line the reader liked, with the page it came from.
+// What a note on a book is: a line the reader loved, a point they marked to
+// remember, or a thought of their own.
+enum BookNoteKind {
+  HIGHLIGHT
+  UNDERLINE
+  THOUGHT
+}
+
+// A note on a page of a book: the line from the book (optional) and the
+// reader's own words, on a day the reader picks.
 model BookNote {
-  id        String   @id @default(uuid())
+  id        String       @id @default(uuid())
   bookId    String
-  book      Book     @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  book      Book         @relation(fields: [bookId], references: [id], onDelete: Cascade)
   page      Int?
+  kind      BookNoteKind @default(THOUGHT)
+  line      String       @default("")
   text      String
-  createdAt DateTime @default(now())
+  date      DateTime     @db.Date
+  // Words highlighted while reading the note: [{ s, e, c }], character
+  // offsets into `text` and a colour key (see BooksService.cleanMarks).
+  marks     Json?
+  createdAt DateTime     @default(now())
 
   @@index([bookId, createdAt])
 }

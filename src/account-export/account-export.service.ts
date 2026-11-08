@@ -325,6 +325,8 @@ export class AccountExportService {
       this.prisma.ramadanPrep.findMany({ where: { userId }, orderBy: { year: 'asc' } }),
     ]);
 
+    // My books' own shelves, to name the shelf a book stands on.
+    const bookShelves = new Map((await this.prisma.bookShelf.findMany({ where: { userId } })).map((shelf) => [shelf.id, shelf.name]));
     // An hours skill keeps its target, progress and log in minutes.
     const countedIn = (unit: string) => (unit === 'HOURS' ? 'MINUTES' : unit);
     // "Namaz 2026-10", "Ramadan 2026" or a challenge's own name.
@@ -419,22 +421,35 @@ export class AccountExportService {
       {
         name: 'books.csv',
         ...table(
-          ['Title', 'Author', 'Pages', 'Pages read', 'Status', 'Paused', 'Started', 'Finished', 'Added'],
-          books.map((b) => [b.title, b.author, b.totalPages, b.pagesRead, b.status, b.pausedAt, b.startedAt, b.finishedAt, b.createdAt]),
+          ['Title', 'Author', 'Pages', 'Pages read', 'Status', 'Paused', 'Started', 'Finished', 'Added', 'Shelf', 'Price', 'Summary'],
+          books.map((b) => [
+            b.title,
+            b.author,
+            b.totalPages,
+            b.pagesRead,
+            b.status,
+            b.pausedAt,
+            b.startedAt,
+            b.finishedAt,
+            b.createdAt,
+            bookShelves.get(b.shelf) ?? b.shelf,
+            b.price === null ? '' : b.price.toString(),
+            b.summary,
+          ]),
         ),
       },
       {
         name: 'reading-log.csv',
         ...table(
-          ['Date', 'Book', 'Pages'],
-          books.flatMap((b) => b.logs.map((l) => [day(l.date), b.title, l.pages])),
+          ['Date', 'Book', 'Pages', 'From page'],
+          books.flatMap((b) => b.logs.map((l) => [day(l.date), b.title, l.pages, l.fromPage])),
         ),
       },
       {
         name: 'book-notes.csv',
         ...table(
-          ['Book', 'Page', 'Note', 'Written'],
-          bookNotes.map((n) => [n.book.title, n.page, n.text, n.createdAt]),
+          ['Book', 'Page', 'Note', 'Written', 'Day', 'Kind', 'Line from the book'],
+          bookNotes.map((n) => [n.book.title, n.page, n.text, n.createdAt, day(n.date), n.kind, n.line]),
         ),
       },
       {
