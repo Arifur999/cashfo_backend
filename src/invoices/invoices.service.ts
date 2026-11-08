@@ -79,7 +79,9 @@ export class InvoicesService {
       include: {
         payment: {
           include: {
-            plan: { select: { id: true, name: true } },
+            // What the plan allows, for the line's "No monthly limit on
+            // transactions, PDF reports, income goals".
+            plan: { select: { id: true, name: true, featureLimits: true } },
             refund: { select: { amount: true, status: true, createdAt: true } },
           },
         },
