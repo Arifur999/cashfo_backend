@@ -1938,6 +1938,7 @@ model Business {
   assetCategoryOptions        AssetCategoryOption[]
   groupMembers                GroupMember[]
   groupContributions          GroupContribution[]
+  groupCashHandovers          GroupCashHandover[]
   groupExpenses               GroupExpense[]
   groupSettlements            GroupSettlement[]
   groupExpenseCategoryOptions GroupExpenseCategoryOption[]
@@ -1950,15 +1951,15 @@ model Business {
 }
 
 model BusinessMember {
-  id         String       @id @default(uuid())
-  businessId String
-  business   Business     @relation(fields: [businessId], references: [id])
-  userId     String
-  user       User         @relation(fields: [userId], references: [id])
-  role       MemberRole   @default(OWNER)
-  invitedAt  DateTime?
-  joinedAt   DateTime     @default(now())
-  status     MemberStatus @default(ACTIVE)
+  id               String       @id @default(uuid())
+  businessId       String
+  business         Business     @relation(fields: [businessId], references: [id])
+  userId           String
+  user             User         @relation(fields: [userId], references: [id])
+  role             MemberRole   @default(OWNER)
+  invitedAt        DateTime?
+  joinedAt         DateTime     @default(now())
+  status           MemberStatus @default(ACTIVE)
   // Settings › App preferences › Default account for new transactions:
   // the wallet picked first when this member adds income or an expense.
   defaultAccountId String?
@@ -2880,6 +2881,9 @@ model GroupMember {
   updatedAt     DateTime                @updatedAt
   contributions GroupContribution[]     @relation("ContributionMember")
   received      GroupContribution[]     @relation("ContributionReceiver")
+  // Group cash they handed to another holder, and cash handed to them.
+  handoversOut  GroupCashHandover[]     @relation("HandoverFrom")
+  handoversIn   GroupCashHandover[]     @relation("HandoverTo")
   // GroupExpense.paidByMemberId: who paid it -- out of their own pocket
   // when the expense says so (paidFrom MEMBER), which credits them.
   expensesPaid  GroupExpense[]
@@ -2989,6 +2993,26 @@ model GroupMeal {
 enum GroupMemberStatus {
   ACTIVE
   ARCHIVED
+}
+
+// Group cash moving from one holder to another (the v16 Cash book's "Hand
+// over cash"): it changes who keeps the cash, never anyone's balance.
+model GroupCashHandover {
+  id           String      @id @default(uuid())
+  businessId   String
+  business     Business    @relation(fields: [businessId], references: [id])
+  fromMemberId String
+  fromMember   GroupMember @relation("HandoverFrom", fields: [fromMemberId], references: [id])
+  toMemberId   String
+  toMember     GroupMember @relation("HandoverTo", fields: [toMemberId], references: [id])
+  amount       Decimal     @db.Decimal(14, 2)
+  date         DateTime    @db.Date
+  note         String?
+  createdAt    DateTime    @default(now())
+
+  @@index([businessId, date])
+  @@index([fromMemberId])
+  @@index([toMemberId])
 }
 
 model GroupContribution {
@@ -3508,24 +3532,24 @@ model SocialEvent {
 }
 
 model EventGift {
-  id         String        @id @default(uuid())
-  businessId String
-  business   Business      @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  eventId    String
-  event      SocialEvent   @relation(fields: [eventId], references: [id], onDelete: Cascade)
-  personId   String
-  person     EventPerson   @relation(fields: [personId], references: [id], onDelete: Cascade)
-  direction  GiftDirection
-  kind       GiftKind
+  id            String        @id @default(uuid())
+  businessId    String
+  business      Business      @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  eventId       String
+  event         SocialEvent   @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  personId      String
+  person        EventPerson   @relation(fields: [personId], references: [id], onDelete: Cascade)
+  direction     GiftDirection
+  kind          GiftKind
   // The item, for an ITEM gift ("Gold ring").
-  item       String?
+  item          String?
   // Cash given, or what the item is worth.
-  amount     Decimal       @db.Decimal(14, 2)
-  note       String?
+  amount        Decimal       @db.Decimal(14, 2)
+  note          String?
   // Cash given that was also added to Transactions: its expense, which
   // only deleting the gift (or its event) voids.
-  transactionId String?    @unique
-  createdAt  DateTime      @default(now())
+  transactionId String?       @unique
+  createdAt     DateTime      @default(now())
 
   @@index([businessId])
   @@index([eventId])

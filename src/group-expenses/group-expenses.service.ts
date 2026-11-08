@@ -5,6 +5,7 @@ import { dhakaDateOnly, dhakaToday } from '../common/dhaka.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { CloseSettlementDto } from './dto/close-settlement.dto.js';
 import { CreateGroupContributionDto } from './dto/create-group-contribution.dto.js';
+import { CreateGroupCashHandoverDto, UpdateGroupCashHandoverDto } from './dto/group-cash-handover.dto.js';
 import { CreateGroupExpenseCategoryDto } from './dto/create-group-expense-category.dto.js';
 import { CreateGroupExpenseDto } from './dto/create-group-expense.dto.js';
 import { CreateGroupMemberDto } from './dto/create-group-member.dto.js';
@@ -101,7 +102,13 @@ const dateOrNull = (value: string | null | undefined) => (value === undefined ? 
 const paisa = (value: string | number | Prisma.Decimal) => Math.round(Number(value) * 100);
 const money = (value: number | string | Prisma.Decimal) => Number(value).toFixed(2);
 
-type Activity = { action: GroupActivityAction; entity: string; entityId?: string | null; summary: Record<string, unknown>; change?: { field: string; from: unknown; to: unknown }[] };
+type Activity = {
+  action: GroupActivityAction;
+  entity: string;
+  entityId?: string | null;
+  summary: Record<string, unknown>;
+  change?: { field: string; from: unknown; to: unknown }[];
+};
 
 // What changed between two snapshots of a record, field by field.
 function changesOf(before: Record<string, unknown>, after: Record<string, unknown>): { field: string; from: unknown; to: unknown }[] {
@@ -163,7 +170,9 @@ export class GroupExpensesService {
 
   // A third active accountant is refused.
   private async checkAccountants(businessId: string, exceptId?: string) {
-    const count = await this.prisma.groupMember.count({ where: { businessId, role: 'ACCOUNTANT', status: 'ACTIVE', ...(exceptId && { id: { not: exceptId } }) } });
+    const count = await this.prisma.groupMember.count({
+      where: { businessId, role: 'ACCOUNTANT', status: 'ACTIVE', ...(exceptId && { id: { not: exceptId } }) },
+    });
     if (count >= MAX_ACCOUNTANTS) {
       throw new BadRequestException('A family can have up to 2 accountants.');
     }
@@ -173,7 +182,11 @@ export class GroupExpensesService {
   // first accountant takes over when the holder stops being one.
   private async keepCashHolder(businessId: string) {
     const settings = await this.prisma.groupSettings.findUnique({ where: { businessId }, select: { cashHolderMemberId: true } });
-    const accountants = await this.prisma.groupMember.findMany({ where: { businessId, role: 'ACCOUNTANT', status: 'ACTIVE' }, orderBy: [{ isOwner: 'desc' }, { createdAt: 'asc' }], select: { id: true } });
+    const accountants = await this.prisma.groupMember.findMany({
+      where: { businessId, role: 'ACCOUNTANT', status: 'ACTIVE' },
+      orderBy: [{ isOwner: 'desc' }, { createdAt: 'asc' }],
+      select: { id: true },
+    });
     const holder = settings?.cashHolderMemberId ?? null;
     if (holder && accountants.some((member) => member.id === holder)) return;
     const next = accountants[0]?.id ?? null;
@@ -216,7 +229,8 @@ export class GroupExpensesService {
     const comesBackAsAccountant = dto.status === 'ACTIVE' && current.status !== 'ACTIVE' && (dto.role ?? current.role) === 'ACCOUNTANT';
     if (becomesAccountant || comesBackAsAccountant) await this.checkAccountants(businessId, id);
     const archiving = dto.status === 'ARCHIVED' && current.status === 'ACTIVE';
-    const leftOn = dto.leftOn !== undefined ? dateOrNull(dto.leftOn) : archiving && !current.leftOn ? dhakaDateOnly(new Date()) : dto.status === 'ACTIVE' ? null : undefined;
+    const leftOn =
+      dto.leftOn !== undefined ? dateOrNull(dto.leftOn) : archiving && !current.leftOn ? dhakaDateOnly(new Date()) : dto.status === 'ACTIVE' ? null : undefined;
     const joinedOn = dateOrNull(dto.joinedOn);
     const joined = joinedOn !== undefined ? joinedOn : current.joinedOn;
     const left = leftOn !== undefined ? leftOn : current.leftOn;
@@ -239,10 +253,18 @@ export class GroupExpensesService {
     });
     if (dto.role !== undefined || dto.status !== undefined) await this.keepCashHolder(businessId);
     const change = changesOf(
-      { name: current.name, phone: current.phone, role: current.role, status: current.status, household: current.household, joinedOn: current.joinedOn && dayKey(current.joinedOn) },
+      {
+        name: current.name,
+        phone: current.phone,
+        role: current.role,
+        status: current.status,
+        household: current.household,
+        joinedOn: current.joinedOn && dayKey(current.joinedOn),
+      },
       { name: dto.name, phone: dto.phone, role: dto.role, status: dto.status, household: dto.household, joinedOn: dto.joinedOn },
     );
-    if (change.length > 0) await this.record(businessId, actorUserId, { action: 'EDITED', entity: 'MEMBER', entityId: id, summary: { member: updated.name }, change });
+    if (change.length > 0)
+      await this.record(businessId, actorUserId, { action: 'EDITED', entity: 'MEMBER', entityId: id, summary: { member: updated.name }, change });
     return updated;
   }
 
@@ -256,16 +278,25 @@ export class GroupExpensesService {
       throw new BadRequestException("The group's owner can't be removed");
     }
 
-    const [contributionCount, receivedCount, expenseCount, settlementCount, splitCount, mealCount] = await Promise.all([
+    const [contributionCount, receivedCount, expenseCount, settlementCount, splitCount, mealCount, handoverCount] = await Promise.all([
       this.prisma.groupContribution.count({ where: { groupMemberId: id } }),
       this.prisma.groupContribution.count({ where: { receivedByMemberId: id } }),
       this.prisma.groupExpense.count({ where: { paidByMemberId: id } }),
       this.prisma.groupSettlementMember.count({ where: { groupMemberId: id } }),
       this.prisma.groupExpenseSplit.count({ where: { groupMemberId: id } }),
       this.prisma.groupMeal.count({ where: { groupMemberId: id } }),
+      this.prisma.groupCashHandover.count({ where: { OR: [{ fromMemberId: id }, { toMemberId: id }] } }),
     ]);
 
-    if (contributionCount === 0 && receivedCount === 0 && expenseCount === 0 && settlementCount === 0 && splitCount === 0 && mealCount === 0) {
+    if (
+      contributionCount === 0 &&
+      receivedCount === 0 &&
+      expenseCount === 0 &&
+      settlementCount === 0 &&
+      splitCount === 0 &&
+      mealCount === 0 &&
+      handoverCount === 0
+    ) {
       await this.prisma.groupMember.delete({ where: { id } });
       await this.keepCashHolder(businessId);
       await this.record(businessId, actorUserId, { action: 'DELETED', entity: 'MEMBER', entityId: id, summary: { member: member.name } });
@@ -274,7 +305,13 @@ export class GroupExpensesService {
 
     await this.prisma.groupMember.update({ where: { id }, data: { status: 'ARCHIVED', ...(!member.leftOn && { leftOn: dhakaDateOnly(new Date()) }) } });
     await this.keepCashHolder(businessId);
-    await this.record(businessId, actorUserId, { action: 'EDITED', entity: 'MEMBER', entityId: id, summary: { member: member.name }, change: [{ field: 'status', from: 'ACTIVE', to: 'ARCHIVED' }] });
+    await this.record(businessId, actorUserId, {
+      action: 'EDITED',
+      entity: 'MEMBER',
+      entityId: id,
+      summary: { member: member.name },
+      change: [{ field: 'status', from: 'ACTIVE', to: 'ARCHIVED' }],
+    });
     return { id, action: 'archived' };
   }
 
@@ -303,7 +340,12 @@ export class GroupExpensesService {
       await this.record(businessId, actorUserId, { action: 'EDITED', entity: 'SPLIT', summary: { mode: 'CUSTOM' }, change });
     } else {
       await this.prisma.groupSettings.upsert({ where: { businessId }, update: { costSplit: 'EQUAL' }, create: { businessId, costSplit: 'EQUAL' } });
-      await this.record(businessId, actorUserId, { action: 'EDITED', entity: 'SPLIT', summary: { mode: 'EQUAL' }, change: [{ field: 'mode', from: before?.costSplit ?? 'EQUAL', to: 'EQUAL' }] });
+      await this.record(businessId, actorUserId, {
+        action: 'EDITED',
+        entity: 'SPLIT',
+        summary: { mode: 'EQUAL' },
+        change: [{ field: 'mode', from: before?.costSplit ?? 'EQUAL', to: 'EQUAL' }],
+      });
     }
     return this.getSettings(businessId);
   }
@@ -350,7 +392,8 @@ export class GroupExpensesService {
     const kind: GroupContributionKind = dto.kind ?? (Number(dto.amount) < 0 ? 'RETURN' : 'DEPOSIT');
     if (dto.receivedByMemberId) await this.requireAccountant(businessId, dto.receivedByMemberId);
     // A deposit or a return left without a "given to" goes through the cash holder.
-    const receivedByMemberId = dto.receivedByMemberId !== undefined ? dto.receivedByMemberId : kind === 'DEPOSIT' || kind === 'RETURN' ? await this.cashHolderOf(businessId) : null;
+    const receivedByMemberId =
+      dto.receivedByMemberId !== undefined ? dto.receivedByMemberId : kind === 'DEPOSIT' || kind === 'RETURN' ? await this.cashHolderOf(businessId) : null;
     const created = await this.prisma.groupContribution.create({
       data: { businessId, groupMemberId: dto.groupMemberId, amount: dto.amount, kind, date: new Date(dto.date), note: dto.note, receivedByMemberId },
       include: { groupMember: true, receivedBy: true },
@@ -359,7 +402,14 @@ export class GroupExpensesService {
       action: 'ADDED',
       entity: 'CONTRIBUTION',
       entityId: created.id,
-      summary: { member: member.name, amount: money(created.amount), kind, date: dto.date, receivedBy: created.receivedBy?.name ?? null, note: dto.note ?? null },
+      summary: {
+        member: member.name,
+        amount: money(created.amount),
+        kind,
+        date: dto.date,
+        receivedBy: created.receivedBy?.name ?? null,
+        note: dto.note ?? null,
+      },
     });
     return created;
   }
@@ -380,10 +430,19 @@ export class GroupExpensesService {
     const date = new Date(dto.date);
     const settleGroupId = randomUUID();
     const rows = await this.prisma.$transaction([
-      this.prisma.groupContribution.create({ data: { businessId, groupMemberId: dto.fromMemberId, amount: dto.amount, kind: 'SETTLE', date, note: dto.payerNote, settleGroupId } }),
-      this.prisma.groupContribution.create({ data: { businessId, groupMemberId: dto.toMemberId, amount: `-${dto.amount}`, kind: 'SETTLE', date, note: dto.receiverNote, settleGroupId } }),
+      this.prisma.groupContribution.create({
+        data: { businessId, groupMemberId: dto.fromMemberId, amount: dto.amount, kind: 'SETTLE', date, note: dto.payerNote, settleGroupId },
+      }),
+      this.prisma.groupContribution.create({
+        data: { businessId, groupMemberId: dto.toMemberId, amount: `-${dto.amount}`, kind: 'SETTLE', date, note: dto.receiverNote, settleGroupId },
+      }),
     ]);
-    await this.record(businessId, actorUserId, { action: 'ADDED', entity: 'SETTLE', entityId: settleGroupId, summary: { from: payer.name, to: receiver.name, amount: money(dto.amount), date: dto.date } });
+    await this.record(businessId, actorUserId, {
+      action: 'ADDED',
+      entity: 'SETTLE',
+      entityId: settleGroupId,
+      summary: { from: payer.name, to: receiver.name, amount: money(dto.amount), date: dto.date },
+    });
     return rows;
   }
 
@@ -411,7 +470,9 @@ export class GroupExpensesService {
       throw new NotFoundException('Contribution not found');
     }
     // A new amount on a deposit or a return says which it now is.
-    const kind: GroupContributionKind | undefined = dto.kind ?? (dto.amount !== undefined && (current.kind === 'DEPOSIT' || current.kind === 'RETURN') ? (Number(dto.amount) < 0 ? 'RETURN' : 'DEPOSIT') : undefined);
+    const kind: GroupContributionKind | undefined =
+      dto.kind ??
+      (dto.amount !== undefined && (current.kind === 'DEPOSIT' || current.kind === 'RETURN') ? (Number(dto.amount) < 0 ? 'RETURN' : 'DEPOSIT') : undefined);
     if (dto.groupMemberId) {
       await this.requireMember(businessId, dto.groupMemberId);
     }
@@ -429,11 +490,29 @@ export class GroupExpensesService {
       include: { groupMember: true, receivedBy: true },
     });
     const change = changesOf(
-      { member: current.groupMember.name, amount: money(current.amount), date: dayKey(current.date), receivedBy: current.receivedBy?.name ?? null, note: current.note },
-      { member: updated.groupMember.name, amount: money(updated.amount), date: dayKey(updated.date), receivedBy: updated.receivedBy?.name ?? null, note: updated.note },
+      {
+        member: current.groupMember.name,
+        amount: money(current.amount),
+        date: dayKey(current.date),
+        receivedBy: current.receivedBy?.name ?? null,
+        note: current.note,
+      },
+      {
+        member: updated.groupMember.name,
+        amount: money(updated.amount),
+        date: dayKey(updated.date),
+        receivedBy: updated.receivedBy?.name ?? null,
+        note: updated.note,
+      },
     );
     if (change.length > 0) {
-      await this.record(businessId, actorUserId, { action: 'EDITED', entity: 'CONTRIBUTION', entityId: id, summary: { member: updated.groupMember.name, amount: money(updated.amount), kind: updated.kind, date: dayKey(updated.date) }, change });
+      await this.record(businessId, actorUserId, {
+        action: 'EDITED',
+        entity: 'CONTRIBUTION',
+        entityId: id,
+        summary: { member: updated.groupMember.name, amount: money(updated.amount), kind: updated.kind, date: dayKey(updated.date) },
+        change,
+      });
     }
     return updated;
   }
@@ -444,7 +523,12 @@ export class GroupExpensesService {
       throw new NotFoundException('Contribution not found');
     }
     await this.prisma.groupContribution.delete({ where: { id } });
-    await this.record(businessId, actorUserId, { action: 'DELETED', entity: 'CONTRIBUTION', entityId: id, summary: { member: current.groupMember.name, amount: money(current.amount), kind: current.kind, date: dayKey(current.date) } });
+    await this.record(businessId, actorUserId, {
+      action: 'DELETED',
+      entity: 'CONTRIBUTION',
+      entityId: id,
+      summary: { member: current.groupMember.name, amount: money(current.amount), kind: current.kind, date: dayKey(current.date) },
+    });
     return { success: true };
   }
 
@@ -457,7 +541,14 @@ export class GroupExpensesService {
     let options = await this.prisma.groupExpenseCategoryOption.findMany({ where: { businessId }, orderBy: { displayOrder: 'asc' } });
     if (options.length === 0) {
       await this.prisma.groupExpenseCategoryOption.createMany({
-        data: DEFAULT_EXPENSE_CATEGORIES.map((c, i) => ({ businessId, name: c.name, icon: c.icon, color: c.color, displayOrder: i, ...(c.defaultSplit && { defaultSplit: c.defaultSplit }) })),
+        data: DEFAULT_EXPENSE_CATEGORIES.map((c, i) => ({
+          businessId,
+          name: c.name,
+          icon: c.icon,
+          color: c.color,
+          displayOrder: i,
+          ...(c.defaultSplit && { defaultSplit: c.defaultSplit }),
+        })),
         skipDuplicates: true,
       });
       options = await this.prisma.groupExpenseCategoryOption.findMany({ where: { businessId }, orderBy: { displayOrder: 'asc' } });
@@ -491,7 +582,11 @@ export class GroupExpensesService {
         };
       }),
     });
-    await this.record(businessId, actorUserId, { action: 'ADDED', entity: 'CATEGORY', summary: { names: dto.categories.map((category) => category.name.trim()) } });
+    await this.record(businessId, actorUserId, {
+      action: 'ADDED',
+      entity: 'CATEGORY',
+      summary: { names: dto.categories.map((category) => category.name.trim()) },
+    });
     return this.listExpenseCategories(businessId);
   }
 
@@ -521,7 +616,8 @@ export class GroupExpensesService {
   async updateExpenseCategory(businessId: string, id: string, dto: UpdateGroupExpenseCategoryDto, actorUserId: string | null = null) {
     const current = await this.requireExpenseCategory(businessId, id);
     // Shared another way than equally, it can't keep a chosen few.
-    const leavesEqual = dto.defaultSplit !== undefined && dto.defaultSplit !== 'EQUAL' && dto.defaultMemberIds === undefined && current.defaultMemberIds.length > 0;
+    const leavesEqual =
+      dto.defaultSplit !== undefined && dto.defaultSplit !== 'EQUAL' && dto.defaultMemberIds === undefined && current.defaultMemberIds.length > 0;
     const defaultMemberIds = leavesEqual ? [] : await this.categoryMembers(businessId, dto.defaultSplit ?? current.defaultSplit, dto.defaultMemberIds);
     if (dto.name !== undefined) {
       const clash = await this.prisma.groupExpenseCategoryOption.findUnique({ where: { businessId_name: { businessId, name: dto.name } } });
@@ -550,7 +646,8 @@ export class GroupExpensesService {
       { name: current.name, icon: current.icon, color: current.color, defaultSplit: current.defaultSplit, hidden: current.hidden },
       { name: dto.name, icon: dto.icon, color: dto.color, defaultSplit: dto.defaultSplit, hidden: dto.hidden },
     );
-    if (change.length > 0) await this.record(businessId, actorUserId, { action: 'EDITED', entity: 'CATEGORY', entityId: id, summary: { category: updated.name }, change });
+    if (change.length > 0)
+      await this.record(businessId, actorUserId, { action: 'EDITED', entity: 'CATEGORY', entityId: id, summary: { category: updated.name }, change });
     return updated;
   }
 
@@ -621,7 +718,8 @@ export class GroupExpensesService {
     }
     // Shared the way its category says, unless the expense says otherwise.
     const split = dto.split ?? option?.defaultSplit ?? 'EQUAL';
-    const splits = dto.splits?.length || dto.split || !option?.defaultMemberIds.length ? (dto.splits ?? []) : await this.chosenMembers(businessId, option.defaultMemberIds);
+    const splits =
+      dto.splits?.length || dto.split || !option?.defaultMemberIds.length ? (dto.splits ?? []) : await this.chosenMembers(businessId, option.defaultMemberIds);
     const paidFrom = dto.paidFrom ?? 'FUND';
     // Paid from the group's cash: by the accountant named (left out, the cash
     // holder). One who isn't an accountant counts as the cash holder's cash.
@@ -645,7 +743,14 @@ export class GroupExpensesService {
       action: 'ADDED',
       entity: 'EXPENSE',
       entityId: created.id,
-      summary: { category, amount: money(created.amount), date: dto.date, description: dto.description ?? null, paidBy: created.paidByMember?.name ?? null, paidFrom },
+      summary: {
+        category,
+        amount: money(created.amount),
+        date: dto.date,
+        description: dto.description ?? null,
+        paidBy: created.paidByMember?.name ?? null,
+        paidFrom,
+      },
     });
     return created;
   }
@@ -677,7 +782,9 @@ export class GroupExpensesService {
       paidFrom,
       paidByMemberId,
       split: dto.split ?? current.split,
-      splits: dto.splits ?? current.splits.map((s) => ({ groupMemberId: s.groupMemberId, units: s.units === null ? null : Number(s.units), amount: s.amount?.toString() ?? null })),
+      splits:
+        dto.splits ??
+        current.splits.map((s) => ({ groupMemberId: s.groupMemberId, units: s.units === null ? null : Number(s.units), amount: s.amount?.toString() ?? null })),
     });
     const updated = await this.prisma.$transaction(async (tx) => {
       if (dto.splits !== undefined) await tx.groupExpenseSplit.deleteMany({ where: { expenseId: id } });
@@ -691,24 +798,49 @@ export class GroupExpensesService {
           ...(dto.paidByMemberId !== undefined && { paidByMemberId }),
           ...(dto.paidFrom !== undefined && { paidFrom: dto.paidFrom }),
           ...(dto.split !== undefined && { split: dto.split }),
-          ...(dto.splits !== undefined && { splits: { create: dto.splits.map((s) => ({ groupMemberId: s.groupMemberId, units: s.units ?? null, amount: s.amount ?? null })) } }),
+          ...(dto.splits !== undefined && {
+            splits: { create: dto.splits.map((s) => ({ groupMemberId: s.groupMemberId, units: s.units ?? null, amount: s.amount ?? null })) },
+          }),
         },
         include: { paidByMember: true, splits: true },
       });
     });
     const change = changesOf(
-      { amount: money(current.amount), date: dayKey(current.date), category: current.category, description: current.description, paidBy: current.paidByMember?.name ?? null, paidFrom: current.paidFrom },
-      { amount: money(updated.amount), date: dayKey(updated.date), category: updated.category, description: updated.description, paidBy: updated.paidByMember?.name ?? null, paidFrom: updated.paidFrom },
+      {
+        amount: money(current.amount),
+        date: dayKey(current.date),
+        category: current.category,
+        description: current.description,
+        paidBy: current.paidByMember?.name ?? null,
+        paidFrom: current.paidFrom,
+      },
+      {
+        amount: money(updated.amount),
+        date: dayKey(updated.date),
+        category: updated.category,
+        description: updated.description,
+        paidBy: updated.paidByMember?.name ?? null,
+        paidFrom: updated.paidFrom,
+      },
     );
     if (change.length > 0) {
-      await this.record(businessId, actorUserId, { action: 'EDITED', entity: 'EXPENSE', entityId: id, summary: { category: updated.category, amount: money(updated.amount), date: dayKey(updated.date), description: updated.description }, change });
+      await this.record(businessId, actorUserId, {
+        action: 'EDITED',
+        entity: 'EXPENSE',
+        entityId: id,
+        summary: { category: updated.category, amount: money(updated.amount), date: dayKey(updated.date), description: updated.description },
+        change,
+      });
     }
     return updated;
   }
 
   // An expense from a pocket names whose; exact amounts add up to it; the
   // members it names are this group's, once each.
-  private async checkExpense(businessId: string, expense: { amount: string; paidFrom: string; paidByMemberId: string | null; split: GroupSplit; splits: GroupExpenseSplitDto[] }) {
+  private async checkExpense(
+    businessId: string,
+    expense: { amount: string; paidFrom: string; paidByMemberId: string | null; split: GroupSplit; splits: GroupExpenseSplitDto[] },
+  ) {
     if (expense.paidFrom === 'MEMBER' && !expense.paidByMemberId) {
       throw new BadRequestException('Say who paid it from their own pocket');
     }
@@ -763,7 +895,12 @@ export class GroupExpensesService {
     const created = await this.prisma.groupMonthlyBudget.create({
       data: { businessId, month: dto.month, year: dto.year, budgetAmount: dto.budgetAmount },
     });
-    await this.record(businessId, actorUserId, { action: 'ADDED', entity: 'BUDGET', entityId: created.id, summary: { month: dto.month, year: dto.year, amount: money(created.budgetAmount) } });
+    await this.record(businessId, actorUserId, {
+      action: 'ADDED',
+      entity: 'BUDGET',
+      entityId: created.id,
+      summary: { month: dto.month, year: dto.year, amount: money(created.budgetAmount) },
+    });
     return created;
   }
 
@@ -786,14 +923,26 @@ export class GroupExpensesService {
       },
     });
     const change = changesOf({ amount: money(budget.budgetAmount) }, { amount: money(updated.budgetAmount) });
-    if (change.length > 0) await this.record(businessId, actorUserId, { action: 'EDITED', entity: 'BUDGET', entityId: id, summary: { month: updated.month, year: updated.year }, change });
+    if (change.length > 0)
+      await this.record(businessId, actorUserId, {
+        action: 'EDITED',
+        entity: 'BUDGET',
+        entityId: id,
+        summary: { month: updated.month, year: updated.year },
+        change,
+      });
     return updated;
   }
 
   async deleteMonthBudget(businessId: string, id: string, actorUserId: string | null = null) {
     const budget = await this.requireMonthBudget(businessId, id);
     await this.prisma.groupMonthlyBudget.delete({ where: { id } });
-    await this.record(businessId, actorUserId, { action: 'DELETED', entity: 'BUDGET', entityId: id, summary: { month: budget.month, year: budget.year, amount: money(budget.budgetAmount) } });
+    await this.record(businessId, actorUserId, {
+      action: 'DELETED',
+      entity: 'BUDGET',
+      entityId: id,
+      summary: { month: budget.month, year: budget.year, amount: money(budget.budgetAmount) },
+    });
     return { id };
   }
 
@@ -836,8 +985,22 @@ export class GroupExpensesService {
     };
     const saved = await this.prisma.groupSettings.upsert({ where: { businessId }, update: data, create: { businessId, ...data } });
     const change = changesOf(
-      { kind: before.kind, monthStartDay: before.monthStartDay, cashHolderMemberId: before.cashHolderMemberId, mealsOn: before.mealsOn, budgetWarnPercent: before.budgetWarnPercent, paused: !!before.pausedAt },
-      { kind: dto.kind, monthStartDay: dto.monthStartDay, cashHolderMemberId: dto.cashHolderMemberId, mealsOn: dto.mealsOn, budgetWarnPercent: dto.budgetWarnPercent, paused: dto.paused },
+      {
+        kind: before.kind,
+        monthStartDay: before.monthStartDay,
+        cashHolderMemberId: before.cashHolderMemberId,
+        mealsOn: before.mealsOn,
+        budgetWarnPercent: before.budgetWarnPercent,
+        paused: !!before.pausedAt,
+      },
+      {
+        kind: dto.kind,
+        monthStartDay: dto.monthStartDay,
+        cashHolderMemberId: dto.cashHolderMemberId,
+        mealsOn: dto.mealsOn,
+        budgetWarnPercent: dto.budgetWarnPercent,
+        paused: dto.paused,
+      },
     );
     if (change.length > 0) await this.record(businessId, actorUserId, { action: 'EDITED', entity: 'SETTINGS', summary: {}, change });
     return saved;
@@ -847,7 +1010,12 @@ export class GroupExpensesService {
 
   listMeals(businessId: string, filters: { from?: string; to?: string }) {
     return this.prisma.groupMeal.findMany({
-      where: { businessId, ...((filters.from || filters.to) && { date: { ...(filters.from && { gte: new Date(filters.from) }), ...(filters.to && { lte: new Date(filters.to) }) } }) },
+      where: {
+        businessId,
+        ...((filters.from || filters.to) && {
+          date: { ...(filters.from && { gte: new Date(filters.from) }), ...(filters.to && { lte: new Date(filters.to) }) },
+        }),
+      },
       orderBy: [{ date: 'asc' }],
     });
   }
@@ -869,12 +1037,105 @@ export class GroupExpensesService {
         if (!entry.breakfast && !entry.lunch && !entry.dinner && !entry.guests) {
           await tx.groupMeal.deleteMany({ where: { groupMemberId: entry.groupMemberId, date } });
         } else {
-          await tx.groupMeal.upsert({ where: { groupMemberId_date: { groupMemberId: entry.groupMemberId, date } }, update: meals, create: { businessId, groupMemberId: entry.groupMemberId, date, ...meals } });
+          await tx.groupMeal.upsert({
+            where: { groupMemberId_date: { groupMemberId: entry.groupMemberId, date } },
+            update: meals,
+            create: { businessId, groupMemberId: entry.groupMemberId, date, ...meals },
+          });
         }
       }
     });
     await this.record(businessId, actorUserId, { action: 'EDITED', entity: 'MEALS', summary: { date: dto.date } });
     return this.listMeals(businessId, { from: dto.date, to: dto.date });
+  }
+
+  // ---- Cash handovers ----
+
+  // Cash handed from one holder to another. Both must be able to keep the
+  // group's cash: an accountant, or the cash holder.
+  private async requireHolders(businessId: string, fromMemberId: string, toMemberId: string) {
+    if (fromMemberId === toMemberId) {
+      throw new BadRequestException('Pick two different people.');
+    }
+    const [from, to, holder] = await Promise.all([
+      this.requireMember(businessId, fromMemberId),
+      this.requireMember(businessId, toMemberId),
+      this.cashHolderOf(businessId),
+    ]);
+    for (const member of [from, to]) {
+      if (member.role !== 'ACCOUNTANT' && member.id !== holder) {
+        throw new BadRequestException(`${member.name} doesn't keep group cash`);
+      }
+    }
+    if (to.status !== 'ACTIVE') {
+      throw new BadRequestException(`${to.name} has left the group`);
+    }
+    return { from, to };
+  }
+
+  async createHandover(businessId: string, dto: CreateGroupCashHandoverDto, actorUserId: string | null = null) {
+    const { from, to } = await this.requireHolders(businessId, dto.fromMemberId, dto.toMemberId);
+    const created = await this.prisma.groupCashHandover.create({
+      data: { businessId, fromMemberId: dto.fromMemberId, toMemberId: dto.toMemberId, amount: dto.amount, date: new Date(dto.date), note: dto.note || null },
+      include: { fromMember: true, toMember: true },
+    });
+    await this.record(businessId, actorUserId, {
+      action: 'ADDED',
+      entity: 'HANDOVER',
+      entityId: created.id,
+      summary: { from: from.name, to: to.name, amount: money(created.amount), date: dto.date, note: created.note },
+    });
+    return created;
+  }
+
+  async updateHandover(businessId: string, id: string, dto: UpdateGroupCashHandoverDto, actorUserId: string | null = null) {
+    const current = await this.prisma.groupCashHandover.findUnique({ where: { id }, include: { fromMember: true, toMember: true } });
+    if (!current || current.businessId !== businessId) {
+      throw new NotFoundException('Handover not found');
+    }
+    const fromMemberId = dto.fromMemberId ?? current.fromMemberId;
+    const toMemberId = dto.toMemberId ?? current.toMemberId;
+    if (fromMemberId !== current.fromMemberId || toMemberId !== current.toMemberId) await this.requireHolders(businessId, fromMemberId, toMemberId);
+    const updated = await this.prisma.groupCashHandover.update({
+      where: { id },
+      data: {
+        fromMemberId,
+        toMemberId,
+        ...(dto.amount !== undefined && { amount: dto.amount }),
+        ...(dto.date !== undefined && { date: new Date(dto.date) }),
+        ...(dto.note !== undefined && { note: dto.note || null }),
+      },
+      include: { fromMember: true, toMember: true },
+    });
+    const change = changesOf(
+      { from: current.fromMember.name, to: current.toMember.name, amount: money(current.amount), date: dayKey(current.date), note: current.note },
+      { from: updated.fromMember.name, to: updated.toMember.name, amount: money(updated.amount), date: dayKey(updated.date), note: updated.note },
+    );
+    if (change.length > 0) {
+      await this.record(businessId, actorUserId, {
+        action: 'EDITED',
+        entity: 'HANDOVER',
+        entityId: id,
+        summary: { from: updated.fromMember.name, to: updated.toMember.name, amount: money(updated.amount), date: dayKey(updated.date) },
+        change,
+      });
+    }
+    return updated;
+  }
+
+  async deleteHandover(businessId: string, id: string, actorUserId: string | null = null) {
+    const current = await this.prisma.groupCashHandover.findUnique({ where: { id }, include: { fromMember: true, toMember: true } });
+    if (!current || current.businessId !== businessId) {
+      throw new NotFoundException('Handover not found');
+    }
+    await this.prisma.groupCashHandover.delete({ where: { id } });
+    await this.record(businessId, actorUserId, {
+      action: 'DELETED',
+      entity: 'HANDOVER',
+      entityId: id,
+      summary: { from: current.fromMember.name, to: current.toMember.name, amount: money(current.amount), date: dayKey(current.date) },
+    });
+    return { success: true };
   }
 
   // ---- Cash book ----
@@ -883,13 +1144,14 @@ export class GroupExpensesService {
   // they paid from it, returns they handed back), with the running cash.
   async getCashbook(businessId: string, filters: { accountantId?: string; from?: string; to?: string }) {
     if (filters.accountantId) await this.requireMember(businessId, filters.accountantId);
-    const [members, contributions, expenses, holder] = await Promise.all([
+    const [members, contributions, expenses, holder, handovers] = await Promise.all([
       this.prisma.groupMember.findMany({ where: { businessId }, orderBy: [{ isOwner: 'desc' }, { createdAt: 'asc' }] }),
       this.prisma.groupContribution.findMany({ where: { businessId, kind: { in: ['DEPOSIT', 'RETURN'] } }, include: { groupMember: true } }),
       this.prisma.groupExpense.findMany({ where: { businessId, paidFrom: 'FUND' } }),
       this.cashHolderOf(businessId),
+      this.prisma.groupCashHandover.findMany({ where: { businessId } }),
     ]);
-    const moves = this.movesOf(members, contributions, expenses, holder);
+    const moves = this.movesOf(members, contributions, expenses, holder, handovers);
     const names = new Map(members.map((member) => [member.id, member.name]));
     const book = cashbook(moves, filters);
     const cash = cashByAccountant(moves, filters.to);
@@ -910,12 +1172,33 @@ export class GroupExpensesService {
   }
 
   private movesOf(
-    members: { id: string; role: GroupMemberRole }[],
-    contributions: { id: string; date: Date; createdAt: Date; kind: GroupContributionKind; amount: Prisma.Decimal; groupMemberId: string; groupMember: { name: string }; receivedByMemberId: string | null; note: string | null }[],
-    expenses: { id: string; date: Date; createdAt: Date; amount: Prisma.Decimal; category: string; description: string | null; paidFrom: string; paidByMemberId: string | null }[],
+    members: { id: string; name: string; role: GroupMemberRole }[],
+    contributions: {
+      id: string;
+      date: Date;
+      createdAt: Date;
+      kind: GroupContributionKind;
+      amount: Prisma.Decimal;
+      groupMemberId: string;
+      groupMember: { name: string };
+      receivedByMemberId: string | null;
+      note: string | null;
+    }[],
+    expenses: {
+      id: string;
+      date: Date;
+      createdAt: Date;
+      amount: Prisma.Decimal;
+      category: string;
+      description: string | null;
+      paidFrom: string;
+      paidByMemberId: string | null;
+    }[],
     holder: string | null,
+    handovers: { id: string; date: Date; createdAt: Date; amount: Prisma.Decimal; fromMemberId: string; toMemberId: string; note: string | null }[] = [],
   ) {
     const accountantIds = new Set(members.filter((member) => member.role === 'ACCOUNTANT').map((member) => member.id));
+    const nameOf = new Map(members.map((member) => [member.id, member.name]));
     return cashMovements(
       contributions.map((row) => ({
         id: row.id,
@@ -940,6 +1223,17 @@ export class GroupExpensesService {
       })),
       accountantIds,
       holder,
+      handovers.map((row) => ({
+        id: row.id,
+        date: dayKey(row.date),
+        createdAt: row.createdAt.getTime(),
+        amount: Number(row.amount),
+        fromMemberId: row.fromMemberId,
+        fromName: nameOf.get(row.fromMemberId) ?? '',
+        toMemberId: row.toMemberId,
+        toName: nameOf.get(row.toMemberId) ?? '',
+        note: row.note,
+      })),
     );
   }
 
@@ -997,7 +1291,9 @@ export class GroupExpensesService {
         const label = `Carried from ${dayKey(periodStart)} to ${dayKey(periodEnd)}`;
         const carried = result.members.filter((m) => Number(m.balance) !== 0);
         if (carried.length > 0) {
-          await tx.groupContribution.createMany({ data: carried.map((m) => ({ businessId, groupMemberId: m.groupMemberId, amount: m.balance, kind: 'CARRY' as const, date: next, note: label })) });
+          await tx.groupContribution.createMany({
+            data: carried.map((m) => ({ businessId, groupMemberId: m.groupMemberId, amount: m.balance, kind: 'CARRY' as const, date: next, note: label })),
+          });
         }
       }
 
@@ -1066,14 +1362,18 @@ export class GroupExpensesService {
     client: Prisma.TransactionClient = this.prisma,
   ): Promise<SettlementResult> {
     const inPeriod = { gte: periodStart, lte: periodEnd };
-    const [members, contributions, expenses, meals, settings, cashRows, fundExpenses] = await Promise.all([
+    const [members, contributions, expenses, meals, settings, cashRows, fundExpenses, handovers] = await Promise.all([
       client.groupMember.findMany({ where: { businessId }, orderBy: [{ isOwner: 'desc' }, { createdAt: 'asc' }] }),
       client.groupContribution.findMany({ where: { businessId, date: inPeriod }, select: { groupMemberId: true, amount: true } }),
       client.groupExpense.findMany({ where: { businessId, date: inPeriod }, include: { splits: true } }),
       client.groupMeal.findMany({ where: { businessId, date: inPeriod } }),
       client.groupSettings.findUnique({ where: { businessId } }),
-      client.groupContribution.findMany({ where: { businessId, kind: { in: ['DEPOSIT', 'RETURN'] }, date: { lte: periodEnd } }, include: { groupMember: true } }),
+      client.groupContribution.findMany({
+        where: { businessId, kind: { in: ['DEPOSIT', 'RETURN'] }, date: { lte: periodEnd } },
+        include: { groupMember: true },
+      }),
       client.groupExpense.findMany({ where: { businessId, paidFrom: 'FUND', date: { lte: periodEnd } } }),
+      client.groupCashHandover.findMany({ where: { businessId, date: { lte: periodEnd } } }),
     ]);
     const units = {
       breakfast: Number(settings?.breakfastUnits ?? DEFAULT_SETTINGS.breakfastUnits),
@@ -1101,13 +1401,20 @@ export class GroupExpensesService {
         paidFromPocket: e.paidFrom === 'MEMBER',
         paidByMemberId: e.paidByMemberId,
         split: e.split,
-        splits: e.splits.map((sp) => ({ memberId: sp.groupMemberId, units: sp.units === null ? null : Number(sp.units), amount: sp.amount === null ? null : Number(sp.amount) })),
+        splits: e.splits.map((sp) => ({
+          memberId: sp.groupMemberId,
+          units: sp.units === null ? null : Number(sp.units),
+          amount: sp.amount === null ? null : Number(sp.amount),
+        })),
       })),
-      meals: meals.map((m) => ({ memberId: m.groupMemberId, units: m.breakfast * units.breakfast + m.lunch * units.lunch + m.dinner * units.dinner + Number(m.guests) })),
+      meals: meals.map((m) => ({
+        memberId: m.groupMemberId,
+        units: m.breakfast * units.breakfast + m.lunch * units.lunch + m.dinner * units.dinner + Number(m.guests),
+      })),
       mealsOn: settings?.mealsOn ?? false,
     });
     const holder = settings?.cashHolderMemberId ?? null;
-    const cash = cashByAccountant(this.movesOf(members, cashRows, fundExpenses, holder));
+    const cash = cashByAccountant(this.movesOf(members, cashRows, fundExpenses, holder, handovers));
     return {
       periodStart,
       periodEnd,

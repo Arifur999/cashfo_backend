@@ -20,6 +20,7 @@ import {
 } from './dto/group-query.dto.js';
 import { SetGroupMealsDto } from './dto/group-meal.dto.js';
 import { SettleUpDto } from './dto/settle-up.dto.js';
+import { CreateGroupCashHandoverDto, UpdateGroupCashHandoverDto } from './dto/group-cash-handover.dto.js';
 import { UpdateGroupSettingsDto } from './dto/group-settings.dto.js';
 import { UpdateGroupContributionDto } from './dto/update-group-contribution.dto.js';
 import { UpdateGroupExpenseCategoryDto } from './dto/update-group-expense-category.dto.js';
@@ -127,7 +128,12 @@ export class GroupExpensesController {
 
   @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
   @Patch('contributions/:id')
-  updateContribution(@Param('businessId') businessId: string, @Param('id') id: string, @Body() dto: UpdateGroupContributionDto, @CurrentUser() user: RequestUser) {
+  updateContribution(
+    @Param('businessId') businessId: string,
+    @Param('id') id: string,
+    @Body() dto: UpdateGroupContributionDto,
+    @CurrentUser() user: RequestUser,
+  ) {
     return this.groupExpensesService.updateContribution(businessId, id, dto, user.id);
   }
 
@@ -162,7 +168,12 @@ export class GroupExpensesController {
 
   @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
   @Patch('expenses/categories/:id')
-  updateExpenseCategory(@Param('businessId') businessId: string, @Param('id') id: string, @Body() dto: UpdateGroupExpenseCategoryDto, @CurrentUser() user: RequestUser) {
+  updateExpenseCategory(
+    @Param('businessId') businessId: string,
+    @Param('id') id: string,
+    @Body() dto: UpdateGroupExpenseCategoryDto,
+    @CurrentUser() user: RequestUser,
+  ) {
     return this.groupExpensesService.updateExpenseCategory(businessId, id, dto, user.id);
   }
 
@@ -216,7 +227,12 @@ export class GroupExpensesController {
 
   @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
   @Patch('month-budgets/:id')
-  updateMonthBudget(@Param('businessId') businessId: string, @Param('id') id: string, @Body() dto: UpdateGroupMonthBudgetDto, @CurrentUser() user: RequestUser) {
+  updateMonthBudget(
+    @Param('businessId') businessId: string,
+    @Param('id') id: string,
+    @Body() dto: UpdateGroupMonthBudgetDto,
+    @CurrentUser() user: RequestUser,
+  ) {
     return this.groupExpensesService.updateMonthBudget(businessId, id, dto, user.id);
   }
 
@@ -250,6 +266,26 @@ export class GroupExpensesController {
   @Put('meals')
   setMeals(@Param('businessId') businessId: string, @Body() dto: SetGroupMealsDto, @CurrentUser() user: RequestUser) {
     return this.groupExpensesService.setMeals(businessId, dto, user.id);
+  }
+
+  // ---- Cash handovers ----
+
+  @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
+  @Post('handovers')
+  createHandover(@Param('businessId') businessId: string, @Body() dto: CreateGroupCashHandoverDto, @CurrentUser() user: RequestUser) {
+    return this.groupExpensesService.createHandover(businessId, dto, user.id);
+  }
+
+  @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
+  @Patch('handovers/:id')
+  updateHandover(@Param('businessId') businessId: string, @Param('id') id: string, @Body() dto: UpdateGroupCashHandoverDto, @CurrentUser() user: RequestUser) {
+    return this.groupExpensesService.updateHandover(businessId, id, dto, user.id);
+  }
+
+  @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
+  @Delete('handovers/:id')
+  deleteHandover(@Param('businessId') businessId: string, @Param('id') id: string, @CurrentUser() user: RequestUser) {
+    return this.groupExpensesService.deleteHandover(businessId, id, user.id);
   }
 
   // ---- Cash book ----

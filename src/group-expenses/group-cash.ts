@@ -35,9 +35,23 @@ export interface CashExpense {
   paidByMemberId: string | null;
 }
 
+// Cash one holder handed to another: out of the giver's cash, into the
+// receiver's, nobody's balance changed.
+export interface CashHandover {
+  id: string;
+  date: string;
+  createdAt: number;
+  amount: number;
+  fromMemberId: string;
+  fromName: string;
+  toMemberId: string;
+  toName: string;
+  note: string | null;
+}
+
 export interface CashbookRow {
   id: string;
-  source: 'CONTRIBUTION' | 'EXPENSE';
+  source: 'CONTRIBUTION' | 'EXPENSE' | 'HANDOVER';
   kind: 'IN' | 'OUT';
   date: string;
   accountantId: string;
@@ -48,6 +62,8 @@ export interface CashbookRow {
   note: string | null;
   amount: number; // positive
   balance: number; // the running cash after it
+  // A handover's other holder: who got the cash (OUT) or gave it (IN).
+  otherId?: string;
 }
 
 export interface Cashbook {
@@ -69,6 +85,7 @@ export function cashMovements(
   expenses: CashExpense[],
   accountantIds: Set<string>,
   cashHolderId: string | null,
+  handovers: CashHandover[] = [],
 ): Omit<CashbookRow, 'balance'>[] {
   const holderOf = (id: string | null) => (id && accountantIds.has(id) ? id : cashHolderId);
   const moves: (Omit<CashbookRow, 'balance'> & { createdAt: number })[] = [];
@@ -106,7 +123,13 @@ export function cashMovements(
       amount: row.amount,
     });
   }
-  moves.sort((a, b) => a.date.localeCompare(b.date) || a.createdAt - b.createdAt);
+  for (const row of handovers) {
+    if (!(row.amount > 0)) continue;
+    const base = { id: row.id, source: 'HANDOVER' as const, date: row.date, createdAt: row.createdAt, returned: false, note: row.note, amount: row.amount };
+    moves.push({ ...base, kind: 'OUT', accountantId: row.fromMemberId, party: row.toName, otherId: row.toMemberId });
+    moves.push({ ...base, kind: 'IN', accountantId: row.toMemberId, party: row.fromName, otherId: row.fromMemberId });
+  }
+  moves.sort((a, b) => a.date.localeCompare(b.date) || a.createdAt - b.createdAt || (a.kind === b.kind ? 0 : a.kind === 'OUT' ? -1 : 1));
   return moves.map(({ createdAt: _createdAt, ...move }) => move);
 }
 

@@ -1,6 +1,13 @@
 import { cashbook, cashByAccountant, cashMovements, type CashContribution, type CashExpense } from './group-cash.js';
 
-const deposit = (id: string, date: string, amount: number, memberName: string, receivedByMemberId: string | null, kind: CashContribution['kind'] = 'DEPOSIT'): CashContribution => ({
+const deposit = (
+  id: string,
+  date: string,
+  amount: number,
+  memberName: string,
+  receivedByMemberId: string | null,
+  kind: CashContribution['kind'] = 'DEPOSIT',
+): CashContribution => ({
   id,
   date,
   createdAt: Number(id.replace(/\D/g, '')),
@@ -63,5 +70,26 @@ describe('group cash by accountant', () => {
     const book = cashbook(moves, {});
     expect(book.closing).toBe(8300);
     expect(book.opening).toBe(0);
+  });
+
+  it('moves handed-over cash from one holder to the other, the total unchanged', () => {
+    const handed = cashMovements(contributions, expenses, accountants, 'khaled', [
+      {
+        id: 'h11',
+        date: '2026-10-06',
+        createdAt: 11,
+        amount: 3000,
+        fromMemberId: 'khaled',
+        fromName: 'Khaled',
+        toMemberId: 'rakib',
+        toName: 'Rakib',
+        note: null,
+      },
+      { id: 'h12', date: '2026-10-06', createdAt: 12, amount: 0, fromMemberId: 'khaled', fromName: 'Khaled', toMemberId: 'rakib', toName: 'Rakib', note: null },
+    ]);
+    expect(Object.fromEntries(cashByAccountant(handed))).toEqual({ khaled: 6500, rakib: 1800 });
+    expect(cashbook(handed, {}).closing).toBe(8300);
+    const rakib = cashbook(handed, { accountantId: 'rakib' }).rows.find((row) => row.source === 'HANDOVER');
+    expect(rakib).toMatchObject({ id: 'h11', kind: 'IN', party: 'Khaled', otherId: 'khaled', amount: 3000 });
   });
 });
