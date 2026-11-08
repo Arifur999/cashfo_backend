@@ -13,6 +13,8 @@ export interface InvoicePdfInput {
     invoiceNumber: string;
     // The "Name <email>" snapshot taken when the invoice was made.
     issuedTo: string;
+    // The billing phone printed under it; older invoices have none.
+    issuedPhone?: string | null;
     lineItems: unknown;
     totalAmount: { toString(): string };
     createdAt: Date;
@@ -48,7 +50,7 @@ export interface InvoiceView {
   // PAID, REFUNDED, PARTLY REFUNDED or UNPAID.
   stamp: string;
   issueDate: string;
-  billedTo: { name: string | null; email: string | null };
+  billedTo: { name: string | null; email: string | null; phone: string | null };
   lines: InvoiceLine[];
   subtotal: string;
   discount: string;
@@ -133,7 +135,7 @@ export function invoiceView(input: InvoicePdfInput): InvoiceView {
     invoiceNumber: invoice.invoiceNumber,
     stamp,
     issueDate: dateLabel(invoice.createdAt, 'en'),
-    billedTo: billedTo(invoice.issuedTo),
+    billedTo: { ...billedTo(invoice.issuedTo), phone: invoice.issuedPhone && isWinAnsiText(invoice.issuedPhone) ? invoice.issuedPhone : null },
     lines: [
       // The plan's period goes on the first charge (the plan itself).
       ...charges.map((item, index) => ({ description: item.description, period: index === 0 ? period : '', amount: money(item.paisa) })),
@@ -233,6 +235,10 @@ export function renderInvoicePdf(view: InvoiceView): Buffer {
       color: view.billedTo.name ? BODY : INK,
       font,
     });
+    left += 15;
+  }
+  if (view.billedTo.phone) {
+    page.text(MARGIN, left, view.billedTo.phone, { size: 10, color: BODY });
     left += 15;
   }
   page.text(column, y + 16, view.issueDate, { size: 10, color: INK });

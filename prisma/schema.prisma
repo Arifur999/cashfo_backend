@@ -307,6 +307,7 @@ model Invoice {
   payment       Payment   @relation(fields: [paymentId], references: [id])
   invoiceNumber String    @unique // e.g. INV-2026-000123, auto-generated sequential
   issuedTo      String // snapshot of user name/email at time of invoice
+  issuedPhone   String? // the billing phone printed under it, when there is one
   lineItems     Json // [{ description, amount }]
   totalAmount   Decimal   @db.Decimal(10, 2)
   pdfUrl        String? // populated later when PDF generation is added
@@ -860,6 +861,11 @@ model User {
   // Settings › Security › Recovery: a second address, proved with a code
   // sent to it, that password reset links go to as well.
   recoveryEmail           String?
+  // Settings › Plans & billing › Billing details: printed on receipts, and
+  // the address receipts and plan reminders go to. Null uses the account's.
+  billingName             String?
+  billingPhone            String?
+  billingEmail            String?
   // The customer's number support asks for: "SM-" and 100000 more than it.
   customerNumber          Int                      @unique @default(autoincrement())
   // When the person turned on their shareable profile card (a public page

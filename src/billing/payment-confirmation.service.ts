@@ -3,6 +3,7 @@ import { PaymentStatus, Prisma } from '@prisma/client';
 import { InvoicePdfService } from '../invoices/invoice-pdf.service.js';
 import type { EmailAttachment } from '../mail/mail.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { BILLING_SELECT, billingRecipient, issuedToLine } from './billing-details.js';
 import { SettingsService } from '../settings/settings.service.js';
 import { BillingHooks } from './billing-hooks.js';
 import { BillingNotices } from './billing-notices.js';
@@ -248,9 +249,14 @@ export class PaymentConfirmationService {
 
   private async createInvoice(tx: Prisma.TransactionClient, payment: Prisma.PaymentGetPayload<{ include: { plan: true } }>, couponCode: string | null) {
     let issuedTo = 'Unknown customer';
+    let issuedPhone: string | null = null;
     if (payment.userId) {
-      const user = await tx.user.findUnique({ where: { id: payment.userId }, select: { name: true, email: true } });
-      if (user) issuedTo = `${user.name} <${user.email}>`;
+      const user = await tx.user.findUnique({ where: { id: payment.userId }, select: BILLING_SELECT });
+      if (user) {
+        const recipient = billingRecipient(user);
+        issuedTo = issuedToLine(recipient);
+        issuedPhone = recipient.phone;
+      }
     } else if (payment.platformUserId) {
       const legacy = await tx.platformUser.findUnique({ where: { id: payment.platformUserId }, select: { name: true, email: true } });
       if (legacy) issuedTo = `${legacy.name} <${legacy.email}>`;
@@ -262,7 +268,7 @@ export class PaymentConfirmationService {
       lineItems.push({ description: couponCode ? `Coupon ${couponCode}` : payment.referralDiscount ? 'Referral discount' : 'Discount', amount: -discount });
     }
     return tx.invoice.create({
-      data: { paymentId: payment.id, invoiceNumber: await nextInvoiceNumber(tx), issuedTo, lineItems, totalAmount: payment.amount },
+      data: { paymentId: payment.id, invoiceNumber: await nextInvoiceNumber(tx), issuedTo, issuedPhone, lineItems, totalAmount: payment.amount },
     });
   }
 }
