@@ -134,6 +134,13 @@ export class OtpSenders {
     return person.emailVerified === false ? [...smsRoute, ...emailRoute] : [...emailRoute, ...smsRoute];
   }
 
+  // The person's email only: a code sent by SMS that didn't come, sent
+  // again by email at their asking. Empty: email can't be sent.
+  emailOnly(person: OtpPerson): OtpRoute[] {
+    const email = this.email.isConfigured() ? this.email : this.devLog.isConfigured() ? this.devLog : null;
+    return email ? [{ sender: email, destination: person.email }] : [];
+  }
+
   // The sender for a code already sent on `channel` (a resend goes the same way).
   forChannel(channel: OneTimeCodeChannel): OtpSender | null {
     if (channel === 'SMS') return this.sms.isConfigured() ? this.sms : null;

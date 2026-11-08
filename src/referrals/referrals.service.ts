@@ -65,6 +65,7 @@ export class ReferralsService {
         by: ['referralId'],
         where: { referrerId: userId, status: { in: [...EARNED_STATUSES] } },
         _sum: { amount: true },
+        _count: { _all: true },
         orderBy: { _sum: { amount: 'desc' } },
         take: 5,
       }),
@@ -111,10 +112,11 @@ export class ReferralsService {
     const topNames = top.length
       ? await this.prisma.referral.findMany({
           where: { id: { in: top.map((t) => t.referralId) } },
-          select: { id: true, referredUser: { select: { name: true } } },
+          select: { id: true, referredUser: { select: { name: true, subscription: { select: { plan: { select: { name: true } } } } } } },
         })
       : [];
     const nameOf = new Map(topNames.map((r) => [r.id, r.referredUser.name]));
+    const planOf = new Map(topNames.map((r) => [r.id, r.referredUser.subscription?.plan.name ?? null]));
     const peopleCount = Object.fromEntries(FRIEND_STANDINGS.map((standing, i) => [standing, people[i]])) as Record<(typeof FRIEND_STANDINGS)[number], number>;
     const expectedPaisa = renewing.reduce((total, r) => {
       const s = r.referredUser.subscription;
@@ -185,7 +187,14 @@ export class ReferralsService {
       expectedRenewals: renewing.length,
       // When the first commission was earned ("Since August").
       firstEarnedAt: firstEarned ? (firstEarned.payment?.paidAt ?? firstEarned.createdAt) : null,
-      topFriends: top.map((t) => ({ referralId: t.referralId, name: nameOf.get(t.referralId) ?? '', earned: fromPaisa(toPaisa(t._sum.amount ?? 0)) })),
+      // With the plan they are on now and how many of their payments earned.
+      topFriends: top.map((t) => ({
+        referralId: t.referralId,
+        name: nameOf.get(t.referralId) ?? '',
+        planName: planOf.get(t.referralId) ?? null,
+        payments: t._count._all,
+        earned: fromPaisa(toPaisa(t._sum.amount ?? 0)),
+      })),
       latest: latest.map(earningView),
       // --- As before (an older app reads these until it reloads) ---
       totalEarned: money(balances.lifetimePaisa),
