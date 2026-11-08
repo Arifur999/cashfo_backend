@@ -38,6 +38,12 @@ export function dhakaMonthStart(year: number, month: number): Date {
   return new Date(Date.UTC(year, month - 1, 1) - DHAKA_OFFSET_MS);
 }
 
+// The instant a Dhaka calendar day written 'YYYY-MM-DD' begins, for
+// timestamp columns; `addDays` moves it (1 = the day after begins).
+export function dhakaDayKeyStart(day: string, addDays = 0): Date {
+  return new Date(Date.parse(`${day}T00:00:00.000Z`) + addDays * 24 * 60 * 60 * 1000 - DHAKA_OFFSET_MS);
+}
+
 // The instant the Dhaka calendar day of `date` began: Dhaka midnight,
 // 18:00 UTC the evening before.
 export function dhakaDayStart(date: Date = new Date()): Date {
