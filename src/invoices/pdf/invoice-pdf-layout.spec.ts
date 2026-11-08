@@ -73,9 +73,14 @@ describe('invoiceView', () => {
 
   it('falls back to the email for a name the fonts cannot show, and to the product name', () => {
     const view = invoiceView({ ...input({ invoice: { issuedTo: 'নুসরাত জাহান <nusrat@example.com>' } }), platformName: 'স্মার্টলি', supportEmail: null });
-    expect(view.billedTo).toEqual({ name: null, email: 'nusrat@example.com' });
+    expect(view.billedTo).toEqual({ name: null, email: 'nusrat@example.com', phone: null });
     expect(view.platformName).toBe('Smartly');
     expect(view.contactLine).toBe('Dhaka, Bangladesh');
+  });
+
+  it('prints the billing phone under the name, when the invoice has one', () => {
+    const view = invoiceView(input({ invoice: { issuedTo: 'Akter Traders <accounts@akter.example>', issuedPhone: '+8801811000000' } }));
+    expect(view.billedTo).toEqual({ name: 'Akter Traders', email: 'accounts@akter.example', phone: '+8801811000000' });
   });
 
   it('has no period without one and a zero discount without a discount line', () => {

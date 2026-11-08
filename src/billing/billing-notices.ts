@@ -4,6 +4,7 @@ import type { Prisma } from '@prisma/client';
 import { MailService, type EmailAttachment } from '../mail/mail.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { SystemMessagesService } from '../system-messages/system-messages.service.js';
+import { BILLING_SELECT, billingRecipient } from './billing-details.js';
 import { dateLabel, formatTaka, localeOf } from './billing-text.js';
 import { toPaisa } from './pricing.js';
 
@@ -157,9 +158,10 @@ export class BillingNotices {
   private async email(userId: string, send: (user: { name: string; email: string }, locale: 'en' | 'bn') => Promise<void>): Promise<boolean> {
     if (!this.mail.configured) return false;
     try {
-      const user = await this.prisma.user.findUnique({ where: { id: userId }, select: { name: true, email: true, preferredLanguage: true } });
+      const user = await this.prisma.user.findUnique({ where: { id: userId }, select: { ...BILLING_SELECT, preferredLanguage: true } });
       if (!user) return false;
-      await send(user, localeOf(user.preferredLanguage));
+      // Receipts and plan reminders go to the billing email, when one is set.
+      await send(billingRecipient(user), localeOf(user.preferredLanguage));
       return true;
     } catch (error) {
       this.logger.warn(`Billing email for user ${userId} failed: ${error instanceof Error ? error.message : String(error)}`);

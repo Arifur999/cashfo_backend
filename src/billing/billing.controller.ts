@@ -11,6 +11,7 @@ import {
   Param,
   Patch,
   Post,
+  Put,
   Query,
   Req,
   StreamableFile,
@@ -27,6 +28,7 @@ import { CurrentUser } from '../user-auth/decorators/current-user.decorator.js';
 import { UserAuthGuard } from '../user-auth/guards/user-auth.guard.js';
 import type { RequestUser } from '../user-auth/interfaces/request-user.interface.js';
 import { BillingService } from './billing.service.js';
+import { BillingDetailsDto } from './dto/billing-details.dto.js';
 import { BillingPaymentsQueryDto, CheckoutDto, CouponPreviewDto, PaymentDetailsDto, PlanChoiceDto } from './dto/checkout.dto.js';
 import { PaymentGateways } from './gateways/payment-gateways.js';
 import { PaymentConfirmationService } from './payment-confirmation.service.js';
@@ -46,6 +48,11 @@ export class BillingController {
   @Get()
   overview(@CurrentUser() user: RequestUser) {
     return this.billing.overview(user.id);
+  }
+
+  @Put('details')
+  billingDetails(@CurrentUser() user: RequestUser, @Body() dto: BillingDetailsDto) {
+    return this.billing.updateBillingDetails(user.id, dto);
   }
 
   @Get('plans')
