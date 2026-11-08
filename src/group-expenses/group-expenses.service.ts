@@ -1275,7 +1275,16 @@ export class GroupExpensesService {
       paidByMemberId: string | null;
     }[],
     holder: string | null,
-    handovers: { id: string; date: Date; createdAt: Date; amount: Prisma.Decimal; fromMemberId: string; toMemberId: string; note: string | null }[] = [],
+    handovers: {
+      id: string;
+      date: Date;
+      createdAt: Date;
+      amount: Prisma.Decimal;
+      fromMemberId: string;
+      toMemberId: string;
+      note: string | null;
+      createdByUserId?: string | null;
+    }[] = [],
   ) {
     const accountantIds = new Set(members.filter((member) => member.role === 'ACCOUNTANT').map((member) => member.id));
     const nameOf = new Map(members.map((member) => [member.id, member.name]));
@@ -1313,6 +1322,7 @@ export class GroupExpensesService {
         toMemberId: row.toMemberId,
         toName: nameOf.get(row.toMemberId) ?? '',
         note: row.note,
+        createdByUserId: row.createdByUserId ?? null,
       })),
     );
   }
