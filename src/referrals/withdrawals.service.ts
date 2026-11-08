@@ -53,7 +53,8 @@ export class WithdrawalsService {
     );
   }
 
-  async resend(userId: string, challengeId: string) {
+  // `byEmail`: the code goes to the member's email this time.
+  async resend(userId: string, challengeId: string, byEmail = false) {
     const person = await this.recipient(userId);
     const row = await this.prisma.oneTimeCode.findFirst({ where: { id: challengeId, userId, purpose: 'PAYOUT_REQUEST' } });
     const payload = row?.payload as unknown as Partial<WithdrawalPayload> | undefined;
@@ -64,7 +65,7 @@ export class WithdrawalsService {
         ])
       : [null, null];
     const action = method && lines ? this.actionText(toPaisa(lines._sum.amount ?? 0), snapshotOf(method)) : { en: 'confirm your withdrawal', bn: 'টাকা তোলা' };
-    return this.codes.resend(person, challengeId, 'PAYOUT_REQUEST', action);
+    return this.codes.resend(person, challengeId, 'PAYOUT_REQUEST', action, { byEmail });
   }
 
   // The code is checked (the try counts), then everything is checked again

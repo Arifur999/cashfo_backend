@@ -141,7 +141,10 @@ describe('OneTimeCodesService', () => {
 });
 
 describe('OneTimeCodesService for the vault', () => {
-  const route = (channel: 'EMAIL' | 'SMS', send: ReturnType<typeof vi.fn>) => ({ sender: { channel, send }, destination: channel === 'SMS' ? '01711482915' : 'khaled@gmail.com' });
+  const route = (channel: 'EMAIL' | 'SMS', send: ReturnType<typeof vi.fn>) => ({
+    sender: { channel, send },
+    destination: channel === 'SMS' ? '01711482915' : 'khaled@gmail.com',
+  });
   const ok = () => vi.fn().mockResolvedValue(undefined);
   const down = () => vi.fn().mockRejectedValue(new Error('down'));
   const vaultSetup = (routes: ReturnType<typeof route>[], waiting: Record<string, unknown> | null = null) => {
@@ -155,11 +158,20 @@ describe('OneTimeCodesService for the vault', () => {
       $executeRaw: vi.fn(),
       $transaction: vi.fn((work: (tx: unknown) => unknown) => work(prisma)),
     };
-    const senders = { emailFirst: vi.fn().mockReturnValue(routes) };
+    const senders = { emailFirst: vi.fn().mockReturnValue(routes), emailOnly: vi.fn().mockReturnValue(routes.filter((r) => r.sender.channel === 'EMAIL')) };
     return { service: new OneTimeCodesService(prisma as never, senders as never), prisma };
   };
   const sameSignIn = { payload: { path: ['sessionId'], equals: 's1' } };
-  const waitingCode = (over: Partial<CodeState> = {}) => ({ id: 'c-1', purpose: 'VAULT_UNLOCK', channel: 'EMAIL', destination: 'khaled@gmail.com', codeHash: 'old', ...state(over), lastSentAt: over.lastSentAt ?? new Date(), expiresAt: new Date(Date.now() + 600_000) });
+  const waitingCode = (over: Partial<CodeState> = {}) => ({
+    id: 'c-1',
+    purpose: 'VAULT_UNLOCK',
+    channel: 'EMAIL',
+    destination: 'khaled@gmail.com',
+    codeHash: 'old',
+    ...state(over),
+    lastSentAt: over.lastSentAt ?? new Date(),
+    expiresAt: new Date(Date.now() + 600_000),
+  });
   const action = { en: 'x', bn: 'x' };
 
   it("sends first, then keeps the code in place of only this sign-in's waiting one, under the person's lock", async () => {
@@ -192,7 +204,9 @@ describe('OneTimeCodesService for the vault', () => {
     for (const waiting of [waitingCode(), waitingCode({ sends: 5, lastSentAt: new Date(Date.now() - 120_000) })]) {
       const send = ok();
       const { service, prisma } = vaultSetup([route('EMAIL', send)], waiting);
-      await expect(service.issueOrReuse(person, 'VAULT_UNLOCK', {}, action, { emailFirst: true, replace: sameSignIn })).resolves.toMatchObject({ challengeId: 'c-1' });
+      await expect(service.issueOrReuse(person, 'VAULT_UNLOCK', {}, action, { emailFirst: true, replace: sameSignIn })).resolves.toMatchObject({
+        challengeId: 'c-1',
+      });
       expect(send).not.toHaveBeenCalled();
       expect(prisma.oneTimeCode.create).not.toHaveBeenCalled();
     }
@@ -201,8 +215,29 @@ describe('OneTimeCodesService for the vault', () => {
   it('sends the waiting code again after the wait, the phone when the email stopped working', async () => {
     const sms = ok();
     const { service, prisma } = vaultSetup([route('EMAIL', down()), route('SMS', sms)], waitingCode({ lastSentAt: new Date(Date.now() - 31_000) }));
-    await expect(service.issueOrReuse(person, 'VAULT_UNLOCK', {}, action, { emailFirst: true, replace: sameSignIn })).resolves.toMatchObject({ challengeId: 'c-1', channel: 'SMS' });
-    expect(prisma.oneTimeCode.update).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ channel: 'SMS', sends: { increment: 1 } }) }));
+    await expect(service.issueOrReuse(person, 'VAULT_UNLOCK', {}, action, { emailFirst: true, replace: sameSignIn })).resolves.toMatchObject({
+      challengeId: 'c-1',
+      channel: 'SMS',
+    });
+    expect(prisma.oneTimeCode.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ channel: 'SMS', sends: { increment: 1 } }) }),
+    );
+  });
+
+  it('sends a code that went by SMS to the email instead when asked, with the same limits', async () => {
+    const email = ok();
+    const sms = ok();
+    const waiting = { ...waitingCode({ lastSentAt: new Date(Date.now() - 61_000) }), purpose: 'PAYOUT_REQUEST', channel: 'SMS', destination: '01711482915' };
+    const { service, prisma } = vaultSetup([route('EMAIL', email), route('SMS', sms)], waiting);
+    await expect(service.resend(person, 'c-1', 'PAYOUT_REQUEST', action, { byEmail: true })).resolves.toMatchObject({ channel: 'EMAIL' });
+    expect(email).toHaveBeenCalled();
+    expect(sms).not.toHaveBeenCalled();
+    expect(prisma.oneTimeCode.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ channel: 'EMAIL', destination: 'khaled@gmail.com' }) }),
+    );
+
+    const soon = vaultSetup([route('EMAIL', ok())], { ...waiting, lastSentAt: new Date() });
+    expect((await reasonOf(soon.service.resend(person, 'c-1', 'PAYOUT_REQUEST', action, { byEmail: true }))).body.reason).toBe('RESEND_TOO_SOON');
   });
 
   it('keeps the old code working when a resend cannot go', async () => {
