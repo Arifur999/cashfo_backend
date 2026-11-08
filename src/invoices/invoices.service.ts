@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable, Logger, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Prisma } from '@prisma/client';
+import { BILLING_SELECT, billingRecipient } from '../billing/billing-details.js';
 import { dateLabel, formatTaka, localeOf } from '../billing/billing-text.js';
 import { toPaisa } from '../billing/pricing.js';
 import { MailService } from '../mail/mail.service.js';
@@ -103,10 +104,11 @@ export class InvoicesService {
     if (invoice.userId) {
       const user = await this.prisma.user.findUnique({
         where: { id: invoice.userId },
-        select: { name: true, email: true, preferredLanguage: true, status: true },
+        select: { ...BILLING_SELECT, preferredLanguage: true, status: true },
       });
-      // A deleted account's address is not theirs to write to any more.
-      if (user?.email && user.status !== 'DELETED') recipient = { name: user.name, email: user.email, locale: localeOf(user.preferredLanguage) };
+      // A deleted account's address is not theirs to write to any more;
+      // otherwise the billing email, when one is set.
+      if (user?.email && user.status !== 'DELETED') recipient = { ...billingRecipient(user), locale: localeOf(user.preferredLanguage) };
     } else if (invoice.platformUserId) {
       const legacy = await this.prisma.platformUser.findUnique({ where: { id: invoice.platformUserId }, select: { name: true, email: true } });
       if (legacy?.email) recipient = { name: legacy.name, email: legacy.email, locale: 'en' };

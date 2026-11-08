@@ -35,9 +35,8 @@ export class CreateAccountDto {
   @IsString()
   parentId?: string;
 
-  // One-time starting balance, same "set at creation only" convention as
-  // Contact.openingBalance (Prompt 8) -- see UpdateAccountDto for why it's
-  // not editable afterward.
+  // What the account held when it was added. A money account's can be put
+  // right later (UpdateAccountDto), which moves its current balance too.
   @IsOptional()
   @Matches(MONEY_STRING_REGEX, { message: `openingBalance ${MONEY_STRING_MESSAGE}` })
   openingBalance?: string;

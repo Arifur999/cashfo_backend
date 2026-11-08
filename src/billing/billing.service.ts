@@ -3,7 +3,10 @@ import { BillingCycle, PaymentStatus, type Coupon, type Prisma, type Subscriptio
 import { dhakaDateKey, dhakaMonthStart, dhakaToday } from '../common/dhaka.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { SettingsService } from '../settings/settings.service.js';
+import { canonicalPhone } from '../user-auth/phone.service.js';
+import { BILLING_SELECT, billingColumns, billingRecipient } from './billing-details.js';
 import { displayPaymentId } from './billing-text.js';
+import type { BillingDetailsDto } from './dto/billing-details.dto.js';
 import type { CheckoutDto, CouponPreviewDto, PaymentDetailsDto } from './dto/checkout.dto.js';
 import { PaymentGateways } from './gateways/payment-gateways.js';
 import { isManualWallet, normaliseSubmission, offeredAccounts, type Submission } from './manual-payments.js';
@@ -110,7 +113,7 @@ export class BillingService {
     const now = new Date();
     await this.subscriptions.sweepUser(userId, now);
     const sub = await this.subscriptions.ensure(userId);
-    const [usage, pending, referralPct, { billingGraceDays }] = await Promise.all([
+    const [usage, pending, referralPct, { billingGraceDays }, billingUser] = await Promise.all([
       this.usage(userId, sub),
       this.prisma.payment.findFirst({
         where: { userId, status: PaymentStatus.PENDING, OR: [{ expiresAt: null }, { expiresAt: { gt: now } }] },
@@ -119,6 +122,7 @@ export class BillingService {
       }),
       this.referralDiscountPercent(userId),
       this.settingsService.getCached(),
+      this.prisma.user.findUniqueOrThrow({ where: { id: userId }, select: BILLING_SELECT }),
     ]);
     const planIsPaid = sub.plan.billingCycle !== BillingCycle.FREE;
     return {
@@ -155,7 +159,22 @@ export class BillingService {
       },
       referralDiscount: referralPct === null ? null : { percent: referralPct },
       trialAvailable: this.trialAvailable(sub),
+      billingDetails: billingRecipient(billingUser),
     };
+  }
+
+  // Settings › Plans & billing › Billing details. Receipts from the next
+  // payment carry them; one already issued keeps what it was made with.
+  async updateBillingDetails(userId: string, dto: BillingDetailsDto) {
+    const phone = dto.phone === '' ? null : canonicalPhone(dto.phone);
+    if (dto.phone !== '' && !phone) throw new BadRequestException('Use a Bangladesh mobile number that starts with 13 to 19.');
+    const account = await this.prisma.user.findUniqueOrThrow({ where: { id: userId }, select: { name: true, email: true, phone: true } });
+    const saved = await this.prisma.user.update({
+      where: { id: userId },
+      data: billingColumns(account, { name: dto.name, phone, email: dto.email || null }),
+      select: BILLING_SELECT,
+    });
+    return billingRecipient(saved);
   }
 
   async startTrial(userId: string, planId: string) {

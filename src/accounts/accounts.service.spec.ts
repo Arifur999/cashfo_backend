@@ -70,6 +70,57 @@ describe('AccountsService.update parent', () => {
   });
 });
 
+describe('AccountsService.update opening balance', () => {
+  const wallet = { id: 'w', businessId: 'biz-1', accountType: 'ASSET', accountSubtype: 'bank', isSystemAccount: false, status: 'ACTIVE', parentId: null };
+
+  const lockedSetup = (row: typeof wallet, opening: string) => {
+    const { service, prisma } = setup({ [row.id]: row });
+    const tx = {
+      $queryRaw: vi.fn().mockResolvedValue([]),
+      account: {
+        findUniqueOrThrow: vi.fn().mockResolvedValue({ openingBalance: new Prisma.Decimal(opening) }),
+        update: vi.fn().mockResolvedValue({ id: row.id }),
+      },
+    };
+    Object.assign(prisma, { $transaction: vi.fn((work: (client: typeof tx) => unknown) => work(tx)) });
+    Object.assign(prisma.account, { findFirst: vi.fn().mockResolvedValue(null) });
+    return { service, prisma, tx };
+  };
+
+  it('moves the current balance by what the opening balance changed, under the row lock', async () => {
+    const { service, tx } = lockedSetup(wallet, '5000');
+    await service.update('biz-1', 'w', { name: 'City Bank', openingBalance: '7500.50' });
+    expect(tx.$queryRaw).toHaveBeenCalled();
+    const { data } = tx.account.update.mock.calls[0][0] as {
+      data: { name: string; openingBalance: Prisma.Decimal; currentBalance: { increment: Prisma.Decimal } };
+    };
+    expect(data.name).toBe('City Bank');
+    expect(data.openingBalance.toFixed(2)).toBe('7500.50');
+    expect(data.currentBalance.increment.toFixed(2)).toBe('2500.50');
+  });
+
+  it('leaves both balances alone when the opening balance is unchanged', async () => {
+    const { service, tx } = lockedSetup(wallet, '5000');
+    await service.update('biz-1', 'w', { openingBalance: '5000.00' });
+    expect(tx.account.update).toHaveBeenCalledWith({ where: { id: 'w' }, data: {} });
+  });
+
+  it("refuses a savings wallet's or the receivable's opening balance", async () => {
+    const savings = lockedSetup({ ...wallet, accountSubtype: 'savings' }, '0');
+    await expect(savings.service.update('biz-1', 'w', { openingBalance: '10' })).rejects.toThrow(BadRequestException);
+    const system = lockedSetup({ ...wallet, accountSubtype: 'receivable', isSystemAccount: true }, '0');
+    await expect(system.service.update('biz-1', 'w', { openingBalance: '10' })).rejects.toThrow(BadRequestException);
+    expect(savings.tx.account.update).not.toHaveBeenCalled();
+    expect(system.tx.account.update).not.toHaveBeenCalled();
+  });
+
+  it("puts an older workspace's seeded Cash right too", async () => {
+    const { service, tx } = lockedSetup({ ...wallet, accountSubtype: 'cash', isSystemAccount: true }, '0');
+    await service.update('biz-1', 'w', { openingBalance: '300' });
+    expect(tx.account.update).toHaveBeenCalled();
+  });
+});
+
 describe('AccountsService.list', () => {
   type Tx = { id: string; businessId: string; transactionDate: string; status: 'POSTED' | 'VOIDED'; reversalOfId: string | null };
   type Line = { accountId: string; entryType: 'DEBIT' | 'CREDIT'; amount: string; tx: Tx };
