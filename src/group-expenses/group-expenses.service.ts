@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { GroupActivityAction, GroupContributionKind, GroupMemberRole, GroupMemberStatus, GroupSplit, Prisma } from '@prisma/client';
 import { dhakaDateOnly, dhakaToday } from '../common/dhaka.js';
+import { GroupAccessService, type MemberAccess } from '../group-access/group-access.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { CloseSettlementDto } from './dto/close-settlement.dto.js';
 import { CreateGroupContributionDto } from './dto/create-group-contribution.dto.js';
@@ -122,7 +123,11 @@ function changesOf(before: Record<string, unknown>, after: Record<string, unknow
 export class GroupExpensesService {
   private readonly logger = new Logger(GroupExpensesService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    // Keeps a member's login in step with their role (Members & access).
+    private readonly access: GroupAccessService,
+  ) {}
 
   // ---- Activity log ----
 
@@ -172,11 +177,19 @@ export class GroupExpensesService {
 
   // ---- Members ----
 
-  listMembers(businessId: string, status?: GroupMemberStatus) {
-    return this.prisma.groupMember.findMany({
-      where: { businessId, ...(status && { status }) },
-      orderBy: [{ isOwner: 'desc' }, { createdAt: 'asc' }],
-    });
+  // withAccess (the owner asking): each member's login and waiting access
+  // link, for Members & access. Others get access: null -- usernames and
+  // last logins are the owner's to see.
+  async listMembers(businessId: string, status?: GroupMemberStatus, withAccess = false) {
+    const [members, access] = await Promise.all([
+      this.prisma.groupMember.findMany({
+        where: { businessId, ...(status && { status }) },
+        orderBy: [{ isOwner: 'desc' }, { createdAt: 'asc' }],
+      }),
+      withAccess ? this.access.accessOf(businessId) : null,
+    ]);
+    const none: MemberAccess = { login: null, link: null };
+    return members.map((member) => ({ ...member, access: access ? (access.get(member.id) ?? none) : null }));
   }
 
   // A third active accountant is refused.
@@ -262,7 +275,11 @@ export class GroupExpensesService {
         ...(leftOn !== undefined && { leftOn }),
       },
     });
-    if (dto.role !== undefined || dto.status !== undefined) await this.keepCashHolder(businessId);
+    if (dto.role !== undefined || dto.status !== undefined) {
+      await this.keepCashHolder(businessId);
+      // A role without access, or an inactive member, can't log in any more.
+      await this.access.sync(this.prisma, updated);
+    }
     const change = changesOf(
       {
         name: current.name,
@@ -288,6 +305,8 @@ export class GroupExpensesService {
     if (member.isOwner) {
       throw new BadRequestException("The group's owner can't be removed");
     }
+    // Removed or archived, they can't log in to the group any more.
+    await this.access.sync(this.prisma, { ...member, status: 'ARCHIVED' });
 
     const [contributionCount, receivedCount, expenseCount, settlementCount, splitCount, mealCount, handoverCount] = await Promise.all([
       this.prisma.groupContribution.count({ where: { groupMemberId: id } }),
@@ -406,7 +425,16 @@ export class GroupExpensesService {
     const receivedByMemberId =
       dto.receivedByMemberId !== undefined ? dto.receivedByMemberId : kind === 'DEPOSIT' || kind === 'RETURN' ? await this.cashHolderOf(businessId) : null;
     const created = await this.prisma.groupContribution.create({
-      data: { businessId, groupMemberId: dto.groupMemberId, amount: dto.amount, kind, date: new Date(dto.date), note: dto.note, receivedByMemberId },
+      data: {
+        businessId,
+        groupMemberId: dto.groupMemberId,
+        amount: dto.amount,
+        kind,
+        date: new Date(dto.date),
+        note: dto.note,
+        receivedByMemberId,
+        createdByUserId: actorUserId,
+      },
       include: { groupMember: true, receivedBy: true },
     });
     await this.record(businessId, actorUserId, {
@@ -442,10 +470,28 @@ export class GroupExpensesService {
     const settleGroupId = randomUUID();
     const rows = await this.prisma.$transaction([
       this.prisma.groupContribution.create({
-        data: { businessId, groupMemberId: dto.fromMemberId, amount: dto.amount, kind: 'SETTLE', date, note: dto.payerNote, settleGroupId },
+        data: {
+          businessId,
+          groupMemberId: dto.fromMemberId,
+          amount: dto.amount,
+          kind: 'SETTLE',
+          date,
+          note: dto.payerNote,
+          settleGroupId,
+          createdByUserId: actorUserId,
+        },
       }),
       this.prisma.groupContribution.create({
-        data: { businessId, groupMemberId: dto.toMemberId, amount: `-${dto.amount}`, kind: 'SETTLE', date, note: dto.receiverNote, settleGroupId },
+        data: {
+          businessId,
+          groupMemberId: dto.toMemberId,
+          amount: `-${dto.amount}`,
+          kind: 'SETTLE',
+          date,
+          note: dto.receiverNote,
+          settleGroupId,
+          createdByUserId: actorUserId,
+        },
       }),
     ]);
     await this.record(businessId, actorUserId, {
@@ -746,6 +792,7 @@ export class GroupExpensesService {
         paidByMemberId,
         paidFrom,
         split,
+        createdByUserId: actorUserId,
         splits: { create: splits.map((s) => ({ groupMemberId: s.groupMemberId, units: s.units ?? null, amount: s.amount ?? null })) },
       },
       include: { paidByMember: true, splits: true },
@@ -967,6 +1014,20 @@ export class GroupExpensesService {
 
   // ---- Settings ----
 
+  // What the group spent in each of its months ("YYYY-MM", the group's own
+  // months: one starting on the 10th runs 10 Sep to 9 Oct), oldest first --
+  // the month picker's "Spent ৳ X" under every month.
+  async monthTotals(businessId: string): Promise<{ month: string; spent: string }[]> {
+    const settings = await this.prisma.groupSettings.findUnique({ where: { businessId }, select: { monthStartDay: true } });
+    const shift = Math.max(0, (settings?.monthStartDay ?? 1) - 1);
+    return this.prisma.$queryRaw<{ month: string; spent: string }[]>`
+      SELECT to_char("date" - make_interval(days => ${shift}::int), 'YYYY-MM') AS month, SUM("amount")::text AS spent
+      FROM "GroupExpense"
+      WHERE "businessId" = ${businessId}
+      GROUP BY 1
+      ORDER BY 1`;
+  }
+
   async getSettings(businessId: string) {
     const settings = await this.prisma.groupSettings.findUnique({ where: { businessId } });
     return settings ?? { businessId, ...DEFAULT_SETTINGS };
@@ -1087,7 +1148,15 @@ export class GroupExpensesService {
   async createHandover(businessId: string, dto: CreateGroupCashHandoverDto, actorUserId: string | null = null) {
     const { from, to } = await this.requireHolders(businessId, dto.fromMemberId, dto.toMemberId);
     const created = await this.prisma.groupCashHandover.create({
-      data: { businessId, fromMemberId: dto.fromMemberId, toMemberId: dto.toMemberId, amount: dto.amount, date: new Date(dto.date), note: dto.note || null },
+      data: {
+        businessId,
+        fromMemberId: dto.fromMemberId,
+        toMemberId: dto.toMemberId,
+        amount: dto.amount,
+        date: new Date(dto.date),
+        note: dto.note || null,
+        createdByUserId: actorUserId,
+      },
       include: { fromMember: true, toMember: true },
     });
     await this.record(businessId, actorUserId, {
