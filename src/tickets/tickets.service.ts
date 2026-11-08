@@ -116,6 +116,7 @@ export class TicketsService {
     if (query.priority) where.priority = query.priority;
     if (query.category) where.category = query.category;
     if (query.assignedToAdminId) where.assignedToAdminId = query.assignedToAdminId === UNASSIGNED ? null : query.assignedToAdminId;
+    if (query.unseen) where.firstSeenAt = null;
     // On top of the status asked for, not in place of it.
     if (query.awaitingReply) where.AND = [await this.awaitingReplyWhere()];
 

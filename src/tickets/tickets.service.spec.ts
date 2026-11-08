@@ -373,6 +373,13 @@ describe('TicketsService.getById', () => {
   });
 });
 
+describe('TicketsService.list unseen', () => {
+  it('keeps only the tickets no admin has opened', async () => {
+    const { service } = setup([ticket('new', { firstSeenAt: null }), ticket('seen', { firstSeenAt: ago(1) })]);
+    expect(ids(await service.list({ unseen: true }))).toEqual(['new']);
+  });
+});
+
 describe('TicketsService.stats', () => {
   it('counts the Help page messages nobody has opened yet, solved ones left out', async () => {
     const { service } = setup([
