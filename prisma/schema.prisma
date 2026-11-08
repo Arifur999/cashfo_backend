@@ -416,6 +416,9 @@ model Announcement {
   linkUrl    String?
   createdBy  String // AdminUser id
   createdAt  DateTime         @default(now())
+  // Deleted for everyone: gone from the apps and their bells, kept so the
+  // admin's Undo can bring it back (POST admin/announcements/:id/restore).
+  deletedAt  DateTime?
 }
 
 enum AnnouncementType {
@@ -3231,6 +3234,8 @@ model UserNotification {
 
   @@unique([userId, key])
   @@index([userId, createdAt])
+  // An announcement's rows across every bell (an edit or a delete reaches them all).
+  @@index([key])
 }
 
 enum UserNotificationType {

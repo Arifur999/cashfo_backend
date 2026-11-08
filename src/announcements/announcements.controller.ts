@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, ParseUUIDPipe, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
 import type { Request } from 'express';
 import { AdminRole } from '../common/roles.js';
 import { CurrentAdmin } from '../admin-auth/decorators/current-admin.decorator.js';
@@ -27,19 +27,26 @@ export class AnnouncementsController {
 
   @Roles(AdminRole.SUPER_ADMIN, AdminRole.CONTENT_ADMIN)
   @Post()
-  create(@Body() dto: CreateAnnouncementDto, @CurrentAdmin() admin: RequestAdminUser) {
-    return this.announcementsService.create(dto, admin.id);
+  create(@Body() dto: CreateAnnouncementDto, @CurrentAdmin() admin: RequestAdminUser, @Req() req: Request) {
+    return this.announcementsService.create(dto, admin.id, req.ip);
   }
 
   @Roles(AdminRole.SUPER_ADMIN, AdminRole.CONTENT_ADMIN)
   @Patch(':id')
-  update(@Param('id') id: string, @Body() dto: UpdateAnnouncementDto) {
-    return this.announcementsService.update(id, dto);
+  update(@Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateAnnouncementDto, @CurrentAdmin() admin: RequestAdminUser, @Req() req: Request) {
+    return this.announcementsService.update(id, dto, admin.id, req.ip);
   }
 
   @Roles(AdminRole.SUPER_ADMIN, AdminRole.CONTENT_ADMIN)
   @Delete(':id')
-  remove(@Param('id') id: string, @CurrentAdmin() admin: RequestAdminUser, @Req() req: Request) {
+  remove(@Param('id', ParseUUIDPipe) id: string, @CurrentAdmin() admin: RequestAdminUser, @Req() req: Request) {
     return this.announcementsService.remove(id, admin.id, req.ip);
+  }
+
+  // The Undo after a delete.
+  @Roles(AdminRole.SUPER_ADMIN, AdminRole.CONTENT_ADMIN)
+  @Post(':id/restore')
+  restore(@Param('id', ParseUUIDPipe) id: string, @CurrentAdmin() admin: RequestAdminUser, @Req() req: Request) {
+    return this.announcementsService.restore(id, admin.id, req.ip);
   }
 }

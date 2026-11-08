@@ -26,6 +26,7 @@ const setup = ({
     userNotification: {
       createMany: vi.fn().mockResolvedValue({ count: 0 }),
       deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+      updateMany: vi.fn().mockResolvedValue({ count: 0 }),
       findMany: vi.fn().mockResolvedValue([]),
       count: vi.fn().mockResolvedValue(0),
     },
@@ -38,7 +39,11 @@ const setup = ({
       ],
     }),
   };
-  const announcements = { forCustomer: vi.fn().mockResolvedValue([]) };
+  // n4's announcement was deleted for everyone.
+  const announcements = {
+    forCustomer: vi.fn().mockResolvedValue([]),
+    hiddenFromBell: vi.fn(async (ids: string[]) => new Set(ids.filter((id) => id === 'gone'))),
+  };
   // A workspace with a PIN stays shut: no unlock comes with these reads.
   const unlocks = { isShut: vi.fn((_user: unknown, workspace: { pinHash: string | null }) => !!workspace.pinHash) };
   const service = new UserNotificationsService(
@@ -51,7 +56,7 @@ const setup = ({
     unlocks as never,
     { get: vi.fn().mockResolvedValue(resolvePrefs(null)) } as never,
   );
-  return { service, prisma, budgets, unlocks };
+  return { service, prisma, budgets, unlocks, announcements };
 };
 
 describe('UserNotificationsService budget reminders', () => {
@@ -104,15 +109,30 @@ describe('UserNotificationsService budget reminders', () => {
 describe('UserNotificationsService and PIN-locked workspaces', () => {
   it("leaves a locked workspace's reminder details out of the bell, keeping the rest", async () => {
     const { service, prisma } = setup({ switches: { remindBudget: false, remindLoans: false, remindSavings: false } });
-    const loan = { id: 'n1', businessId: 'locked', type: 'LOAN_DUE', data: { name: 'Islami Bank', amount: '5000.00' }, readAt: null, createdAt: new Date() };
-    const budget = { id: 'n2', businessId: 'open', type: 'BUDGET', data: { category: 'Food' }, readAt: null, createdAt: new Date() };
-    const news = { id: 'n3', businessId: null, type: 'ANNOUNCEMENT', data: { title: 'Hello' }, readAt: null, createdAt: new Date() };
-    prisma.userNotification.findMany.mockResolvedValue([loan, budget, news]);
+    const loan = {
+      id: 'n1',
+      key: 'loan:x',
+      businessId: 'locked',
+      type: 'LOAN_DUE',
+      data: { name: 'Islami Bank', amount: '5000.00' },
+      readAt: null,
+      createdAt: new Date(),
+    };
+    const budget = { id: 'n2', key: 'budget:x', businessId: 'open', type: 'BUDGET', data: { category: 'Food' }, readAt: null, createdAt: new Date() };
+    const news = { id: 'n3', key: 'announcement:a1', businessId: null, type: 'ANNOUNCEMENT', data: { title: 'Hello' }, readAt: null, createdAt: new Date() };
+    const gone = { id: 'n4', key: 'announcement:gone', businessId: null, type: 'ANNOUNCEMENT', data: { title: 'Old' }, readAt: null, createdAt: new Date() };
+    prisma.userNotification.findMany.mockResolvedValue([loan, budget, news, gone]);
     prisma.business.findMany.mockResolvedValueOnce([]).mockResolvedValueOnce([{ id: 'locked', pinHash: 'hash' }]);
 
     const { data } = await service.feed(user);
 
-    expect(data).toEqual([{ ...loan, data: {}, locked: true }, budget, news]);
-    expect(prisma.business.findMany).toHaveBeenLastCalledWith({ where: { id: { in: ['locked', 'open'] }, pinHash: { not: null } }, select: { id: true, pinHash: true } });
+    // Without their keys; the deleted announcement is left out and read.
+    const bare = ({ key: _key, ...row }: { key: string }) => row;
+    expect(data).toEqual([{ ...bare(loan), data: {}, locked: true }, bare(budget), bare(news)]);
+    expect(prisma.userNotification.updateMany).toHaveBeenCalledWith({ where: { id: { in: ['n4'] } }, data: { readAt: expect.any(Date) } });
+    expect(prisma.business.findMany).toHaveBeenLastCalledWith({
+      where: { id: { in: ['locked', 'open'] }, pinHash: { not: null } },
+      select: { id: true, pinHash: true },
+    });
   });
 });
