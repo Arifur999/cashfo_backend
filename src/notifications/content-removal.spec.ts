@@ -54,22 +54,45 @@ describe('deleting a campaign', () => {
 });
 
 describe('deleting an announcement', () => {
-  it('removes it and keeps what it said in the audit log', async () => {
+  it('marks it deleted (so the admin can undo) and keeps what it said in the audit log', async () => {
     const prisma = {
       announcement: {
-        findUnique: vi.fn().mockResolvedValue({ id: 'a1', title: 'Eid offer', type: 'PROMOTION', startAt: new Date('2026-10-01T00:00:00.000Z'), isActive: false }),
-        delete: vi.fn().mockResolvedValue({}),
+        findUnique: vi
+          .fn()
+          .mockResolvedValue({
+            id: 'a1',
+            title: 'Eid offer',
+            type: 'PROMOTION',
+            startAt: new Date('2026-10-01T00:00:00.000Z'),
+            isActive: false,
+            deletedAt: null,
+          }),
+        update: vi.fn().mockResolvedValue({}),
       },
       auditLog: audit(),
+      $transaction: vi.fn((steps: Promise<unknown>[]) => Promise.all(steps)),
     };
     const service = new AnnouncementsService(prisma as never);
     await expect(service.remove('a1', 'admin-1', '1.2.3.4')).resolves.toEqual({ id: 'a1' });
-    expect(prisma.auditLog.create.mock.calls[0][0].data).toMatchObject({ action: 'ANNOUNCEMENT_DELETED', oldValue: { title: 'Eid offer' }, ipAddress: '1.2.3.4' });
+    expect(prisma.announcement.update.mock.calls[0][0]).toMatchObject({ where: { id: 'a1' }, data: { deletedAt: expect.any(Date) } });
+    expect(prisma.auditLog.create.mock.calls[0][0].data).toMatchObject({
+      action: 'ANNOUNCEMENT_DELETED',
+      oldValue: { title: 'Eid offer' },
+      ipAddress: '1.2.3.4',
+    });
   });
 });
 
 describe('sending a template test', () => {
-  const template = { id: 't1', key: 'eid_offer', channel: 'IN_APP_PUSH', subjectEn: null, subjectBn: null, bodyEn: 'Hi {{firstName}}, try {{planName}}', bodyBn: 'হ্যালো {{firstName}}' };
+  const template = {
+    id: 't1',
+    key: 'eid_offer',
+    channel: 'IN_APP_PUSH',
+    subjectEn: null,
+    subjectBn: null,
+    bodyEn: 'Hi {{firstName}}, try {{planName}}',
+    bodyBn: 'হ্যালো {{firstName}}',
+  };
   const setup = (configured = true) => {
     const prisma = {
       notificationTemplate: { findUnique: vi.fn().mockResolvedValue(template) },
