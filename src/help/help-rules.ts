@@ -9,10 +9,14 @@ export const WEEK_DAYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'] as co
 export interface HelpCompany {
   name: string;
   tagline: string;
+  // The tagline the Help page shows when the app is in Bangla (the English one when empty).
+  taglineBn: string;
   legalName: string;
   tradeLicence: string;
   hotline: string;
   whatsapp: string;
+  // The support email: Admin › Settings keeps one, in General (support_email),
+  // which this card shows and changes too. Never stored in this card.
   email: string;
   website: string;
   facebook: string;
@@ -29,6 +33,7 @@ export interface HelpCompany {
 export const EMPTY_COMPANY: HelpCompany = {
   name: '',
   tagline: '',
+  taglineBn: '',
   legalName: '',
   tradeLicence: '',
   hotline: '',
@@ -58,6 +63,7 @@ export function companyOf(stored: unknown): HelpCompany {
   return {
     name: text('name'),
     tagline: text('tagline'),
+    taglineBn: text('taglineBn'),
     legalName: text('legalName'),
     tradeLicence: text('tradeLicence'),
     hotline: text('hotline'),

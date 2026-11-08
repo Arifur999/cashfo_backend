@@ -5,6 +5,9 @@ import { SettingsService } from '../settings/settings.service.js';
 import { HelpVideoDto, OrderHelpVideosDto, UpdateHelpCompanyDto, UpdateHelpVideoDto } from './dto/help.dto.js';
 import { companyOf, HELP_COMPANY_KEY, youtubeIdOf, type HelpCompany } from './help-rules.js';
 
+// General's support email, which the company card shows and changes too.
+const SUPPORT_EMAIL_KEY = 'support_email';
+
 const videoView = (video: HelpVideo) => ({
   id: video.id,
   titleEn: video.titleEn,
@@ -35,20 +38,41 @@ export class HelpService {
     return { company, videos: videos.map(videoView) };
   }
 
+  // The admin's copy adds who saved the company card last, and when
+  // ("Last changed by Nadia Rahman on 14 September 2026 at 11:20 am").
   async forAdmin() {
-    const [company, videos] = await Promise.all([this.company(), this.prisma.helpVideo.findMany({ orderBy: [{ position: 'asc' }, { createdAt: 'asc' }] })]);
-    return { company, videos: videos.map(videoView) };
+    const [company, videos, row] = await Promise.all([
+      this.company(false),
+      this.prisma.helpVideo.findMany({ orderBy: [{ position: 'asc' }, { createdAt: 'asc' }] }),
+      this.prisma.platformSetting.findUnique({ where: { key: HELP_COMPANY_KEY }, select: { updatedAt: true, updatedBy: true } }),
+    ]);
+    const admin = row?.updatedBy ? await this.prisma.user.findUnique({ where: { id: row.updatedBy }, select: { name: true } }) : null;
+    return { company, videos: videos.map(videoView), lastChange: row ? { at: row.updatedAt, by: admin?.name ?? null } : null };
   }
 
+  // The support email is the platform's one (General's support_email): a new
+  // one here is saved there, in the same transaction, and the card itself
+  // never keeps a copy.
   async updateCompany(dto: UpdateHelpCompanyDto, adminId: string, ipAddress?: string) {
     const before = await this.company(false);
-    const after: HelpCompany = companyOf({ ...before, ...dto });
+    const { email, ...card } = dto;
+    const after: HelpCompany = { ...companyOf({ ...before, ...card }), email: email ?? before.email };
+    const { email: _email, ...stored } = after;
     await this.prisma.$transaction([
       this.prisma.platformSetting.upsert({
         where: { key: HELP_COMPANY_KEY },
-        update: { value: after as unknown as Prisma.InputJsonObject, updatedBy: adminId },
-        create: { key: HELP_COMPANY_KEY, value: after as unknown as Prisma.InputJsonObject, updatedBy: adminId },
+        update: { value: stored as unknown as Prisma.InputJsonObject, updatedBy: adminId },
+        create: { key: HELP_COMPANY_KEY, value: stored as unknown as Prisma.InputJsonObject, updatedBy: adminId },
       }),
+      ...(email !== undefined && email !== before.email
+        ? [
+            this.prisma.platformSetting.upsert({
+              where: { key: SUPPORT_EMAIL_KEY },
+              update: { value: email, updatedBy: adminId },
+              create: { key: SUPPORT_EMAIL_KEY, value: email, updatedBy: adminId },
+            }),
+          ]
+        : []),
       this.prisma.auditLog.create({
         data: {
           adminUserId: adminId,
@@ -61,6 +85,7 @@ export class HelpService {
         },
       }),
     ]);
+    if (email !== undefined) this.settings.forget();
     return this.forAdmin();
   }
 
@@ -148,13 +173,11 @@ export class HelpService {
     return id;
   }
 
-  // The stored card; for users, the platform's name and support email fill
-  // what it leaves empty.
+  // The stored card with the platform's support email; for users the
+  // platform's name also fills an empty brand name.
   private async company(withFallbacks = true): Promise<HelpCompany> {
-    const row = await this.prisma.platformSetting.findUnique({ where: { key: HELP_COMPANY_KEY } });
-    const company = companyOf(row?.value);
-    if (!withFallbacks) return company;
-    const platform = await this.settings.getCached();
-    return { ...company, name: company.name || platform.platformName, email: company.email || platform.supportEmail };
+    const [row, platform] = await Promise.all([this.prisma.platformSetting.findUnique({ where: { key: HELP_COMPANY_KEY } }), this.settings.getCached()]);
+    const company = { ...companyOf(row?.value), email: platform.supportEmail };
+    return withFallbacks ? { ...company, name: company.name || platform.platformName } : company;
   }
 }
