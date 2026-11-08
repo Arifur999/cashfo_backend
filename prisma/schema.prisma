@@ -482,6 +482,11 @@ model SupportTicket {
   createdAt         DateTime        @default(now())
   updatedAt         DateTime        @updatedAt
   resolvedAt        DateTime?
+  // Sent by the customer from Settings › Help (not a ticket an admin opened
+  // for them from a call): the queue tags it "Help page".
+  fromHelpPage      Boolean         @default(false)
+  // When an admin first opened it; null is "New" in the queue.
+  firstSeenAt       DateTime?
   messages          TicketMessage[]
 
   @@index([status, priority])
