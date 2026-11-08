@@ -29,6 +29,25 @@ model AuditLog {
   @@index([entityType, entityId])
 }
 
+// Settings › Help & support's video guides, managed in Admin › Settings:
+// a YouTube video each, shown to users in this order once `shown`.
+model HelpVideo {
+  id        String   @id @default(uuid())
+  titleEn   String
+  titleBn   String?
+  // GETTING_STARTED, INCOME_EXPENSE, SAVINGS, LOANS, GROUP_EXPENSE,
+  // SECURITY or OTHER (help-rules.ts).
+  category  String
+  minutes   Int
+  youtubeId String
+  shown     Boolean  @default(true)
+  position  Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([position])
+}
+
 model PlatformSetting {
   id        String   @id @default(uuid())
   key       String   @unique

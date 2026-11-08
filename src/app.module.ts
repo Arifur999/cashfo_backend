@@ -53,6 +53,7 @@ import { NotificationPrefsModule } from './notification-prefs/notification-prefs
 import { DataPrivacyModule } from './data-privacy/data-privacy.module.js';
 import { BackupsModule } from './backups/backups.module.js';
 import { ImportsModule } from './imports/imports.module.js';
+import { HelpModule } from './help/help.module.js';
 import { BalanceAdjustmentsModule } from './balance-adjustments/balance-adjustments.module.js';
 import { ReferralsModule } from './referrals/referrals.module.js';
 import { RemindersModule } from './reminders/reminders.module.js';
@@ -149,6 +150,7 @@ import { MonthlySummaryModule } from './monthly-summary/monthly-summary.module.j
     DataPrivacyModule,
     BackupsModule,
     ImportsModule,
+    HelpModule,
     BalanceAdjustmentsModule,
     BudgetsModule,
     SavingsGoalsModule,
