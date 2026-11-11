@@ -36,7 +36,7 @@ const templates = {
   'trial ended (Bangla)': (platformName: string) =>
     renderPlanNoticeEmail('bn', { kind: 'ENDED', name: 'Nadia', planName: 'Monthly Pro', trial: true, date: '৩০ অক্টোবর ২০২৬', link: 'https://x' }, platformName),
   'one-time code': (platformName: string) =>
-    renderOneTimeCodeEmail('en', { name: 'Nadia', code: '481527', action: 'withdraw TK 1,000 to bKash 01711-•••915', minutes: 10 }, platformName),
+    renderOneTimeCodeEmail('en', { name: 'Nadia', code: '481527', action: 'withdraw Tk 1,000 to bKash 01711-•••915', minutes: 10 }, platformName),
   'one-time code (Bangla)': (platformName: string) =>
     renderOneTimeCodeEmail('bn', { name: 'Nadia', code: '481527', action: 'বিকাশ 01711-•••915-এ ৳ ১,০০০ তোলা', minutes: 10 }, platformName),
   'payout paid': (platformName: string) => renderPayoutNoticeEmail('en', PAYOUT_PAID, platformName),
@@ -98,16 +98,16 @@ describe('billing emails', () => {
 
 describe('referral emails', () => {
   it('put the code in the subject and the body, and say how long it lasts', () => {
-    const email = renderOneTimeCodeEmail('en', { name: 'Khaled', code: '004815', action: 'withdraw TK 1,000 to bKash', minutes: 10 }, 'Smartly');
+    const email = renderOneTimeCodeEmail('en', { name: 'Khaled', code: '004815', action: 'withdraw Tk 1,000 to bKash', minutes: 10 }, 'Smartly');
     expect(email.subject).toBe('Your code: 004815');
-    expect(email.text).toContain('Enter this code to withdraw TK 1,000 to bKash:');
+    expect(email.text).toContain('Enter this code to withdraw Tk 1,000 to bKash:');
     expect(email.text).toContain('for 10 minutes');
   });
 
   it('give a paid payout its transaction id and the wallet the income went to', () => {
     const email = renderPayoutNoticeEmail('en', PAYOUT_PAID, 'Smartly');
     expect(email.subject).toBe('Your withdrawal WD-1047 is paid');
-    expect(email.text).toContain('We sent TK 2,160 to Nagad 01819-•••310.');
+    expect(email.text).toContain('We sent Tk 2,160 to Nagad 01819-•••310.');
     expect(email.text).toContain('Transaction ID: 8K2M4N7QXA');
     expect(email.text).toContain('Cash wallet');
   });

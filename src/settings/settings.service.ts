@@ -36,7 +36,7 @@ const DEFAULTS = {
   // {amount}, {reference} and {method} filled in per payment; the number
   // is the admin's to set.
   billing_manual_instructions_en:
-    'Send TK {amount} by {method} to 01XXXXXXXXX (Send Money) and write {reference} as the reference. We confirm your payment within 1 working day.',
+    'Send Tk {amount} by {method} to 01XXXXXXXXX (Send Money) and write {reference} as the reference. We confirm your payment within 1 working day.',
   billing_manual_instructions_bn:
     '{method}-এ 01XXXXXXXXX নম্বরে ৳ {amount} সেন্ড মানি করুন এবং রেফারেন্সে {reference} লিখুন। আমরা ১ কর্মদিবসের মধ্যে আপনার পেমেন্ট নিশ্চিত করব।',
   // Days a plan stays after its period ends without a renewal.

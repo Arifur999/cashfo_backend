@@ -40,7 +40,7 @@ describe('renderSavingsReminderEmail', () => {
     const out = renderSavingsReminderEmail('en', email, 'Smartly');
     expect(out.subject).toBe('Reminder: Umrah <trip>');
     expect(out.html).toContain('Umrah &lt;trip&gt;');
-    expect(out.text).toContain('Save each month: TK 10,000');
+    expect(out.text).toContain('Save each month: Tk 10,000');
   });
   it('writes the monthly one in Bangla and leaves out the monthly line when there is none', () => {
     const out = renderSavingsReminderEmail('bn', { ...email, kind: 'MONTHLY', perMonth: null }, 'Smartly');
