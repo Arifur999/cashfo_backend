@@ -230,7 +230,10 @@ describe('changing and deleting a category', () => {
   });
   const setupDelete = ({ uses = 0, others = 1, target = category({ id: 'c2', name: 'Groceries' }) as ReturnType<typeof category> | null } = {}) => {
     const tx = {
-      transactionEntry: { updateMany: vi.fn().mockResolvedValue({ count: uses }) },
+      transactionEntry: {
+        findMany: vi.fn().mockResolvedValue(Array.from({ length: uses }, (_, i) => ({ id: `e${i + 1}` }))),
+        updateMany: vi.fn().mockResolvedValue({ count: uses }),
+      },
       budgetCategory: { delete: vi.fn(), update: vi.fn() },
     };
     const prisma = {
@@ -240,7 +243,7 @@ describe('changing and deleting a category', () => {
         delete: vi.fn(),
         update: vi.fn(),
       },
-      transactionEntry: { count: vi.fn().mockResolvedValue(uses) },
+      transactionEntry: { count: vi.fn().mockResolvedValue(uses), updateMany: vi.fn().mockResolvedValue({ count: 2 }) },
       $transaction: vi.fn((work: (client: typeof tx) => unknown) => work(tx)),
     };
     return { service: new BudgetsService(prisma as never), prisma, tx };
@@ -248,16 +251,16 @@ describe('changing and deleting a category', () => {
 
   it('deletes an unused category at once', async () => {
     const { service, prisma } = setupDelete();
-    await expect(service.deleteCategory('biz-1', 'c1')).resolves.toEqual({ id: 'c1', moved: 0 });
+    await expect(service.deleteCategory('biz-1', 'c1')).resolves.toEqual({ id: 'c1', moved: 0, movedEntryIds: [] });
     expect(prisma.budgetCategory.delete).toHaveBeenCalledWith({ where: { id: 'c1' } });
   });
 
   it('moves the transactions of a category in use to another of its type first', async () => {
     const { service, prisma, tx } = setupDelete({ uses: 4 });
     await expect(service.deleteCategory('biz-1', 'c1')).rejects.toThrow('Pick the expense category they move to');
-    await expect(service.deleteCategory('biz-1', 'c1', 'c2')).resolves.toEqual({ id: 'c1', moved: 4 });
+    await expect(service.deleteCategory('biz-1', 'c1', 'c2')).resolves.toEqual({ id: 'c1', moved: 4, movedEntryIds: ['e1', 'e2', 'e3', 'e4'] });
     expect(tx.transactionEntry.updateMany).toHaveBeenCalledWith({
-      where: { categoryId: 'Food', transaction: { businessId: 'biz-1', transactionType: 'EXPENSE' } },
+      where: { categoryId: 'Food', transaction: { businessId: 'biz-1', transactionType: 'EXPENSE' }, id: { in: ['e1', 'e2', 'e3', 'e4'] } },
       data: { categoryId: 'Groceries' },
     });
     expect(tx.budgetCategory.delete).toHaveBeenCalledWith({ where: { id: 'c1' } });
@@ -269,6 +272,28 @@ describe('changing and deleting a category', () => {
       'Pick another expense category',
     );
     await expect(setupDelete({ uses: 2, others: 0 }).service.deleteCategory('biz-1', 'c1')).rejects.toThrow('This is the only expense category');
+  });
+
+  it('undoes a delete: the category again, and only its moved entries still in the other one back', async () => {
+    const { service, prisma } = setupDelete();
+    const created = category({ id: 'c9' });
+    const create = vi.spyOn(service, 'createCategory').mockResolvedValue(created as never);
+    await expect(
+      service.restoreCategory('biz-1', { type: 'EXPENSE', name: 'Food', color: 'orange', movedTo: 'Groceries', entryIds: ['e1', 'e2'] }),
+    ).resolves.toMatchObject({ id: 'c9', restored: 2 });
+    expect(create).toHaveBeenCalledWith('biz-1', { type: 'EXPENSE', name: 'Food', color: 'orange' });
+    expect(prisma.transactionEntry.updateMany).toHaveBeenCalledWith({
+      where: { id: { in: ['e1', 'e2'] }, categoryId: 'Groceries', transaction: { businessId: 'biz-1', transactionType: 'EXPENSE' } },
+      data: { categoryId: 'Food' },
+    });
+  });
+
+  it('undoes the delete of an unused category without touching entries', async () => {
+    const { service, prisma } = setupDelete();
+    vi.spyOn(service, 'createCategory').mockResolvedValue(category() as never);
+    await expect(service.restoreCategory('biz-1', { type: 'EXPENSE', name: 'Food' })).resolves.toMatchObject({ restored: 0 });
+    expect(prisma.transactionEntry.updateMany).not.toHaveBeenCalled();
+    await expect(service.restoreCategory('biz-1', { type: 'EXPENSE', name: 'Food', entryIds: ['e1'] })).rejects.toThrow('Send the category');
   });
 
   it('keeps Zakat for the Zakat page', async () => {
