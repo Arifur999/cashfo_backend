@@ -154,6 +154,8 @@ export interface HabitTrackerView {
   // Others only: the date day 1 falls on, and the day it was ended early.
   startsOn: string | null;
   endedOnDay: number | null;
+  // Namaz only: the share of the month's prayers aimed for, or null.
+  goalPct: number | null;
 }
 
 @Injectable()
@@ -199,7 +201,22 @@ export class HabitTrackersService {
         .map(([name]) => name);
       throw new BadRequestException(`Month trackers are only available for: ${allowed.join(', ')}`);
     }
-    return this.insertTracker(userId, { category: dto.category, month: dto.month, year: dto.year, totalDays: null, items: config.items });
+    return this.insertTracker(userId, {
+      category: dto.category,
+      month: dto.month,
+      year: dto.year,
+      totalDays: null,
+      items: config.items,
+      goalPct: dto.goalPct ?? null,
+    });
+  }
+
+  // A Namaz month's goal (the share of its prayers aimed for); null clears it.
+  async setGoal(userId: string, id: string, goalPct: number | null): Promise<HabitTrackerView> {
+    const tracker = await this.requireTracker(userId, id);
+    if (tracker.category !== 'Namaz') throw new BadRequestException('Only a Namaz month has a goal');
+    await this.prisma.habitMonthTracker.update({ where: { id }, data: { goalPct } });
+    return this.get(userId, id);
   }
 
   // "Create Ramadan" -- just a year and 29 or 30 days; the server fixes the
@@ -231,7 +248,16 @@ export class HabitTrackersService {
       (tx) => tx.habitMonthTracker.count({ where: { userId, category: 'Others' } }),
       (tx) =>
         tx.habitMonthTracker.create({
-          data: { userId, category: 'Others', month: null, year: null, name, totalDays: dto.totalDays, items: [], startsOn: dateOnly(shiftKey(dhakaDateKey(new Date()), dto.startsTomorrow ? 1 : 0)) },
+          data: {
+            userId,
+            category: 'Others',
+            month: null,
+            year: null,
+            name,
+            totalDays: dto.totalDays,
+            items: [],
+            startsOn: dateOnly(shiftKey(dhakaDateKey(new Date()), dto.startsTomorrow ? 1 : 0)),
+          },
           include: VIEW_INCLUDE,
         }),
     );
@@ -240,7 +266,11 @@ export class HabitTrackersService {
 
   // Idempotent by design (explicit `checked`, not a toggle) so a double-fired
   // or retried request can never flip a cell the wrong way.
-  async setCheck(userId: string, id: string, dto: SetHabitTrackerCheckDto): Promise<{ day: number; item: string; checked: boolean; status: PrayerStatus | null }> {
+  async setCheck(
+    userId: string,
+    id: string,
+    dto: SetHabitTrackerCheckDto,
+  ): Promise<{ day: number; item: string; checked: boolean; status: PrayerStatus | null }> {
     const tracker = await this.requireTracker(userId, id);
     if (dto.status !== undefined && tracker.category !== 'Namaz') {
       throw new BadRequestException('Only a Namaz mark takes a status');
@@ -429,7 +459,7 @@ export class HabitTrackersService {
 
   private async insertTracker(
     userId: string,
-    data: { category: string; month: number; year: number; totalDays: number | null; items: string[] },
+    data: { category: string; month: number; year: number; totalDays: number | null; items: string[]; goalPct?: number | null },
   ): Promise<HabitTrackerView> {
     const existing = await this.prisma.habitMonthTracker.findUnique({
       where: { userId_category_month_year: { userId, category: data.category, month: data.month, year: data.year } },
@@ -492,6 +522,7 @@ export class HabitTrackersService {
     fastsMadeUp: number;
     startsOn: Date | null;
     endedOnDay: number | null;
+    goalPct: number | null;
   }): HabitTrackerView {
     // Ramadan/Others sheets are just Day 1..N -- no start date is known, so
     // there's no "today" or elapsed-days notion for them, only Namaz's real
@@ -515,6 +546,7 @@ export class HabitTrackersService {
       fastsMadeUp: tracker.fastsMadeUp,
       startsOn: configFor(tracker.category)?.kind === 'custom' ? challengeStart(tracker) : null,
       endedOnDay: tracker.endedOnDay,
+      goalPct: tracker.category === 'Namaz' ? tracker.goalPct : null,
     };
   }
 

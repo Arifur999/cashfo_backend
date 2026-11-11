@@ -54,6 +54,12 @@ export class ListTicketsQueryDto {
   @IsBoolean()
   awaitingReply?: boolean;
 
+  // Only the tickets no admin has opened yet (the queue's "New").
+  @ValidateIf(whenSent)
+  @Transform(toBoolean)
+  @IsBoolean()
+  unseen?: boolean;
+
   @ValidateIf(whenSent)
   @IsIn(TICKET_SORTS)
   sort?: TicketSort;

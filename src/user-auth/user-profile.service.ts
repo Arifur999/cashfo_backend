@@ -98,6 +98,9 @@ export class UserProfileService {
       passwordChangedAt: user.passwordChangedAt,
       // "Member since" (Settings > Profile).
       createdAt: user.createdAt,
+      // A group member's portal login: the app shows it only Group Expense.
+      portalOnly: user.portalOnly,
+      username: user.username,
       // Settings > App > Numbers and dates; the app formats every amount and
       // date with these (digitStyle null = follow the language).
       preferences: preferencesOf(user),

@@ -482,6 +482,11 @@ model SupportTicket {
   createdAt         DateTime        @default(now())
   updatedAt         DateTime        @updatedAt
   resolvedAt        DateTime?
+  // Sent by the customer from Settings › Help (not a ticket an admin opened
+  // for them from a call): the queue tags it "Help page".
+  fromHelpPage      Boolean         @default(false)
+  // When an admin first opened it; null is "New" in the queue.
+  firstSeenAt       DateTime?
   messages          TicketMessage[]
 
   @@index([status, priority])
@@ -990,9 +995,17 @@ model User {
   // The Dhaka day the last automatic backup was claimed, so two servers or
   // two ticks never take it twice.
   autoBackupOn            String?
+  // A group member's login (Group Expense › member portal): made from the
+  // access link a group's owner sends. It signs in with its username (or
+  // its mobile number) and opens only the groups it was added to; its email
+  // is a never-delivered placeholder (src/group-access).
+  username                String?                  @unique
+  portalOnly              Boolean                  @default(false)
   createdAt               DateTime                 @default(now())
   updatedAt               DateTime                 @updatedAt
   memberships             BusinessMember[]
+  // The group member records this account signs in as.
+  groupMembers            GroupMember[]
   ownedBusinesses         Business[]               @relation("BusinessOwner")
   sessions                UserSession[]
   vaultEntries            VaultEntry[]
@@ -1000,10 +1013,12 @@ model User {
   habitMonthTrackers      HabitMonthTracker[]
   books                   Book[]
   bookGoals               BookGoal[]
+  bookShelves             BookShelf[]
   skills                  Skill[]
   skillGoals              SkillGoal[]
   todoLists               TodoList[]
   todoRepeats             TodoRepeat[]
+  todoCategories          TodoCategory[]
   prayerSettings          PrayerSettings?
   qazaLogs                QazaLog[]
   notes                   Note[]
@@ -1486,6 +1501,9 @@ model HabitMonthTracker {
   // Ramadan only: the fasts missed on this sheet that were made up after it
   // (Ramadan › Today's "I kept one").
   fastsMadeUp Int               @default(0)
+  // Namaz only: the share of the month's prayers the person means to pray
+  // (1-100), or null for none.
+  goalPct     Int?
   // Others only: the Dhaka date day 1 falls on (today or tomorrow, as it was
   // started; Restart moves it to today). Rows from before it was kept carry
   // the UTC date of createdAt, the day the app always counted from.
@@ -1622,10 +1640,34 @@ model Book {
   // Put down for now (Reading now's "Pause"): still READING with its page
   // kept, shown under Up next until it is resumed or read on.
   pausedAt   DateTime?
+  // What the reader paid for it, when they remember (My books' Price).
+  price      Decimal?   @db.Decimal(12, 2)
+  // The shelf it stands on: a built-in key (BOOK_SHELVES) or the id of one
+  // of the reader's own BookShelf rows. A key that matches neither (a shelf
+  // since removed) reads as "other".
+  shelf      String     @default("other")
+  // The reader's summary of the whole book, and when it was last saved.
+  summary    String     @default("")
+  summaryAt  DateTime?
   logs       BookLog[]
   notes      BookNote[]
 
   @@index([userId, status])
+}
+
+// A shelf of the reader's own on My books ("Poetry"), beside the built-in
+// ones. `nameKey` is the name lower-cased, so one name is one shelf.
+model BookShelf {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  name      String
+  nameKey   String
+  // Key into the cover palette (BOOK_COLORS), handed out in turn.
+  color     String
+  createdAt DateTime @default(now())
+
+  @@unique([userId, nameKey])
 }
 
 // One (Asia/Dhaka) day's reading of a book: how far its current page went up
@@ -1640,19 +1682,37 @@ model BookLog {
   userId String
   date   DateTime @db.Date
   pages  Int
+  // The page that day's reading began on (Reading now's "Read before, up to
+  // page"), so the day can be corrected later; null on older rows.
+  fromPage Int?
 
   @@unique([bookId, date])
   @@index([userId, date])
 }
 
-// A note, or a line the reader liked, with the page it came from.
+// What a note on a book is: a line the reader loved, a point they marked to
+// remember, or a thought of their own.
+enum BookNoteKind {
+  HIGHLIGHT
+  UNDERLINE
+  THOUGHT
+}
+
+// A note on a page of a book: the line from the book (optional) and the
+// reader's own words, on a day the reader picks.
 model BookNote {
-  id        String   @id @default(uuid())
+  id        String       @id @default(uuid())
   bookId    String
-  book      Book     @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  book      Book         @relation(fields: [bookId], references: [id], onDelete: Cascade)
   page      Int?
+  kind      BookNoteKind @default(THOUGHT)
+  line      String       @default("")
   text      String
-  createdAt DateTime @default(now())
+  date      DateTime     @db.Date
+  // Words highlighted while reading the note: [{ s, e, c }], character
+  // offsets into `text` and a colour key (see BooksService.cleanMarks).
+  marks     Json?
+  createdAt DateTime     @default(now())
 
   @@index([bookId, createdAt])
 }
@@ -1676,6 +1736,7 @@ model BookGoal {
 enum SkillUnit {
   LESSONS
   HOURS
+  CHAPTERS
 }
 
 enum SkillStatus {
@@ -1708,9 +1769,75 @@ model Skill {
   completedAt    DateTime?
   createdAt      DateTime    @default(now())
   updatedAt      DateTime    @updatedAt
+  // The v16 Skills pages. Its group (SKILL_CATEGORIES), a link to the
+  // course, the reason it is learned, the day it should be done by.
+  category       String      @default("life")
+  link           String      @default("")
+  why            String      @default("")
+  targetDate     DateTime?   @db.Date
+  // Put down for now: still LEARNING, shown under Up next until resumed.
+  pausedAt       DateTime?
+  // Ground covered before it was tracked here ("Already done"), in its unit
+  // (minutes for HOURS). progress = base + every day logged, capped at the
+  // target (the target itself once COMPLETED).
+  base           Int         @default(0)
+  // Deleted, kept a while so the delete can be undone; purged by
+  // housekeeping (SkillsHousekeeping). Every read leaves these out.
+  deletedAt      DateTime?
   logs           SkillLog[]
+  steps          SkillStep[]
+  notes          SkillNote[]
+  resources      SkillResource[]
 
   @@index([userId, status])
+}
+
+// One step on a skill's roadmap, ticked off when done.
+model SkillStep {
+  id        String    @id @default(uuid())
+  skillId   String
+  skill     Skill     @relation(fields: [skillId], references: [id], onDelete: Cascade)
+  title     String
+  position  Int
+  done      Boolean   @default(false)
+  doneOn    DateTime? @db.Date
+  createdAt DateTime  @default(now())
+
+  @@index([skillId, position])
+}
+
+// A note written while learning: a title (made from the text when left
+// out), the text, and the day.
+model SkillNote {
+  id        String   @id @default(uuid())
+  skillId   String
+  skill     Skill    @relation(fields: [skillId], references: [id], onDelete: Cascade)
+  date      DateTime @db.Date
+  title     String
+  text      String
+  createdAt DateTime @default(now())
+
+  @@index([skillId, date])
+}
+
+enum SkillResourceKind {
+  COURSE
+  VIDEO
+  BOOK
+  LINK
+}
+
+// A course, video, book or link the skill is learned from.
+model SkillResource {
+  id        String            @id @default(uuid())
+  skillId   String
+  skill     Skill             @relation(fields: [skillId], references: [id], onDelete: Cascade)
+  kind      SkillResourceKind
+  title     String
+  url       String            @default("")
+  createdAt DateTime          @default(now())
+
+  @@index([skillId, createdAt])
 }
 
 // How much was learned on a calendar day (Asia/Dhaka), per skill -- drives the
@@ -1724,6 +1851,8 @@ model SkillLog {
   userId  String
   date    DateTime @db.Date
   amount  Int // lessons, or minutes, in the skill's unit
+  // What was learned that day (the practice entry's note).
+  note    String   @default("")
 
   @@unique([skillId, date])
   @@index([userId, date])
@@ -1741,14 +1870,19 @@ model SkillGoal {
 }
 
 // Habit Tracker -> To Do List: one list per (Asia/Dhaka) calendar date the user
-// picks, holding any number of check-off tasks. Unlike the habit trackers, a
-// list has no "protect ticked history" delete rule -- a to-do is disposable,
-// not a record, so it can be deleted at any time regardless of completed tasks.
+// picks, holding any number of check-off tasks, plus one dateless list for
+// "Someday". Unlike the habit trackers, a list has no "protect ticked
+// history" delete rule -- a to-do is disposable, not a record, so it can be
+// deleted at any time regardless of completed tasks.
 model TodoList {
   id        String     @id @default(uuid())
   userId    String
   user      User       @relation(fields: [userId], references: [id])
-  date      DateTime   @db.Date
+  // null on the Someday list.
+  date      DateTime?  @db.Date
+  // The owner's id on their Someday list, null on a day's list: the unique
+  // index keeps it to one Someday list per person.
+  somedayOf String?    @unique
   createdAt DateTime   @default(now())
   items     TodoItem[]
 
@@ -1756,27 +1890,60 @@ model TodoList {
   @@index([userId])
 }
 
+// A To Do List "list" (the board's Personal, Work, Home, Deen, or one the
+// person adds): a name and a colour a task is filed under. The four built-in
+// ones carry a key and are made the first time the lists are read; their
+// names are translated by the app. Not to be confused with TodoList, a day.
+model TodoCategory {
+  id        String       @id @default(uuid())
+  userId    String
+  user      User         @relation(fields: [userId], references: [id])
+  // personal, work, home or deen on a built-in list; null on one the person added.
+  key       String?
+  name      String
+  // A palette key (blue, violet, orange, green, pink, teal, yellow, indigo,
+  // emerald, purple), drawn with the app's own tints.
+  color     String
+  createdAt DateTime     @default(now())
+  items     TodoItem[]
+  repeats   TodoRepeat[]
+
+  @@unique([userId, key])
+  @@index([userId])
+}
+
 model TodoItem {
-  id           String       @id @default(uuid())
+  id           String        @id @default(uuid())
   listId       String
-  list         TodoList     @relation(fields: [listId], references: [id], onDelete: Cascade)
+  list         TodoList      @relation(fields: [listId], references: [id], onDelete: Cascade)
   text         String
-  completed    Boolean      @default(false)
-  priority     TodoPriority @default(MEDIUM)
+  completed    Boolean       @default(false)
+  priority     TodoPriority  @default(MEDIUM)
   // "HH:MM" on a 24-hour clock, Dhaka time; null = any time that day.
   dueTime      String?
   // A reminder this many minutes before dueTime (0 = at the time); null =
   // none. Only fires while dueTime is set (RemindersScheduler).
   remindBefore Int?
-  // The day the task was first planned for, once it has moved to another.
-  movedFrom    DateTime?    @db.Date
+  // The day the task was first planned for, once it was put off to a later one.
+  movedFrom    DateTime?     @db.Date
+  // How many times it was put off to a later day.
+  moveCount    Int           @default(0)
+  // When it was ticked off; null while open.
+  completedAt  DateTime?
+  // The list it is filed under; null reads as the built-in Personal list.
+  categoryId   String?
+  category     TodoCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  note         String        @default("")
+  // Smaller steps, in order: [{ "text": string, "done": boolean }].
+  steps        Json          @default("[]")
   // Set on a task a repeat rule added; one per rule per day.
   repeatId     String?
-  repeat       TodoRepeat?  @relation(fields: [repeatId], references: [id], onDelete: SetNull)
-  createdAt    DateTime     @default(now())
+  repeat       TodoRepeat?   @relation(fields: [repeatId], references: [id], onDelete: SetNull)
+  createdAt    DateTime      @default(now())
 
   @@unique([repeatId, listId])
   @@index([listId])
+  @@index([categoryId])
 }
 
 enum TodoPriority {
@@ -1803,6 +1970,11 @@ model TodoRepeat {
   dueTime       String?
   // Copied onto each copy, like dueTime.
   remindBefore  Int?
+  // Copied onto each copy too; the steps start unticked on every one.
+  categoryId    String?
+  category      TodoCategory?  @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  note          String         @default("")
+  steps         Json           @default("[]")
   kind          TodoRepeatKind
   // WEEKLY: 0 = Sunday ... 6 = Saturday.
   weekdays      Int[]
@@ -1817,6 +1989,7 @@ model TodoRepeat {
   items         TodoItem[]
 
   @@index([userId])
+  @@index([categoryId])
 }
 
 // Habit Tracker > Write > Notes (the NotesHome board): quick notes and
@@ -1971,6 +2144,7 @@ model Business {
   groupSettings               GroupSettings?
   groupActivities             GroupActivity[]
   groupMeals                  GroupMeal[]
+  groupAccessLinks            GroupAccessLink[]
 
   @@index([ownerId])
 }
@@ -2870,10 +3044,11 @@ model OneTimeCode {
 // (contributions), pool out (expenses), split the remainder equally"
 // ledger, not real bookkeeping -- forcing it through Account/Transaction,
 // or through Contact's debt-sign-convention (built for customer/supplier
-// trade), would distort both. Single-owner-entry model: GroupMember is a
-// plain name/phone record, not a User -- participants never log into the
-// app themselves, only the workspace owner (the sole BusinessMember on a
-// GROUP business) records contributions/expenses on their behalf.
+// trade), would distort both. GroupMember is a name/phone record; the
+// owner records for everyone. A member the owner gives access (Viewer or
+// Editor) gets an access link, makes a login with it (or adds the group to
+// the Smartly account they have) and is then a BusinessMember too: STAFF
+// for a Viewer, ACCOUNTANT for an Editor (src/group-access).
 // =====================================================================
 
 model GroupMember {
@@ -2891,9 +3066,17 @@ model GroupMember {
   // between. Null joinedOn = from the start; null leftOn = still here.
   joinedOn      DateTime?               @db.Date
   leftOn        DateTime?               @db.Date
-  // Member: gives money to an accountant. Accountant: keeps cash and does
-  // the bazar (up to 2 active in a group).
+  // Member: gives money to an accountant, no access. Viewer: may open the
+  // group and see everything. Accountant ("Editor"): keeps cash and does
+  // the bazar, and may add money entries in their own name (up to 2 active
+  // in a group).
   role          GroupMemberRole         @default(MEMBER)
+  // The login that opens the group as this member, once they used their
+  // access link. Its access lives on BusinessMember (status ACTIVE while
+  // the role gives access).
+  userId        String?
+  user          User?                   @relation(fields: [userId], references: [id], onDelete: SetNull)
+  accessLink    GroupAccessLink?
   // The group's owner (the signed-in customer): can't be removed or made
   // inactive.
   isOwner       Boolean                 @default(false)
@@ -2916,7 +3099,38 @@ model GroupMember {
   splits        GroupExpenseSplit[]
   meals         GroupMeal[]
 
+  // One login per member record, and a login is one member of a group.
+  @@unique([businessId, userId])
   @@index([businessId, status])
+  @@index([userId])
+}
+
+// An access link the owner sends a member (Members › Give access, or a
+// password reset). Only its SHA-256 is looked up; the token itself is kept
+// sealed (AES-GCM, GROUP_LINK_ENCRYPTION_KEY or the two-step key) so the
+// owner can copy it again while it waits, or null without a key. One live
+// link per member: a new one replaces the old, and using it deletes it.
+model GroupAccessLink {
+  id              String              @id @default(uuid())
+  businessId      String
+  business        Business            @relation(fields: [businessId], references: [id])
+  groupMemberId   String              @unique
+  groupMember     GroupMember         @relation(fields: [groupMemberId], references: [id], onDelete: Cascade)
+  kind            GroupAccessLinkKind
+  tokenHash       String              @unique
+  tokenSealed     String?
+  createdByUserId String
+  expiresAt       DateTime
+  createdAt       DateTime            @default(now())
+
+  @@index([businessId])
+}
+
+// JOIN: make a login (or add the group to a Smartly account). RESET: a new
+// password for the login the member already has.
+enum GroupAccessLinkKind {
+  JOIN
+  RESET
 }
 
 // A group's own settings (one row, made when first saved): a family or a
@@ -2936,6 +3150,9 @@ model GroupSettings {
   // How costs shared "by cost split" are weighted: everyone the same, or
   // each active member's costPercent.
   costSplit          GroupCostSplit @default(EQUAL)
+  // The custom split was worked out from members' shares (and follows them
+  // when shares change); false: the owner set the percents by hand.
+  splitFromShares    Boolean        @default(false)
   // Warn once this much of a month's budget is spent; null = never.
   budgetWarnPercent  Int?           @default(90)
   // Paused: kept out of new entries and listed last. Nothing is deleted.
@@ -2951,6 +3168,7 @@ enum GroupCostSplit {
 enum GroupMemberRole {
   MEMBER
   ACCOUNTANT
+  VIEWER
 }
 
 enum GroupKind {
@@ -3023,17 +3241,20 @@ enum GroupMemberStatus {
 // Group cash moving from one holder to another (the v16 Cash book's "Hand
 // over cash"): it changes who keeps the cash, never anyone's balance.
 model GroupCashHandover {
-  id           String      @id @default(uuid())
-  businessId   String
-  business     Business    @relation(fields: [businessId], references: [id])
-  fromMemberId String
-  fromMember   GroupMember @relation("HandoverFrom", fields: [fromMemberId], references: [id])
-  toMemberId   String
-  toMember     GroupMember @relation("HandoverTo", fields: [toMemberId], references: [id])
-  amount       Decimal     @db.Decimal(14, 2)
-  date         DateTime    @db.Date
-  note         String?
-  createdAt    DateTime    @default(now())
+  id              String      @id @default(uuid())
+  businessId      String
+  business        Business    @relation(fields: [businessId], references: [id])
+  fromMemberId    String
+  fromMember      GroupMember @relation("HandoverFrom", fields: [fromMemberId], references: [id])
+  toMemberId      String
+  toMember        GroupMember @relation("HandoverTo", fields: [toMemberId], references: [id])
+  amount          Decimal     @db.Decimal(14, 2)
+  date            DateTime    @db.Date
+  note            String?
+  // Who recorded it (an Editor changes only their own); null = the owner,
+  // before logins existed.
+  createdByUserId String?
+  createdAt       DateTime    @default(now())
 
   @@index([businessId, date])
   @@index([fromMemberId])
@@ -3056,6 +3277,9 @@ model GroupContribution {
   receivedBy         GroupMember?          @relation("ContributionReceiver", fields: [receivedByMemberId], references: [id])
   // The same id on both rows of one settle-up, so Undo removes the pair.
   settleGroupId      String?
+  // Who recorded it (an Editor changes only their own); null = the owner,
+  // before logins existed.
+  createdByUserId    String?
   createdAt          DateTime              @default(now())
 
   @@index([businessId, date])
@@ -3065,26 +3289,29 @@ model GroupContribution {
 }
 
 model GroupExpense {
-  id             String              @id @default(uuid())
-  businessId     String
-  business       Business            @relation(fields: [businessId], references: [id])
-  amount         Decimal             @db.Decimal(14, 2)
-  date           DateTime            @db.Date
+  id              String              @id @default(uuid())
+  businessId      String
+  business        Business            @relation(fields: [businessId], references: [id])
+  amount          Decimal             @db.Decimal(14, 2)
+  date            DateTime            @db.Date
   // Loose string, NOT a categoryId FK to GroupExpenseCategoryOption -- same
   // "picker list is decoupled from what's stored" convention as
   // Asset.category/AssetCategoryOption (see that model's own comment):
   // deleting a category option must never break/cascade-delete existing
   // expenses, it should just stop being offered for NEW ones.
-  category       String              @default("Other")
-  description    String?
-  paidByMemberId String?
-  paidByMember   GroupMember?        @relation(fields: [paidByMemberId], references: [id])
+  category        String              @default("Other")
+  description     String?
+  paidByMemberId  String?
+  paidByMember    GroupMember?        @relation(fields: [paidByMemberId], references: [id])
   // FUND: out of the group's cash. MEMBER: out of paidByMember's pocket,
   // credited to them.
-  paidFrom       GroupPaidFrom       @default(FUND)
-  split          GroupSplit          @default(EQUAL)
-  splits         GroupExpenseSplit[]
-  createdAt      DateTime            @default(now())
+  paidFrom        GroupPaidFrom       @default(FUND)
+  split           GroupSplit          @default(EQUAL)
+  splits          GroupExpenseSplit[]
+  // Who recorded it (an Editor changes only their own); null = the owner,
+  // before logins existed.
+  createdByUserId String?
+  createdAt       DateTime            @default(now())
 
   @@index([businessId, date])
 }

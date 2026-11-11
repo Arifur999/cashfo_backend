@@ -1,5 +1,8 @@
-import { BillingCycle, Prisma, PrismaClient, SubscriptionStatus, UserStatus } from '@prisma/client';
+import { BillingCycle, PaymentStatus, Prisma, PrismaClient, SubscriptionStatus, UserStatus } from '@prisma/client';
 import { END_USER_WHERE } from '../common/roles.js';
+
+// Payments that brought money in: refunds are subtracted separately.
+export const REVENUE_STATUSES: PaymentStatus[] = [PaymentStatus.SUCCESS, PaymentStatus.REFUNDED];
 
 // Customers who pay, one row each: a paid plan that is running or in its
 // grace days, on a live customer account. A trial is not paid. The

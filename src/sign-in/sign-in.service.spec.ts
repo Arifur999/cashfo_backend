@@ -136,3 +136,41 @@ describe('SignInService second step', () => {
     expect(sessions.create).not.toHaveBeenCalled();
   });
 });
+
+describe('SignInService identifiers', () => {
+  const memberLogin = (byUsername: object | null, byPhone: object[]) => {
+    const ctx = setup('USER');
+    ctx.prisma.user.findUnique = vi
+      .fn()
+      .mockImplementation(({ where, select }: { where: { username?: string }; select?: { email?: boolean; role?: boolean } }) => {
+        if (where.username !== undefined) return Promise.resolve(byUsername);
+        return Promise.resolve(select?.role ? { role: 'USER' } : null);
+      });
+    (ctx.prisma.user as Record<string, unknown>).findMany = vi.fn().mockResolvedValue(byPhone);
+    return ctx;
+  };
+
+  it("signs a group member in by username, as the login's own email", async () => {
+    const { service, userAuth } = memberLogin({ email: 'member-1@group-member.invalid' }, []);
+    await service.withPassword({ email: 'rakib.m', password: 'pw' }, client);
+    expect(userAuth.login).toHaveBeenCalledWith({ email: 'member-1@group-member.invalid', password: 'pw' }, client, undefined);
+  });
+
+  it('signs a group member in by the mobile number only one login has', async () => {
+    const { service, prisma, userAuth } = memberLogin(null, [{ email: 'member-2@group-member.invalid' }]);
+    await service.withPassword({ email: '01913-640218', password: 'pw' }, client);
+    expect((prisma.user as unknown as { findMany: ReturnType<typeof vi.fn> }).findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { phone: '+8801913640218', portalOnly: true } }),
+    );
+    expect(userAuth.login).toHaveBeenCalledWith({ email: 'member-2@group-member.invalid', password: 'pw' }, client, undefined);
+  });
+
+  it('passes a number two logins share, or an unknown username, on as typed so it fails like any unknown account', async () => {
+    const shared = memberLogin(null, [{ email: 'a@group-member.invalid' }, { email: 'b@group-member.invalid' }]);
+    await shared.service.withPassword({ email: '01913640218', password: 'pw' }, client);
+    expect(shared.userAuth.login).toHaveBeenCalledWith({ email: '01913640218', password: 'pw' }, client, undefined);
+    const unknown = memberLogin(null, []);
+    await unknown.service.withPassword({ email: 'nobody', password: 'pw' }, client);
+    expect(unknown.userAuth.login).toHaveBeenCalledWith({ email: 'nobody', password: 'pw' }, client, undefined);
+  });
+});

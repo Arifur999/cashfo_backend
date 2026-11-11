@@ -1,7 +1,7 @@
 import type { TodoPriority } from '@prisma/client';
 import { IsNotEmpty, IsString, MaxLength, ValidateIf } from 'class-validator';
 import { whenSent } from '../../common/dto.js';
-import { IsRemindBefore, IsTodoPriority, IsTodoTime } from './todo-fields.js';
+import { IsCategoryId, IsRemindBefore, IsTodoNote, IsTodoPriority, IsTodoSteps, IsTodoTime, type TodoStepDto } from './todo-fields.js';
 
 export class CreateTodoItemDto {
   @IsString()
@@ -21,4 +21,14 @@ export class CreateTodoItemDto {
   // null or left out = no reminder.
   @IsRemindBefore()
   remindBefore?: number | null;
+
+  // The list it is filed under; null or left out = Personal.
+  @IsCategoryId()
+  categoryId?: string | null;
+
+  @IsTodoNote()
+  note?: string;
+
+  @IsTodoSteps()
+  steps?: TodoStepDto[];
 }

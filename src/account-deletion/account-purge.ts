@@ -28,6 +28,7 @@ export async function deleteWorkspaces(tx: Prisma.TransactionClient, businessIds
   await tx.groupCashHandover.deleteMany({ where: { businessId: inIds } });
   await tx.groupActivity.deleteMany({ where: { businessId: inIds } });
   await tx.groupMeal.deleteMany({ where: { businessId: inIds } });
+  await tx.groupAccessLink.deleteMany({ where: { businessId: inIds } });
   await tx.groupExpenseCategoryOption.deleteMany({ where: { businessId: inIds } });
   await tx.groupMonthlyBudget.deleteMany({ where: { businessId: inIds } });
   await tx.groupSettings.deleteMany({ where: { businessId: inIds } });
@@ -64,10 +65,12 @@ export async function purgeUser(tx: Prisma.TransactionClient, userId: string, em
   await tx.qazaLog.deleteMany({ where: { userId } });
   await tx.book.deleteMany({ where: { userId } });
   await tx.bookGoal.deleteMany({ where: { userId } });
+  await tx.bookShelf.deleteMany({ where: { userId } });
   await tx.skill.deleteMany({ where: { userId } });
   await tx.skillGoal.deleteMany({ where: { userId } });
   await tx.todoList.deleteMany({ where: { userId } });
   await tx.todoRepeat.deleteMany({ where: { userId } });
+  await tx.todoCategory.deleteMany({ where: { userId } });
   await tx.note.deleteMany({ where: { userId } });
   await tx.journalEntry.deleteMany({ where: { userId } });
   await tx.noteCategory.deleteMany({ where: { userId } });

@@ -30,8 +30,7 @@ type NewestMessage = { senderType: string; createdAt: Date };
 // The queue's "needs a reply": an unsolved ticket whose newest message is
 // the customer's, or that has none yet. The team owes them an answer
 // whatever the status says. awaitingReply() and sort=waiting both read it.
-const owesReply = (status: TicketStatus, newest: NewestMessage | undefined) =>
-  !RESOLVED_STATUSES.includes(status) && (!newest || newest.senderType === 'USER');
+const owesReply = (status: TicketStatus, newest: NewestMessage | undefined) => !RESOLVED_STATUSES.includes(status) && (!newest || newest.senderType === 'USER');
 
 // sort=waiting puts the highest first, in the enum's order (LOW..URGENT).
 const PRIORITY_RANK: Record<TicketPriority, number> = { LOW: 0, MEDIUM: 1, HIGH: 2, URGENT: 3 };
@@ -117,6 +116,7 @@ export class TicketsService {
     if (query.priority) where.priority = query.priority;
     if (query.category) where.category = query.category;
     if (query.assignedToAdminId) where.assignedToAdminId = query.assignedToAdminId === UNASSIGNED ? null : query.assignedToAdminId;
+    if (query.unseen) where.firstSeenAt = null;
     // On top of the status asked for, not in place of it.
     if (query.awaitingReply) where.AND = [await this.awaitingReplyWhere()];
 
@@ -202,6 +202,14 @@ export class TicketsService {
     if (!ticket) {
       throw new NotFoundException('Ticket not found');
     }
+    // The first admin to open it takes the "New" badge off. Raw SQL, so the
+    // ticket's updatedAt (what "past the 24-hour goal" and the customer's
+    // list read) doesn't move; only the first open writes.
+    if (!ticket.firstSeenAt) {
+      const seenAt = new Date();
+      await this.prisma.$executeRaw`UPDATE "SupportTicket" SET "firstSeenAt" = ${seenAt} WHERE "id" = ${id} AND "firstSeenAt" IS NULL`;
+      ticket.firstSeenAt = seenAt;
+    }
 
     const adminSenderIds = [...new Set(ticket.messages.flatMap((message) => (message.senderType === 'ADMIN' ? [message.senderId] : [])))];
     const [{ requesters, customerIds }, assignedAdmin, adminSenders] = await Promise.all([
@@ -260,6 +268,8 @@ export class TicketsService {
         subject: dto.subject,
         category: dto.category,
         priority: dto.priority ?? 'MEDIUM',
+        // An admin opened it, so it is never "New" in the queue.
+        firstSeenAt: new Date(),
         messages: {
           // Logged as the user's own message -- an admin is just relaying it
           // (e.g. phone support), the ticket still represents the user's report.
@@ -312,12 +322,23 @@ export class TicketsService {
   // leaves the ticket as it was; only a status sent with it moves it.
   // `status` is the reply box's "After sending, set to", applied once the
   // message is saved and audited like a status change from update().
-  async addMessage(id: string, dto: AddMessageDto, adminId: string, ipAddress?: string) {
-    const ticket = await this.requireTicket(id);
+  async addMessage(id: string, dto: AddMessageDto, adminId: string, ipAddress?: string, file?: Express.Multer.File) {
     const isInternal = dto.isInternal === true;
+    // A picture goes to the customer with a reply; notes stay words only.
+    if (file && isInternal) throw new BadRequestException("A note for admins can't carry a picture");
+    const ticket = await this.requireTicket(id);
 
     const message = await this.prisma.ticketMessage.create({
-      data: { ticketId: id, senderType: 'ADMIN', senderId: adminId, message: dto.message, attachmentUrl: dto.attachmentUrl, isInternal },
+      data: {
+        ticketId: id,
+        senderType: 'ADMIN',
+        senderId: adminId,
+        message: dto.message,
+        attachmentUrl: dto.attachmentUrl,
+        isInternal,
+        ...(file && { attachment: { create: { mimeType: file.mimetype, size: file.size, data: new Uint8Array(file.buffer) } } }),
+      },
+      include: { attachment: { select: { id: true, mimeType: true, size: true } } },
     });
 
     const status = nextStatus(ticket.status, isInternal, dto.status);
@@ -368,7 +389,10 @@ export class TicketsService {
   // email sending is set up. A legacy PlatformUser requester has no app to
   // tell; a failed email is logged and never fails the reply.
   private async tellCustomer(ticket: { id: string; subject: string; platformUserId: string }, messageId: string, reply: string) {
-    const customer = await this.prisma.user.findFirst({ where: { id: ticket.platformUserId, ...END_USER_WHERE }, select: { id: true, name: true, email: true } });
+    const customer = await this.prisma.user.findFirst({
+      where: { id: ticket.platformUserId, ...END_USER_WHERE },
+      select: { id: true, name: true, email: true },
+    });
     if (!customer) return;
     // The bell row says it in the admin's Support reply template while that
     // is on, and in the app's own words otherwise.
@@ -409,35 +433,50 @@ export class TicketsService {
     const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
     const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     const monthAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
-    const [byStatusRaw, unassignedOpenCount, inProgressOver24hCount, urgentCount, solvedThisWeekCount, byCategoryRaw, byPriorityRaw, resolvedTickets, recentTickets, owed] =
-      await Promise.all([
-        this.prisma.supportTicket.groupBy({ by: ['status'], _count: true }),
-        this.prisma.supportTicket.count({ where: { status: 'OPEN', assignedToAdminId: null } }),
-        this.prisma.supportTicket.count({ where: { status: 'IN_PROGRESS', updatedAt: { lt: dayAgo } } }),
-        this.prisma.supportTicket.count({ where: { priority: 'URGENT', status: { notIn: ['RESOLVED', 'CLOSED'] } } }),
-        this.prisma.supportTicket.count({ where: { resolvedAt: { gte: weekAgo } } }),
-        this.prisma.supportTicket.groupBy({ by: ['category'], _count: true }),
-        this.prisma.supportTicket.groupBy({ by: ['priority'], _count: true }),
-        this.prisma.supportTicket.findMany({
-          where: { resolvedAt: { not: null } },
-          select: { createdAt: true, resolvedAt: true },
-        }),
-        // The first admin reply on each ticket opened in the last 30 days.
-        this.prisma.supportTicket.findMany({
-          where: { createdAt: { gte: monthAgo } },
-          select: {
-            createdAt: true,
-            messages: { where: { senderType: 'ADMIN', isInternal: false }, orderBy: { createdAt: 'asc' }, take: 1, select: { createdAt: true } },
-          },
-        }),
-        // The tickets that owe the customer a reply, and since when: the
-        // list's "waiting on us", which list(awaitingReply) shows.
-        this.awaitingReply(),
-      ]);
+    const [
+      byStatusRaw,
+      unassignedOpenCount,
+      inProgressOver24hCount,
+      urgentCount,
+      solvedThisWeekCount,
+      byCategoryRaw,
+      byPriorityRaw,
+      resolvedTickets,
+      recentTickets,
+      owed,
+      newFromHelpPageCount,
+    ] = await Promise.all([
+      this.prisma.supportTicket.groupBy({ by: ['status'], _count: true }),
+      this.prisma.supportTicket.count({ where: { status: 'OPEN', assignedToAdminId: null } }),
+      this.prisma.supportTicket.count({ where: { status: 'IN_PROGRESS', updatedAt: { lt: dayAgo } } }),
+      this.prisma.supportTicket.count({ where: { priority: 'URGENT', status: { notIn: ['RESOLVED', 'CLOSED'] } } }),
+      this.prisma.supportTicket.count({ where: { resolvedAt: { gte: weekAgo } } }),
+      this.prisma.supportTicket.groupBy({ by: ['category'], _count: true }),
+      this.prisma.supportTicket.groupBy({ by: ['priority'], _count: true }),
+      this.prisma.supportTicket.findMany({
+        where: { resolvedAt: { not: null } },
+        select: { createdAt: true, resolvedAt: true },
+      }),
+      // The first admin reply on each ticket opened in the last 30 days.
+      this.prisma.supportTicket.findMany({
+        where: { createdAt: { gte: monthAgo } },
+        select: {
+          createdAt: true,
+          messages: { where: { senderType: 'ADMIN', isInternal: false }, orderBy: { createdAt: 'asc' }, take: 1, select: { createdAt: true } },
+        },
+      }),
+      // The tickets that owe the customer a reply, and since when: the
+      // list's "waiting on us", which list(awaitingReply) shows.
+      this.awaitingReply(),
+      // Sent from the Help page and not opened by anyone yet.
+      this.prisma.supportTicket.count({ where: { fromHelpPage: true, firstSeenAt: null, status: { notIn: RESOLVED_STATUSES } } }),
+    ]);
 
     const hours = (ms: number) => ms / (1000 * 60 * 60);
     const avgResolutionHours =
-      resolvedTickets.length > 0 ? hours(resolvedTickets.reduce((sum, t) => sum + (t.resolvedAt!.getTime() - t.createdAt.getTime()), 0) / resolvedTickets.length) : 0;
+      resolvedTickets.length > 0
+        ? hours(resolvedTickets.reduce((sum, t) => sum + (t.resolvedAt!.getTime() - t.createdAt.getTime()), 0) / resolvedTickets.length)
+        : 0;
     const answered = recentTickets.filter((t) => t.messages.length > 0);
     const avgFirstReplyHours =
       answered.length > 0 ? hours(answered.reduce((sum, t) => sum + (t.messages[0].createdAt.getTime() - t.createdAt.getTime()), 0) / answered.length) : 0;
@@ -456,6 +495,7 @@ export class TicketsService {
       needsReplyCount,
       needsReplyOver24hCount,
       waitingOnUserCount: statusCounts.WAITING_ON_USER,
+      newFromHelpPageCount,
       urgentCount,
       solvedThisWeekCount,
       avgResolutionHours: Math.round(avgResolutionHours * 10) / 10,
@@ -519,7 +559,10 @@ export class TicketsService {
       },
     });
     const found = new Map<string, Requester>(
-      customers.map((u) => [u.id, { id: u.id, name: u.name, email: u.email, plan: u.ownedBusinesses[0]?.plan ?? null, joinedAt: u.createdAt, language: u.preferredLanguage }]),
+      customers.map((u) => [
+        u.id,
+        { id: u.id, name: u.name, email: u.email, plan: u.ownedBusinesses[0]?.plan ?? null, joinedAt: u.createdAt, language: u.preferredLanguage },
+      ]),
     );
 
     const missing = unique.filter((id) => !found.has(id));

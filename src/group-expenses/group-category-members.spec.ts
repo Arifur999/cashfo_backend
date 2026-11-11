@@ -32,7 +32,7 @@ const setup = (category: Record<string, unknown> = {}) => {
     groupActivity: { create: vi.fn() },
     $transaction: vi.fn(async (work: (tx: unknown) => unknown) => work(prisma)),
   };
-  return { service: new GroupExpensesService(prisma as never), prisma };
+  return { service: new GroupExpensesService(prisma as never, { sync: vi.fn(), accessOf: vi.fn() } as never), prisma };
 };
 
 const expense = { amount: '1200', date: '2026-10-20', category: "Kids' school" };

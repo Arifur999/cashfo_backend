@@ -43,7 +43,7 @@ describe('InvoicesService.getById', () => {
       include: {
         payment: {
           include: {
-            plan: { select: { id: true, name: true } },
+            plan: { select: { id: true, name: true, featureLimits: true } },
             refund: { select: { amount: true, status: true, createdAt: true } },
           },
         },

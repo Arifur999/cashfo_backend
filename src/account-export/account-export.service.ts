@@ -2,6 +2,7 @@ import { BadRequestException, Injectable } from '@nestjs/common';
 import { Prisma, type Business } from '@prisma/client';
 import { dhakaDateKey } from '../common/dhaka.js';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { stepsOf } from '../todos/todo-text.js';
 import { cellText, day, toCsv, type CsvCell } from './csv.js';
 import { xlsxWorkbook, type SheetData } from './xlsx.js';
 import { zipFiles, type ZipEntry } from './zip.js';
@@ -312,19 +313,30 @@ export class AccountExportService {
       this.prisma.todoItem.findMany({
         where: { list: { userId } },
         orderBy: [{ list: { date: 'asc' } }, { createdAt: 'asc' }],
-        include: { list: { select: { date: true } } },
+        include: { list: { select: { date: true } }, category: { select: { name: true } } },
       }),
       this.prisma.todoRepeat.findMany({ where: { userId }, orderBy: { createdAt: 'asc' } }),
       this.prisma.book.findMany({ where: { userId }, orderBy: { createdAt: 'asc' }, include: { logs: { orderBy: { date: 'asc' } } } }),
       this.prisma.bookNote.findMany({ where: { book: { userId } }, orderBy: { createdAt: 'asc' }, include: { book: { select: { title: true } } } }),
       this.prisma.bookGoal.findMany({ where: { userId }, orderBy: { year: 'asc' } }),
-      this.prisma.skill.findMany({ where: { userId }, orderBy: { createdAt: 'asc' }, include: { logs: { orderBy: { date: 'asc' } } } }),
+      this.prisma.skill.findMany({
+        where: { userId, deletedAt: null },
+        orderBy: { createdAt: 'asc' },
+        include: {
+          logs: { orderBy: { date: 'asc' } },
+          steps: { orderBy: { position: 'asc' } },
+          notes: { orderBy: { date: 'asc' } },
+          resources: { orderBy: { createdAt: 'asc' } },
+        },
+      }),
       this.prisma.skillGoal.findMany({ where: { userId }, orderBy: { year: 'asc' } }),
       this.prisma.prayerSettings.findUnique({ where: { userId } }),
       this.prisma.qazaLog.findMany({ where: { userId }, orderBy: [{ date: 'asc' }, { createdAt: 'asc' }] }),
       this.prisma.ramadanPrep.findMany({ where: { userId }, orderBy: { year: 'asc' } }),
     ]);
 
+    // My books' own shelves, to name the shelf a book stands on.
+    const bookShelves = new Map((await this.prisma.bookShelf.findMany({ where: { userId } })).map((shelf) => [shelf.id, shelf.name]));
     // An hours skill keeps its target, progress and log in minutes.
     const countedIn = (unit: string) => (unit === 'HOURS' ? 'MINUTES' : unit);
     // "Namaz 2026-10", "Ramadan 2026" or a challenge's own name.
@@ -405,8 +417,38 @@ export class AccountExportService {
       {
         name: 'todos.csv',
         ...table(
-          ['Date', 'Task', 'Done', 'Priority', 'Due time', 'Remind minutes before', 'Moved from', 'Repeats'],
-          todos.map((t) => [day(t.list.date), t.text, t.completed, t.priority, t.dueTime, t.remindBefore, day(t.movedFrom), t.repeatId ? 'yes' : null]),
+          [
+            'Date',
+            'Task',
+            'List',
+            'Done',
+            'Done at',
+            'Priority',
+            'Due time',
+            'Remind minutes before',
+            'Moved from',
+            'Times put off',
+            'Repeats',
+            'Steps',
+            'Note',
+          ],
+          todos.map((t) => [
+            t.list.date ? day(t.list.date) : 'Someday',
+            t.text,
+            t.category?.name ?? 'Personal',
+            t.completed,
+            t.completedAt,
+            t.priority,
+            t.dueTime,
+            t.remindBefore,
+            day(t.movedFrom),
+            t.moveCount,
+            t.repeatId ? 'yes' : null,
+            stepsOf(t.steps)
+              .map((step) => `${step.done ? '[x]' : '[ ]'} ${step.text}`)
+              .join('; '),
+            t.note,
+          ]),
         ),
       },
       {
@@ -419,22 +461,35 @@ export class AccountExportService {
       {
         name: 'books.csv',
         ...table(
-          ['Title', 'Author', 'Pages', 'Pages read', 'Status', 'Paused', 'Started', 'Finished', 'Added'],
-          books.map((b) => [b.title, b.author, b.totalPages, b.pagesRead, b.status, b.pausedAt, b.startedAt, b.finishedAt, b.createdAt]),
+          ['Title', 'Author', 'Pages', 'Pages read', 'Status', 'Paused', 'Started', 'Finished', 'Added', 'Shelf', 'Price', 'Summary'],
+          books.map((b) => [
+            b.title,
+            b.author,
+            b.totalPages,
+            b.pagesRead,
+            b.status,
+            b.pausedAt,
+            b.startedAt,
+            b.finishedAt,
+            b.createdAt,
+            bookShelves.get(b.shelf) ?? b.shelf,
+            b.price === null ? '' : b.price.toString(),
+            b.summary,
+          ]),
         ),
       },
       {
         name: 'reading-log.csv',
         ...table(
-          ['Date', 'Book', 'Pages'],
-          books.flatMap((b) => b.logs.map((l) => [day(l.date), b.title, l.pages])),
+          ['Date', 'Book', 'Pages', 'From page'],
+          books.flatMap((b) => b.logs.map((l) => [day(l.date), b.title, l.pages, l.fromPage])),
         ),
       },
       {
         name: 'book-notes.csv',
         ...table(
-          ['Book', 'Page', 'Note', 'Written'],
-          bookNotes.map((n) => [n.book.title, n.page, n.text, n.createdAt]),
+          ['Book', 'Page', 'Note', 'Written', 'Day', 'Kind', 'Line from the book'],
+          bookNotes.map((n) => [n.book.title, n.page, n.text, n.createdAt, day(n.date), n.kind, n.line]),
         ),
       },
       {
@@ -447,15 +502,68 @@ export class AccountExportService {
       {
         name: 'skills.csv',
         ...table(
-          ['Name', 'Where', 'Counted in', 'Target', 'Progress', 'Status', 'Started', 'Completed', 'Added'],
-          skills.map((k) => [k.name, k.source, countedIn(k.unit), k.target, k.progress, k.status, k.startedAt, k.completedAt, k.createdAt]),
+          [
+            'Name',
+            'Where',
+            'Counted in',
+            'Target',
+            'Progress',
+            'Status',
+            'Started',
+            'Completed',
+            'Added',
+            'Category',
+            'Already done',
+            'Target date',
+            'Link',
+            'Why',
+            'Paused',
+          ],
+          skills.map((k) => [
+            k.name,
+            k.source,
+            countedIn(k.unit),
+            k.target,
+            k.progress,
+            k.status,
+            k.startedAt,
+            k.completedAt,
+            k.createdAt,
+            k.category,
+            k.base,
+            day(k.targetDate),
+            k.link,
+            k.why,
+            k.pausedAt,
+          ]),
         ),
       },
       {
         name: 'skill-log.csv',
         ...table(
-          ['Date', 'Skill', 'Amount', 'Counted in'],
-          skills.flatMap((k) => k.logs.map((l) => [day(l.date), k.name, l.amount, countedIn(k.unit)])),
+          ['Date', 'Skill', 'Amount', 'Counted in', 'What was learned'],
+          skills.flatMap((k) => k.logs.map((l) => [day(l.date), k.name, l.amount, countedIn(k.unit), l.note])),
+        ),
+      },
+      {
+        name: 'skill-roadmaps.csv',
+        ...table(
+          ['Skill', 'Step', 'Done', 'Done on'],
+          skills.flatMap((k) => k.steps.map((step) => [k.name, step.title, step.done ? 'yes' : 'no', day(step.doneOn)])),
+        ),
+      },
+      {
+        name: 'skill-notes.csv',
+        ...table(
+          ['Skill', 'Day', 'Title', 'Note'],
+          skills.flatMap((k) => k.notes.map((note) => [k.name, day(note.date), note.title, note.text])),
+        ),
+      },
+      {
+        name: 'skill-resources.csv',
+        ...table(
+          ['Skill', 'Type', 'Title', 'Link'],
+          skills.flatMap((k) => k.resources.map((resource) => [k.name, resource.kind, resource.title, resource.url])),
         ),
       },
       {

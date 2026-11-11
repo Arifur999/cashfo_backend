@@ -1,7 +1,7 @@
 import { Body, Controller, Get, Post, Query, UseGuards } from '@nestjs/common';
 import { AdminAuthGuard } from '../admin-auth/guards/admin-auth.guard.js';
 import { AnalyticsService } from './analytics.service.js';
-import { DateRangeQueryDto } from './dto/date-range-query.dto.js';
+import { DateRangeQueryDto, EngagementQueryDto } from './dto/date-range-query.dto.js';
 import { TrackEventDto } from './dto/track-event.dto.js';
 import { TrackingApiKeyGuard } from './guards/tracking-api-key.guard.js';
 
@@ -27,31 +27,33 @@ export class AnalyticsController {
 
   @UseGuards(AdminAuthGuard)
   @Get('engagement')
-  engagement(@Query() query: DateRangeQueryDto) {
+  engagement(@Query() query: EngagementQueryDto) {
     return this.analyticsService.engagement(query);
   }
 
   @UseGuards(AdminAuthGuard)
   @Get('cohorts')
-  cohorts() {
-    return this.analyticsService.cohorts();
+  cohorts(@Query() query: DateRangeQueryDto) {
+    return this.analyticsService.cohorts(query);
   }
 
   @UseGuards(AdminAuthGuard)
   @Get('geography')
-  geography() {
-    return this.analyticsService.geography();
+  geography(@Query() query: DateRangeQueryDto) {
+    return this.analyticsService.geography(query);
   }
 
   @UseGuards(AdminAuthGuard)
   @Get('devices')
-  devices() {
-    return this.analyticsService.devices();
+  devices(@Query() query: DateRangeQueryDto) {
+    return this.analyticsService.devices(query);
   }
 
+  // With from/to (the period picker): that period's KPI row; without,
+  // the last 30 days as before.
   @UseGuards(AdminAuthGuard)
   @Get('summary')
-  summary() {
-    return this.analyticsService.summary();
+  summary(@Query() query: DateRangeQueryDto) {
+    return query.from || query.to ? this.analyticsService.periodSummary(query) : this.analyticsService.summary();
   }
 }

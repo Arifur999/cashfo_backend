@@ -16,6 +16,8 @@ type Ticket = {
   createdAt: Date;
   updatedAt: Date;
   resolvedAt: Date | null;
+  fromHelpPage?: boolean;
+  firstSeenAt?: Date | null;
   messages: Message[];
 };
 type Row = Record<string, unknown>;
@@ -108,6 +110,8 @@ const fakePrisma = (tickets: Ticket[]) => {
   const chosen = <T extends Row>(rows: T[], args: FindArgs) =>
     rows.filter((row) => matches(row, args.where)).map((row) => (args.select ? pick(row, args.select) : row));
   return {
+    // getById's first-open stamp.
+    $executeRaw: vi.fn(async () => 1),
     supportTicket: {
       findMany: vi.fn(async (args: FindArgs = {}) => {
         const skip = args.skip ?? 0;
@@ -328,7 +332,12 @@ describe('TicketsService.getById', () => {
       joinedAt: new Date('2026-03-12T00:00:00.000Z'),
       language: 'BN',
     });
-    expect(result.platformUser).toMatchObject({ id: 'cust-rahim', name: 'Rahim Uddin', email: 'rahim@example.com', plan: { id: 'plan-pro', name: 'Monthly Pro' } });
+    expect(result.platformUser).toMatchObject({
+      id: 'cust-rahim',
+      name: 'Rahim Uddin',
+      email: 'rahim@example.com',
+      plan: { id: 'plan-pro', name: 'Monthly Pro' },
+    });
     expect(result).toMatchObject({ id: 't1', assignedAdmin: null, requesterTickets: { total: 1, solved: 1 } });
     expect(result.messages).toHaveLength(1);
   });
@@ -350,6 +359,36 @@ describe('TicketsService.getById', () => {
 
   it('is a 404 for an unknown ticket', async () => {
     await expect(setup([]).service.getById('nope')).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  it('takes the "New" badge off on the first open only, without touching updatedAt', async () => {
+    const fresh = setup([ticket('t1', { fromHelpPage: true, firstSeenAt: null })]);
+    const result = await fresh.service.getById('t1');
+    expect(fresh.prisma.$executeRaw).toHaveBeenCalledTimes(1);
+    expect(result.firstSeenAt).toBeInstanceOf(Date);
+
+    const seen = setup([ticket('t1', { firstSeenAt: ago(5) })]);
+    await seen.service.getById('t1');
+    expect(seen.prisma.$executeRaw).not.toHaveBeenCalled();
+  });
+});
+
+describe('TicketsService.list unseen', () => {
+  it('keeps only the tickets no admin has opened', async () => {
+    const { service } = setup([ticket('new', { firstSeenAt: null }), ticket('seen', { firstSeenAt: ago(1) })]);
+    expect(ids(await service.list({ unseen: true }))).toEqual(['new']);
+  });
+});
+
+describe('TicketsService.stats', () => {
+  it('counts the Help page messages nobody has opened yet, solved ones left out', async () => {
+    const { service } = setup([
+      ticket('new', { fromHelpPage: true, firstSeenAt: null, messages: [asked(1)] }),
+      ticket('opened', { fromHelpPage: true, firstSeenAt: ago(1), messages: [asked(2)] }),
+      ticket('by-admin', { fromHelpPage: false, firstSeenAt: null }),
+      ticket('solved', { fromHelpPage: true, firstSeenAt: null, status: 'RESOLVED', resolvedAt: ago(1) }),
+    ]);
+    expect((await service.stats()).newFromHelpPageCount).toBe(1);
   });
 });
 
@@ -434,6 +473,16 @@ describe('TicketsService.addMessage', () => {
     expect(noted.ticket.status).toBe('WAITING_ON_USER');
     expect(note.prisma.auditLog.create).toHaveBeenCalledTimes(1);
     expect(note.prisma.userNotification.createMany).not.toHaveBeenCalled();
+  });
+
+  it('a reply can carry one picture, saved with the message; a note cannot', async () => {
+    const { service, prisma } = setupWrite();
+    const file = { mimetype: 'image/png', size: 3, buffer: Buffer.from([1, 2, 3]) } as Express.Multer.File;
+    await service.addMessage('t1', { message: 'Here is where to tap' }, 'admin-nadia', undefined, file);
+    expect(prisma.ticketMessage.create.mock.calls[0][0].data).toMatchObject({ attachment: { create: { mimeType: 'image/png', size: 3 } } });
+
+    await expect(service.addMessage('t1', { message: 'See this', isInternal: true }, 'admin-nadia', undefined, file)).rejects.toThrow("can't carry a picture");
+    expect(prisma.ticketMessage.create).toHaveBeenCalledTimes(1);
   });
 
   it('nextStatus: the picked status wins; a reply opens work; a note changes nothing', () => {
