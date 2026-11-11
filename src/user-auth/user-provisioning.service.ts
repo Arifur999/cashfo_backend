@@ -36,10 +36,21 @@ export class UserProvisioningService {
     private readonly systemMessages: SystemMessagesService,
   ) {}
 
-  // Returns the user's default workspace id, creating it on first use.
+  // Returns the user's default workspace id, creating it on first use. A
+  // group member's portal login never gets one: it opens only its groups,
+  // so its "workspace" is the first group it is in ('' when none is left).
   async ensureDefaultWorkspace(userId: string, options: ProvisionOptions = {}): Promise<string> {
     const existing = await this.findDefaultBusinessId(userId);
     if (existing) return existing;
+    const account = await this.prisma.user.findUnique({ where: { id: userId }, select: { portalOnly: true } });
+    if (account?.portalOnly) {
+      const group = await this.prisma.businessMember.findFirst({
+        where: { userId, status: 'ACTIVE', business: { deletedAt: null, type: 'GROUP' } },
+        orderBy: { joinedAt: 'asc' },
+        select: { businessId: true },
+      });
+      return group?.businessId ?? '';
+    }
 
     const freePlan = await this.prisma.subscriptionPlan.findUnique({ where: { slug: 'free' } });
     // Read outside the transaction below -- SettingsService uses the plain

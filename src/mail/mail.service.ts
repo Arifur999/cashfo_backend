@@ -41,6 +41,10 @@ export interface SendEmailOptions {
 // signs emails as DEFAULT_PLATFORM_NAME instead.
 const LEGACY_PLATFORM_NAME = 'Money Management Tracker';
 
+// RFC 2606's reserved .invalid domain never receives mail; a group member's
+// portal login is given such an address (src/group-access).
+export const undeliverable = (address: string): boolean => /\.invalid$/i.test(address.trim());
+
 // Shared/cross-cutting, same shape as ImgbbService (src/uploads/) -- any
 // feature module that needs to send a transactional email imports MailModule
 // and injects this rather than instantiating its own Resend client. Client
@@ -186,6 +190,10 @@ export class MailService {
   }
 
   async sendEmail(options: SendEmailOptions): Promise<void> {
+    // A group member's portal login has a placeholder address that can't
+    // receive mail: it is left out, and a message only to it isn't sent.
+    const to = (Array.isArray(options.to) ? options.to : [options.to]).filter((address) => !undeliverable(address));
+    if (to.length === 0) return;
     const apiKey = this.configService.get<string>('RESEND_API_KEY');
     if (!apiKey) {
       throw new InternalServerErrorException('Email sending is not configured (RESEND_API_KEY missing)');
@@ -195,7 +203,7 @@ export class MailService {
     const from = options.from ?? this.configService.get<string>('MAIL_FROM') ?? 'onboarding@resend.dev';
     const { error } = await this.client.emails.send({
       from,
-      to: options.to,
+      to: Array.isArray(options.to) ? to : to[0],
       subject: options.subject,
       html: options.html,
       text: options.text,
@@ -216,12 +224,12 @@ export class MailService {
   // index that failed; a failed request throws, and the caller counts the
   // whole batch as failed. The idempotency key makes a retried batch (a
   // send resumed after a restart) a no-op at Resend for a day.
-  async sendCampaignBatch(
-    emails: { to: string; locale: 'en' | 'bn'; email: CampaignEmail }[],
-    idempotencyKey?: string,
-  ): Promise<Map<number, string>> {
+  async sendCampaignBatch(emails: { to: string; locale: 'en' | 'bn'; email: CampaignEmail }[], idempotencyKey?: string): Promise<Map<number, string>> {
     const failed = new Map<number, string>();
-    if (emails.length === 0) return failed;
+    // Portal logins' placeholder addresses fail alone, unsent.
+    emails.forEach(({ to }, index) => undeliverable(to) && failed.set(index, 'This account has no email address'));
+    const sendable = emails.map((email, index) => ({ email, index })).filter(({ index }) => !failed.has(index));
+    if (sendable.length === 0) return failed;
     const apiKey = this.configService.get<string>('RESEND_API_KEY');
     if (!apiKey) {
       throw new InternalServerErrorException('Email sending is not configured (RESEND_API_KEY missing)');
@@ -229,13 +237,14 @@ export class MailService {
     this.client ??= new Resend(apiKey);
     const from = this.configService.get<string>('MAIL_FROM') ?? 'onboarding@resend.dev';
     const platformName = await this.platformName();
-    const payload = emails.map(({ to, locale, email }) => ({ from, to, ...renderCampaignEmail(locale, email, platformName) }));
+    const payload = sendable.map(({ email: { to, locale, email } }) => ({ from, to, ...renderCampaignEmail(locale, email, platformName) }));
     const { data, error } = await this.client.batch.send(payload, { batchValidation: 'permissive', ...(idempotencyKey && { idempotencyKey }) });
     if (error) {
       this.logger.error(`Failed to send a campaign batch of ${emails.length}: ${error.message}`);
       throw new InternalServerErrorException(error.message);
     }
-    for (const row of data?.errors ?? []) failed.set(row.index, row.message);
+    // Resend's indexes are into what was sent.
+    for (const row of data?.errors ?? []) failed.set(sendable[row.index]?.index ?? row.index, row.message);
     return failed;
   }
 }

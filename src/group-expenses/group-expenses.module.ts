@@ -1,4 +1,6 @@
 import { Module } from '@nestjs/common';
+import { GroupAccessModule } from '../group-access/group-access.module.js';
+import { GroupEditorRules } from './group-editor-rules.js';
 import { GroupExpensesController } from './group-expenses.controller.js';
 import { GroupExpensesService } from './group-expenses.service.js';
 import { GroupSummaryController } from './group-summary.controller.js';
@@ -12,8 +14,8 @@ import { UploadsModule } from '../uploads/uploads.module.js';
 // for the member-photo-upload route. GroupSummaryController: the group
 // list's month figures, across every group the customer belongs to.
 @Module({
-  imports: [UploadsModule],
+  imports: [UploadsModule, GroupAccessModule],
   controllers: [GroupSummaryController, GroupExpensesController],
-  providers: [GroupExpensesService, GroupSummaryService],
+  providers: [GroupExpensesService, GroupSummaryService, GroupEditorRules],
 })
 export class GroupExpensesModule {}

@@ -1,3 +1,4 @@
+import { GroupMemberRoute } from '../business-access/decorators/group-member-route.decorator.js';
 import { Controller, Get, NotFoundException, Param, UseGuards } from '@nestjs/common';
 import { LegalDocType } from '@prisma/client';
 import { CurrentUser } from '../user-auth/decorators/current-user.decorator.js';
@@ -42,6 +43,7 @@ export class PlatformController {
   }
 
   @UseGuards(UserAuthGuard)
+  @GroupMemberRoute()
   @Get()
   forCustomer(@CurrentUser() user: RequestUser) {
     return this.platformService.forCustomer(user.id);

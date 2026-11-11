@@ -47,6 +47,8 @@ export interface CashHandover {
   toMemberId: string;
   toName: string;
   note: string | null;
+  // Who recorded it: an Editor changes only their own.
+  createdByUserId?: string | null;
 }
 
 export interface CashbookRow {
@@ -64,6 +66,8 @@ export interface CashbookRow {
   balance: number; // the running cash after it
   // A handover's other holder: who got the cash (OUT) or gave it (IN).
   otherId?: string;
+  // A handover's recorder: an Editor changes only their own.
+  createdByUserId?: string | null;
 }
 
 export interface Cashbook {
@@ -125,7 +129,16 @@ export function cashMovements(
   }
   for (const row of handovers) {
     if (!(row.amount > 0)) continue;
-    const base = { id: row.id, source: 'HANDOVER' as const, date: row.date, createdAt: row.createdAt, returned: false, note: row.note, amount: row.amount };
+    const base = {
+      id: row.id,
+      source: 'HANDOVER' as const,
+      date: row.date,
+      createdAt: row.createdAt,
+      returned: false,
+      note: row.note,
+      amount: row.amount,
+      createdByUserId: row.createdByUserId ?? null,
+    };
     moves.push({ ...base, kind: 'OUT', accountantId: row.fromMemberId, party: row.toName, otherId: row.toMemberId });
     moves.push({ ...base, kind: 'IN', accountantId: row.toMemberId, party: row.fromName, otherId: row.fromMemberId });
   }

@@ -3,9 +3,9 @@ import { Throttle } from '@nestjs/throttler';
 import { LOGIN_THROTTLE, TWO_STEP_THROTTLE } from '../common/login-throttle.js';
 import type { Request } from 'express';
 import type { ClientInfo } from '../auth/auth-sessions.service.js';
-import { LoginDto } from '../user-auth/dto/login.dto.js';
 import { SessionExchangeDto } from '../user-auth/dto/session-exchange.dto.js';
 import { LoginRateLimitFilter } from '../user-auth/filters/login-rate-limit.filter.js';
+import { SignInDto } from './sign-in.dto.js';
 import { SignInService } from './sign-in.service.js';
 import { TwoStepSignInDto } from './two-step-sign-in.dto.js';
 
@@ -22,7 +22,7 @@ export class SignInController {
   @Throttle(LOGIN_THROTTLE)
   @UseFilters(LoginRateLimitFilter)
   @Post('sign-in')
-  withPassword(@Body() dto: LoginDto, @Req() req: Request) {
+  withPassword(@Body() dto: SignInDto, @Req() req: Request) {
     return this.signIn.withPassword(dto, clientOf(req), req.headers['x-trusted-device']);
   }
 

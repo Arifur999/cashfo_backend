@@ -1,13 +1,16 @@
 import { ForbiddenException, UnauthorizedException, type ExecutionContext } from '@nestjs/common';
 import { UserAuthGuard } from './user-auth.guard.js';
 
-const setup = ({ impersonatedBy = null as string | null, method = 'GET', status = 'ACTIVE', role = 'USER' } = {}) => {
+const setup = ({ impersonatedBy = null as string | null, method = 'GET', status = 'ACTIVE', role = 'USER', portalOnly = false, groupRoute = false } = {}) => {
   const authenticator = {
-    authenticate: vi.fn().mockResolvedValue({ user: { id: 'user-1', email: 'user@example.com', role, status }, sessionId: 'session-1', impersonatedBy }),
+    authenticate: vi
+      .fn()
+      .mockResolvedValue({ user: { id: 'user-1', email: 'user@example.com', role, status, portalOnly }, sessionId: 'session-1', impersonatedBy }),
   };
   const request: Record<string, unknown> = { method };
-  const context = { switchToHttp: () => ({ getRequest: () => request }) } as unknown as ExecutionContext;
-  return { guard: new UserAuthGuard(authenticator as never), request, context };
+  const context = { switchToHttp: () => ({ getRequest: () => request }), getHandler: () => null, getClass: () => null } as unknown as ExecutionContext;
+  const reflector = { getAllAndOverride: vi.fn().mockReturnValue(groupRoute) };
+  return { guard: new UserAuthGuard(authenticator as never, reflector as never), request, context };
 };
 
 describe('UserAuthGuard', () => {
@@ -32,5 +35,17 @@ describe('UserAuthGuard', () => {
     await expect(setup({ role: 'SUPER_ADMIN' }).guard.canActivate(setup({ role: 'SUPER_ADMIN' }).context)).rejects.toThrow(UnauthorizedException);
     const suspended = setup({ status: 'SUSPENDED' });
     await expect(suspended.guard.canActivate(suspended.context)).rejects.toThrow(UnauthorizedException);
+  });
+
+  it('keeps a member-portal login to the routes open to group members', async () => {
+    const outside = setup({ portalOnly: true });
+    await expect(outside.guard.canActivate(outside.context)).rejects.toThrow(ForbiddenException);
+    const inside = setup({ portalOnly: true, groupRoute: true, method: 'POST' });
+    await expect(inside.guard.canActivate(inside.context)).resolves.toBe(true);
+  });
+
+  it('lets an ordinary customer use every route', async () => {
+    const { guard, context } = setup({ method: 'POST' });
+    await expect(guard.canActivate(context)).resolves.toBe(true);
   });
 });

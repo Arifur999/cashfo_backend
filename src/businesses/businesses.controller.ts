@@ -7,6 +7,7 @@ import { UpdateBusinessDto } from './dto/update-business.dto.js';
 import { VerifyBusinessPinDto } from './dto/verify-business-pin.dto.js';
 import { AllowLockedWorkspace } from '../business-access/decorators/allow-locked-workspace.decorator.js';
 import { CurrentBusinessMember } from '../business-access/decorators/current-business-member.decorator.js';
+import { GroupMemberRoute } from '../business-access/decorators/group-member-route.decorator.js';
 import { RequireBusinessMembership } from '../business-access/decorators/require-business-membership.decorator.js';
 import type { RequestBusinessMember } from '../business-access/interfaces/request-business-member.interface.js';
 import { CurrentUser } from '../user-auth/decorators/current-user.decorator.js';
@@ -19,6 +20,7 @@ export class BusinessesController {
 
   // No :id in play yet -- just needs to know who's asking.
   @UseGuards(UserAuthGuard)
+  @GroupMemberRoute()
   @Get()
   list(@CurrentUser() user: RequestUser) {
     return this.businessesService.list(user.id);
@@ -43,6 +45,7 @@ export class BusinessesController {
   // BusinessesModule's top comment for why. There is no PATCH /:id/switch.
 
   @RequireBusinessMembership()
+  @GroupMemberRoute()
   @Get(':id')
   getOne(@Param('id') id: string) {
     return this.businessesService.getOne(id);
@@ -50,12 +53,7 @@ export class BusinessesController {
 
   @RequireBusinessMembership()
   @Patch(':id')
-  update(
-    @Param('id') id: string,
-    @CurrentBusinessMember() member: RequestBusinessMember,
-    @CurrentUser() user: RequestUser,
-    @Body() dto: UpdateBusinessDto,
-  ) {
+  update(@Param('id') id: string, @CurrentBusinessMember() member: RequestBusinessMember, @CurrentUser() user: RequestUser, @Body() dto: UpdateBusinessDto) {
     return this.businessesService.update(id, member, user, dto);
   }
 
@@ -66,6 +64,7 @@ export class BusinessesController {
   @Throttle({ default: { limit: 10, ttl: 15 * 60 * 1000 } })
   @RequireBusinessMembership()
   @AllowLockedWorkspace()
+  @GroupMemberRoute()
   @Post(':id/verify-pin')
   verifyPin(@Param('id') id: string, @CurrentUser() user: RequestUser, @Body() dto: VerifyBusinessPinDto) {
     return this.businessesService.verifyPin(id, user, dto.pin);
