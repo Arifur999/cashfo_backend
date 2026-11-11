@@ -3,7 +3,7 @@ import { Account, AccountType, Contact, ContactCategory, Prisma } from '@prisma/
 import { MONEY_ACCOUNT_SUBTYPES } from '../accounts/accounts.service.js';
 import { dhakaDateKey, dhakaDateOnly, dhakaYear } from '../common/dhaka.js';
 import { PrismaService } from '../prisma/prisma.service.js';
-import { TransactionsService } from '../transactions/transactions.service.js';
+import { CORRECTED_REASON, TransactionsService } from '../transactions/transactions.service.js';
 import { contactStatement, STATEMENT_TRANSACTION_TYPES, type ContactStatement } from './contact-statement.js';
 import { ContactStatementQueryDto } from './dto/contact-statement-query.dto.js';
 import { CreatePayableDto } from './dto/create-payable.dto.js';
@@ -377,7 +377,7 @@ export class ReceivablesPayablesService {
     }
     const keys = [...new Set([original.contactId, contactId].filter((id): id is string => !!id))].map((id) => `contact:${id}`);
     return this.transactionsService.withLocks(keys, async (tx) => {
-      await this.transactionsService.voidTransaction(businessId, transactionId, 'Corrected', userId, tx);
+      await this.transactionsService.voidTransaction(businessId, transactionId, CORRECTED_REASON, userId, tx);
       const corrected = await post(tx);
       // So History can say what it corrected (and the original, what replaced it).
       await tx.transaction.update({ where: { id: corrected.id }, data: { correctedFromId: transactionId } });

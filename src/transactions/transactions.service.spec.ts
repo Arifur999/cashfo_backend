@@ -1,6 +1,6 @@
 import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import type { ListTransactionsQueryDto } from './dto/list-transactions-query.dto.js';
-import { DELETED_REASON, TransactionsService } from './transactions.service.js';
+import { CORRECTED_REASON, DELETED_REASON, EDIT_UNDONE_REASON, TransactionsService } from './transactions.service.js';
 
 const original = {
   id: 'tx-1',
@@ -231,5 +231,66 @@ describe('TransactionsService.restoreTransaction', () => {
     const { service, tx } = restoreSetup({ claimed: 0 });
     await expect(service.restoreTransaction('biz-1', 'tx-1', 'user-1')).rejects.toThrow(BadRequestException);
     expect(tx.transaction.delete).not.toHaveBeenCalled();
+  });
+});
+
+describe('TransactionsService.undoCorrection', () => {
+  const NOW = new Date('2026-11-03T10:00:00Z');
+  const corrected = {
+    businessId: 'biz-1',
+    status: 'POSTED',
+    reversalOfId: null as string | null,
+    correctedFromId: 'tx-1' as string | null,
+    createdBy: 'user-1',
+    createdAt: new Date('2026-11-03T09:57:00Z'),
+  };
+
+  const undoSetup = (transaction: typeof corrected | null = corrected) => {
+    const tx = { transaction: { findUnique: vi.fn().mockResolvedValue(transaction) } };
+    const prisma = { $transaction: vi.fn((work: (client: typeof tx) => unknown) => work(tx)) };
+    const service = new TransactionsService(prisma as never, { recalculateBalance: vi.fn() } as never);
+    // The void and the restore are tested above; here only what undo asks of them.
+    const inner = service as unknown as { voidIn: () => Promise<unknown>; restoreIn: () => Promise<unknown> };
+    const voidIn = vi.spyOn(inner, 'voidIn').mockResolvedValue(undefined);
+    const restoreIn = vi.spyOn(inner, 'restoreIn').mockResolvedValue({ id: 'tx-1', status: 'POSTED' });
+    return { service, tx, voidIn, restoreIn };
+  };
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('voids the edited entry and stands the original again, in one transaction', async () => {
+    const { service, tx, voidIn, restoreIn } = undoSetup();
+    await expect(service.undoCorrection('biz-1', 'tx-2', 'user-1')).resolves.toEqual({ id: 'tx-1', status: 'POSTED' });
+    expect(voidIn).toHaveBeenCalledWith(tx, 'biz-1', 'tx-2', EDIT_UNDONE_REASON, 'user-1');
+    expect(restoreIn).toHaveBeenCalledWith(tx, 'biz-1', 'tx-1', 'user-1', NOW, CORRECTED_REASON);
+    expect(voidIn.mock.invocationCallOrder[0]).toBeLessThan(restoreIn.mock.invocationCallOrder[0]);
+  });
+
+  it.each([
+    ['an entry no edit made', { ...corrected, correctedFromId: null }],
+    ['an edit already replaced or deleted', { ...corrected, status: 'VOIDED' }],
+    ['a reversal', { ...corrected, reversalOfId: 'tx-0' }],
+    ['an edit older than the window', { ...corrected, createdAt: new Date('2026-11-03T09:49:00Z') }],
+  ])('refuses %s', async (_label, transaction) => {
+    const { service, voidIn } = undoSetup(transaction);
+    await expect(service.undoCorrection('biz-1', 'tx-2', 'user-1')).rejects.toThrow(BadRequestException);
+    expect(voidIn).not.toHaveBeenCalled();
+  });
+
+  it('lets only the person who made the edit undo it', async () => {
+    const { service, voidIn } = undoSetup({ ...corrected, createdBy: 'user-2' });
+    await expect(service.undoCorrection('biz-1', 'tx-2', 'user-1')).rejects.toThrow(ForbiddenException);
+    expect(voidIn).not.toHaveBeenCalled();
+  });
+
+  it("is a 404 for another workspace's entry", async () => {
+    const { service } = undoSetup({ ...corrected, businessId: 'biz-2' });
+    await expect(service.undoCorrection('biz-1', 'tx-2', 'user-1')).rejects.toThrow(NotFoundException);
   });
 });

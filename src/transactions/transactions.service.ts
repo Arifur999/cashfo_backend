@@ -16,6 +16,10 @@ import { BUILT_IN_CHARGE_CATEGORIES, CHARGE_CATEGORY } from '../budgets/app-cate
 export const DELETED_REASON = 'Deleted from Transactions';
 // How long after it a delete can be undone.
 export const RESTORE_WINDOW_MINUTES = 10;
+// An entry replaced by an edit (decision D2) is voided with this reason.
+export const CORRECTED_REASON = 'Corrected';
+// The corrected entry, when its edit is undone (undoCorrection).
+export const EDIT_UNDONE_REASON = 'Edit undone';
 
 // Still counts: neither a voided original nor the reversal that undid it.
 const STANDING_TRANSACTION = { status: 'POSTED', reversalOfId: null } satisfies Prisma.TransactionWhereInput;
@@ -28,7 +32,8 @@ const ENTRY_ACCOUNT_SELECT = { id: true, name: true, nameBn: true, accountType: 
 // date, then by when it was made.
 type Moment = { transactionDate: Date; createdAt: Date };
 const atOrBefore = (a: Moment, b: Moment) =>
-  a.transactionDate.getTime() < b.transactionDate.getTime() || (a.transactionDate.getTime() === b.transactionDate.getTime() && a.createdAt.getTime() <= b.createdAt.getTime());
+  a.transactionDate.getTime() < b.transactionDate.getTime() ||
+  (a.transactionDate.getTime() === b.transactionDate.getTime() && a.createdAt.getTime() <= b.createdAt.getTime());
 
 // The category a loan entry's charge is filed under (categories are names),
 // and the charge categories every workspace has without making them (the
@@ -259,12 +264,42 @@ export class TransactionsService {
     return this.prisma.$transaction((tx) => this.restoreIn(tx, businessId, transactionId, userId, now));
   }
 
-  private async restoreIn(tx: Prisma.TransactionClient, businessId: string, transactionId: string, userId: string, now: Date) {
+  // Undo of an edit made minutes ago (the Transactions page's toast): the
+  // entry the edit posted is voided, and the one it replaced stands again as
+  // it was, its reversal gone. Only by the person who made the edit, within
+  // RESTORE_WINDOW_MINUTES, and only while the edit is the entry's latest.
+  async undoCorrection(businessId: string, correctedId: string, userId: string) {
+    const now = new Date();
+    return this.prisma.$transaction(async (tx) => {
+      const corrected = await tx.transaction.findUnique({
+        where: { id: correctedId },
+        select: { businessId: true, status: true, reversalOfId: true, correctedFromId: true, createdBy: true, createdAt: true },
+      });
+      if (!corrected || corrected.businessId !== businessId) {
+        throw new NotFoundException('Transaction not found');
+      }
+      if (!corrected.correctedFromId || corrected.reversalOfId || corrected.status !== 'POSTED') {
+        throw new BadRequestException('Only an edit that still stands can be undone');
+      }
+      if (corrected.createdBy !== userId) {
+        throw new ForbiddenException('Only the person who made the edit can undo it');
+      }
+      if (now.getTime() - corrected.createdAt.getTime() > RESTORE_WINDOW_MINUTES * 60_000) {
+        throw new BadRequestException('An edit can be undone for 10 minutes only');
+      }
+      await this.voidIn(tx, businessId, correctedId, EDIT_UNDONE_REASON, userId);
+      return this.restoreIn(tx, businessId, corrected.correctedFromId, userId, now, CORRECTED_REASON);
+    });
+  }
+
+  // Stands a voided transaction again: a delete's (DELETED_REASON) or, for
+  // undoCorrection, an edit's original (CORRECTED_REASON).
+  private async restoreIn(tx: Prisma.TransactionClient, businessId: string, transactionId: string, userId: string, now: Date, reason = DELETED_REASON) {
     const original = await tx.transaction.findUnique({ where: { id: transactionId }, include: { entries: true } });
     if (!original || original.businessId !== businessId) {
       throw new NotFoundException('Transaction not found');
     }
-    if (original.status !== 'VOIDED' || original.reversalOfId || original.voidedReason !== DELETED_REASON) {
+    if (original.status !== 'VOIDED' || original.reversalOfId || original.voidedReason !== reason) {
       throw new BadRequestException('Only a transaction deleted from Transactions can be brought back');
     }
     if (!original.voidedAt || now.getTime() - original.voidedAt.getTime() > RESTORE_WINDOW_MINUTES * 60_000) {
@@ -288,7 +323,7 @@ export class TransactionsService {
 
     // Claimed with a condition: of two undos racing, only one gets here.
     const claimed = await tx.transaction.updateMany({
-      where: { id: original.id, status: 'VOIDED', voidedReason: DELETED_REASON },
+      where: { id: original.id, status: 'VOIDED', voidedReason: reason },
       data: { status: 'POSTED', voidedAt: null, voidedReason: null },
     });
     if (claimed.count === 0) {
@@ -302,11 +337,11 @@ export class TransactionsService {
     }
 
     const charges = await tx.transaction.findMany({
-      where: { businessId, chargeForId: original.id, status: 'VOIDED', reversalOfId: null, voidedReason: DELETED_REASON },
+      where: { businessId, chargeForId: original.id, status: 'VOIDED', reversalOfId: null, voidedReason: reason },
       select: { id: true },
     });
     for (const charge of charges) {
-      await this.restoreIn(tx, businessId, charge.id, userId, now);
+      await this.restoreIn(tx, businessId, charge.id, userId, now, reason);
     }
 
     return { id: original.id, status: 'POSTED' as const };
@@ -502,7 +537,9 @@ export class TransactionsService {
       this.withVoidable(data),
       this.chargesFor(ids),
       filters.withLoanBalance ? this.loanBalancesAfter(businessId, data) : Promise.resolve(new Map<string, string>()),
-      filters.withBalanceAfter ? this.walletBalancesAfter(data, filters.accountId, 'auto', undefined, filters.standingOnly) : Promise.resolve(new Map<string, string>()),
+      filters.withBalanceAfter
+        ? this.walletBalancesAfter(data, filters.accountId, 'auto', undefined, filters.standingOnly)
+        : Promise.resolve(new Map<string, string>()),
     ]);
     // A transfer's two wallets just after it, the sending one after its
     // charge too (the charge is posted right after the transfer).
@@ -563,7 +600,10 @@ export class TransactionsService {
       const later = at?.get(row.id);
       return later && !atOrBefore(later, row) ? later : row;
     };
-    const newest = rows.reduce((latest, row) => (momentOf(row).transactionDate > latest ? momentOf(row).transactionDate : latest), momentOf(rows[0]).transactionDate);
+    const newest = rows.reduce(
+      (latest, row) => (momentOf(row).transactionDate > latest ? momentOf(row).transactionDate : latest),
+      momentOf(rows[0]).transactionDate,
+    );
     const [accounts, entries] = await Promise.all([
       this.prisma.account.findMany({ where: { id: { in: accountIds } }, select: { id: true, openingBalance: true } }),
       this.prisma.transactionEntry.findMany({
@@ -601,16 +641,26 @@ export class TransactionsService {
     if (ids.length === 0) return new Map();
     const charges = await this.prisma.transaction.findMany({
       where: { chargeForId: { in: ids }, reversalOfId: null },
-      select: { chargeForId: true, transactionDate: true, createdAt: true, entries: { where: { entryType: EntryType.DEBIT }, select: { amount: true, categoryId: true } } },
+      select: {
+        chargeForId: true,
+        transactionDate: true,
+        createdAt: true,
+        entries: { where: { entryType: EntryType.DEBIT }, select: { amount: true, categoryId: true } },
+      },
     });
     const sums = new Map<string, { sum: Prisma.Decimal; category: string | null; moment: Moment | null }>();
     for (const charge of charges) {
       if (!charge.chargeForId) continue;
       const amount = charge.entries.reduce((sum, entry) => sum.plus(entry.amount), new Prisma.Decimal(0));
       const was = sums.get(charge.chargeForId);
-      const moment: Moment | null = charge.transactionDate && charge.createdAt ? { transactionDate: charge.transactionDate, createdAt: charge.createdAt } : null;
+      const moment: Moment | null =
+        charge.transactionDate && charge.createdAt ? { transactionDate: charge.transactionDate, createdAt: charge.createdAt } : null;
       const latest = was?.moment && moment ? (atOrBefore(moment, was.moment) ? was.moment : moment) : (moment ?? was?.moment ?? null);
-      sums.set(charge.chargeForId, { sum: (was?.sum ?? new Prisma.Decimal(0)).plus(amount), category: was?.category ?? charge.entries[0]?.categoryId ?? null, moment: latest });
+      sums.set(charge.chargeForId, {
+        sum: (was?.sum ?? new Prisma.Decimal(0)).plus(amount),
+        category: was?.category ?? charge.entries[0]?.categoryId ?? null,
+        moment: latest,
+      });
     }
     return new Map([...sums].map(([id, { sum, category, moment }]) => [id, { amount: sum.toFixed(2), category, moment }]));
   }
@@ -731,7 +781,8 @@ export class TransactionsService {
     // A loan entry's charge shows on the entry's row, not as a row of its own.
     if (filters.excludeCharges) where.chargeForId = null;
     if (filters.standingOnly) Object.assign(where, STANDING_TRANSACTION);
-    if (filters.uncategorised) where.AND = [...(Array.isArray(where.AND) ? where.AND : where.AND ? [where.AND] : []), { entries: { none: { categoryId: { not: null } } } }];
+    if (filters.uncategorised)
+      where.AND = [...(Array.isArray(where.AND) ? where.AND : where.AND ? [where.AND] : []), { entries: { none: { categoryId: { not: null } } } }];
     if (filters.search) {
       // Quick entries keep what the customer typed on the entry (its note
       // and category), not on the transaction's description.
