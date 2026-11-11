@@ -110,7 +110,7 @@ export class PeriodSummaryService {
       toPaisa(saved._sum.amount ?? 0),
     );
     const locale = localeOf(person.preferredLanguage);
-    const money = (amount: string | number) => `${locale === 'bn' ? '৳' : 'TK'} ${digits(Number(amount).toLocaleString('en-IN', { maximumFractionDigits: 2 }), locale)}`;
+    const money = (amount: string | number) => `${locale === 'bn' ? '৳' : 'Tk'} ${digits(Number(amount).toLocaleString('en-IN', { maximumFractionDigits: 2 }), locale)}`;
     const upcoming = [
       ...dues.map((due) =>
         locale === 'bn'

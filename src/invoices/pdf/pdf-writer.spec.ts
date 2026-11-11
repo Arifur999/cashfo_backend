@@ -70,8 +70,8 @@ describe('PDF text', () => {
     expect(pdfString('Café – 5')).toBe('(Caf\\351 \\226 5)');
   });
 
-  it('prints the taka sign as TK and anything else it cannot show as ?', () => {
-    expect(pdfString('TK 299')).toBe('(TK 299)');
+  it('prints the taka sign as Tk and anything else it cannot show as ?', () => {
+    expect(pdfString('Tk 299')).toBe('(Tk 299)');
     expect(pdfString('নুসরাত')).toMatch(/^\(\?+\)$/);
     expect(toWinAnsi('a😀b')).toEqual([0x61, 0x3f, 0x62]);
     expect(toWinAnsi('a\nb\tc')).toEqual([0x61, 0x20, 0x62, 0x20, 0x63]);
@@ -79,7 +79,7 @@ describe('PDF text', () => {
 
   it('tells text the fonts can show from text they cannot', () => {
     expect(isWinAnsiText('Nusrat Jahan')).toBe(true);
-    expect(isWinAnsiText('José TK')).toBe(true);
+    expect(isWinAnsiText('José Tk')).toBe(true);
     expect(isWinAnsiText('নুসরাত জাহান')).toBe(false);
   });
 

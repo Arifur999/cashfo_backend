@@ -61,9 +61,9 @@ export interface InvoiceView {
   footer: string[];
 }
 
-// "TK 12,50,000.00": lakh/crore grouping like the app, always with the
+// "Tk 12,50,000.00": lakh/crore grouping like the app, always with the
 // paisa as an invoice shows them. The taka sign itself isn't in the PDF's
-// standard fonts, hence "TK", as the app writes it in English (another
+// standard fonts, hence "Tk", as the app writes it in English (another
 // currency prints its code).
 export function invoiceMoney(paisa: number, currency = 'BDT'): string {
   const negative = paisa < 0;
@@ -73,7 +73,7 @@ export function invoiceMoney(paisa: number, currency = 'BDT'): string {
   const last3 = digits.slice(-3);
   const rest = digits.slice(0, -3).replace(/\B(?=(\d{2})+(?!\d))/g, ',');
   const grouped = rest ? `${rest},${last3}` : last3;
-  return `${negative ? '- ' : ''}${currency === 'BDT' ? 'TK' : currency} ${grouped}.${fraction}`;
+  return `${negative ? '- ' : ''}${currency === 'BDT' ? 'Tk' : currency} ${grouped}.${fraction}`;
 }
 
 // The issuedTo snapshot split back into its name and email. A name the

@@ -70,6 +70,6 @@ describe('the alert emails', () => {
   });
 
   it('word an overspent month', () => {
-    expect(renderMonthlySummaryEmail('en', { ...SUMMARY, netNegative: true }, 'Smartly').text).toContain('Spent more than earned: TK 5,499.50');
+    expect(renderMonthlySummaryEmail('en', { ...SUMMARY, netNegative: true }, 'Smartly').text).toContain('Spent more than earned: Tk 5,499.50');
   });
 });

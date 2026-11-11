@@ -44,7 +44,7 @@ export function renderMonthlySummaryEmail(
         : `আপনার ${kind === 'day' ? 'দিন' : 'সপ্তাহ'}: ${email.month}`;
   const greeting = en ? `Hi ${email.name},` : `প্রিয় ${email.name},`;
   const body = en ? `Here is how ${email.month} went in ${email.workspaceName}.` : `${email.workspaceName}-এ ${email.month}${kind === 'month' ? ' মাস' : ''} যেমন গেল:`;
-  const taka = (amount: string) => `${en ? 'TK' : '৳'} ${amount}`;
+  const taka = (amount: string) => `${en ? 'Tk' : '৳'} ${amount}`;
   const rows: [string, string][] = en
     ? [
         ['Income', taka(email.income)],

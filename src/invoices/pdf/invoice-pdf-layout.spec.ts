@@ -40,16 +40,16 @@ describe('invoiceView', () => {
       stamp: 'PAID',
       issueDate: '2 Oct 2026',
       billedTo: { name: 'Nusrat Jahan', email: 'nusrat.jahan@example.com' },
-      subtotal: 'TK 899.00',
-      discount: 'TK 100.00',
-      total: 'TK 799.00',
+      subtotal: 'Tk 899.00',
+      discount: 'Tk 100.00',
+      total: 'Tk 799.00',
       totalLabel: 'Total paid',
       payment: { displayId: 'PAY-3F2A1C9B', method: 'bKash', reference: 'BKA8X2Q71D', payerAccount: '01819-552310', paidOn: '2 Oct 2026' },
       refund: null,
     });
     expect(view.lines).toEqual([
-      { description: 'Business subscription', period: '2 Oct 2026 - 2 Nov 2026', amount: 'TK 899.00' },
-      { description: 'Coupon PRO100', period: '', amount: '- TK 100.00' },
+      { description: 'Business subscription', period: '2 Oct 2026 - 2 Nov 2026', amount: 'Tk 899.00' },
+      { description: 'Coupon PRO100', period: '', amount: '- Tk 100.00' },
     ]);
     expect(view.footer[0]).toBe('Thank you for using Money Tracker. Questions about this invoice? Reply from the Help page in the app.');
   });
@@ -57,8 +57,8 @@ describe('invoiceView', () => {
   it('stamps a full refund REFUNDED and a partial one PARTLY REFUNDED, with the refund line', () => {
     const refunded = (amount: string) =>
       invoiceView(input({ payment: { status: 'REFUNDED', refund: { amount, status: 'COMPLETED', createdAt: new Date('2026-10-05T06:00:00.000Z') } } }));
-    expect(refunded('799.00')).toMatchObject({ stamp: 'REFUNDED', refund: { amount: 'TK 799.00', date: '5 Oct 2026' } });
-    expect(refunded('50.00')).toMatchObject({ stamp: 'PARTLY REFUNDED', refund: { amount: 'TK 50.00' } });
+    expect(refunded('799.00')).toMatchObject({ stamp: 'REFUNDED', refund: { amount: 'Tk 799.00', date: '5 Oct 2026' } });
+    expect(refunded('50.00')).toMatchObject({ stamp: 'PARTLY REFUNDED', refund: { amount: 'Tk 50.00' } });
   });
 
   it('leaves out a refund that has not gone through, and marks an unpaid one', () => {
@@ -87,16 +87,16 @@ describe('invoiceView', () => {
     const view = invoiceView(
       input({ invoice: { lineItems: [{ description: 'Monthly Pro subscription', amount: 299 }], totalAmount: '299.00' }, payment: { periodStart: null } }),
     );
-    expect(view.lines).toEqual([{ description: 'Monthly Pro subscription', period: '', amount: 'TK 299.00' }]);
-    expect(view.discount).toBe('TK 0.00');
+    expect(view.lines).toEqual([{ description: 'Monthly Pro subscription', period: '', amount: 'Tk 299.00' }]);
+    expect(view.discount).toBe('Tk 0.00');
   });
 });
 
 describe('invoice helpers', () => {
   it('prints money with lakh grouping and the paisa', () => {
-    expect(invoiceMoney(125000000)).toBe('TK 12,50,000.00');
-    expect(invoiceMoney(269910)).toBe('TK 2,699.10');
-    expect(invoiceMoney(-10000)).toBe('- TK 100.00');
+    expect(invoiceMoney(125000000)).toBe('Tk 12,50,000.00');
+    expect(invoiceMoney(269910)).toBe('Tk 2,699.10');
+    expect(invoiceMoney(-10000)).toBe('- Tk 100.00');
     expect(invoiceMoney(500, 'USD')).toBe('USD 5.00');
   });
 
@@ -125,7 +125,7 @@ describe('renderInvoicePdf', () => {
     const text = pdf.toString('latin1');
     expect(text.startsWith('%PDF-1.4')).toBe(true);
     expect(text.endsWith('%%EOF\n')).toBe(true);
-    for (const words of ['(INVOICE)', '(INV-2026-000412)', '(PAID)', '(Nusrat Jahan)', '(TK 799.00)', '(Total paid)', '(BKA8X2Q71D)']) {
+    for (const words of ['(INVOICE)', '(INV-2026-000412)', '(PAID)', '(Nusrat Jahan)', '(Tk 799.00)', '(Total paid)', '(BKA8X2Q71D)']) {
       expect(text).toContain(words);
     }
     expect(text).toContain('/Title (Invoice INV-2026-000412)');

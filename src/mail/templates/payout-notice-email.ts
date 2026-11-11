@@ -35,7 +35,7 @@ export function renderPayoutNoticeEmail(locale: 'en' | 'bn', notice: PayoutNotic
   const greeting = en ? `Hi ${notice.name},` : `প্রিয় ${notice.name},`;
   const lines: string[] = [];
   if (paid) {
-    lines.push(en ? `We sent TK ${notice.amount} to ${notice.destination}.` : `আমরা ${notice.destination}-এ ৳ ${notice.amount} পাঠিয়েছি।`);
+    lines.push(en ? `We sent Tk ${notice.amount} to ${notice.destination}.` : `আমরা ${notice.destination}-এ ৳ ${notice.amount} পাঠিয়েছি।`);
     if (notice.trxId) lines.push(en ? `Transaction ID: ${notice.trxId}` : `ট্রানজেকশন আইডি: ${notice.trxId}`);
     if (notice.incomeWallet) {
       lines.push(
@@ -47,7 +47,7 @@ export function renderPayoutNoticeEmail(locale: 'en' | 'bn', notice: PayoutNotic
   } else {
     lines.push(
       en
-        ? `We couldn't pay your request for TK ${notice.amount} to ${notice.destination}.`
+        ? `We couldn't pay your request for Tk ${notice.amount} to ${notice.destination}.`
         : `${notice.destination}-এ ৳ ${notice.amount} পাঠানোর অনুরোধটি আমরা পরিশোধ করতে পারিনি।`,
     );
     if (notice.reason) lines.push(en ? `Reason: ${notice.reason}` : `কারণ: ${notice.reason}`);

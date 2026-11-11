@@ -119,7 +119,7 @@ describe('WithdrawalsService.start', () => {
       expect.objectContaining({ id: 'u-1' }),
       'PAYOUT_REQUEST',
       { commissionIds: ['c-1', 'c-2'], methodId: 'm-1', income: null },
-      { en: 'withdraw TK 1,080 to bKash 01711-•••915', bn: 'বিকাশ 01711-•••915-এ ৳ ১,০৮০ তোলা' },
+      { en: 'withdraw Tk 1,080 to bKash 01711-•••915', bn: 'বিকাশ 01711-•••915-এ ৳ ১,০৮০ তোলা' },
     );
   });
 
@@ -138,7 +138,7 @@ describe('WithdrawalsService.start', () => {
     ).toBe('FEE_EXCEEDS_AMOUNT');
   });
 
-  it('allows TK 300 by default', async () => {
+  it('allows Tk 300 by default', async () => {
     const small = [line('s-1', '171.00'), line('s-2', '129.00')];
     await expect(setup({ lines: small }).service.start('u-1', { commissionIds: ['s-1', 's-2'], methodId: 'm-1' })).resolves.toBeDefined();
   });
