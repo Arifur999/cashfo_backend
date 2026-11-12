@@ -56,6 +56,8 @@ export async function ensureCategory(
   });
 }
 
+type CategoryUse = Map<string, { count: number; total: Prisma.Decimal }>;
+
 @Injectable()
 export class BudgetsService {
   constructor(private readonly prisma: PrismaService) {}
@@ -296,6 +298,7 @@ export class BudgetsService {
       this.categoryUse(businessId, 'EXPENSE'),
     ]);
     const used = { INCOME: incomeCounts, EXPENSE: expenseCounts };
+    const totalOf = (use: CategoryUse, name: string) => (use.get(name)?.total ?? new Prisma.Decimal(0)).toFixed(2);
     const rowOf = (category: (typeof categories)[number]) => ({
       id: category.id,
       type: category.type,
@@ -303,18 +306,22 @@ export class BudgetsService {
       icon: category.icon,
       color: category.color,
       monthlyLimit: category.monthlyLimit ? new Prisma.Decimal(category.monthlyLimit).toFixed(2) : null,
-      transactionCount: used[category.type].get(category.name) ?? 0,
+      transactionCount: used[category.type].get(category.name)?.count ?? 0,
+      // Its money of all time (posted, not reversed), for the board's amount
+      // and share of its side.
+      total: totalOf(used[category.type], category.name),
       system: isZakat(category) ? ('zakat' as const) : null,
     });
     const own = new Set(categories.filter((category) => category.type === 'EXPENSE').map((category) => category.name));
     return {
       income: categories.filter((category) => category.type === 'INCOME').map(rowOf),
       expense: categories.filter((category) => category.type === 'EXPENSE').map(rowOf),
-      automatic: CHARGE_CATEGORIES.filter((name) => !own.has(name) && (expenseCounts.get(name) ?? 0) > 0).map((name) => ({
+      automatic: CHARGE_CATEGORIES.filter((name) => !own.has(name) && (expenseCounts.get(name)?.count ?? 0) > 0).map((name) => ({
         type: 'EXPENSE' as const,
         name,
         kind: 'charges' as const,
-        transactionCount: expenseCounts.get(name) ?? 0,
+        transactionCount: expenseCounts.get(name)?.count ?? 0,
+        total: totalOf(expenseCounts, name),
       })),
     };
   }
@@ -329,13 +336,19 @@ export class BudgetsService {
   }
 
   // How many live transactions of a type name each category.
-  private async categoryUse(businessId: string, transactionType: TransactionType): Promise<Map<string, number>> {
+  // How many entries of one side each category name has, and their money.
+  private async categoryUse(businessId: string, transactionType: TransactionType): Promise<CategoryUse> {
     const rows = await this.prisma.transactionEntry.groupBy({
       by: ['categoryId'],
       where: { categoryId: { not: null }, transaction: { businessId, status: 'POSTED', reversalOfId: null, transactionType } },
       _count: { _all: true },
+      _sum: { amount: true },
     });
-    return new Map(rows.filter((row) => row.categoryId !== null).map((row) => [row.categoryId as string, row._count._all]));
+    return new Map(
+      rows
+        .filter((row) => row.categoryId !== null)
+        .map((row) => [row.categoryId as string, { count: row._count._all, total: new Prisma.Decimal(row._sum.amount ?? 0) }]),
+    );
   }
 
   private async requireIncomeGoal(businessId: string, id: string) {

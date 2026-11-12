@@ -131,20 +131,20 @@ describe('Category Set', () => {
       Promise.resolve(
         where.transaction.transactionType === 'INCOME'
           ? [
-              { categoryId: 'Salary', _count: { _all: 12 } },
-              { categoryId: 'Gift', _count: { _all: 3 } },
+              { categoryId: 'Salary', _count: { _all: 12 }, _sum: { amount: '120000.5' } },
+              { categoryId: 'Gift', _count: { _all: 3 }, _sum: { amount: '3000' } },
             ]
-          : [{ categoryId: 'Food', _count: { _all: 48 } }],
+          : [{ categoryId: 'Food', _count: { _all: 48 }, _sum: { amount: '24000' } }],
       ),
     );
     const set = await service.listCategorySet('biz-1');
     expect(set.income).toEqual([
-      { id: 'c1', type: 'INCOME', name: 'Salary', icon: null, color: 'teal', monthlyLimit: null, transactionCount: 12, system: null },
+      { id: 'c1', type: 'INCOME', name: 'Salary', icon: null, color: 'teal', monthlyLimit: null, transactionCount: 12, total: '120000.50', system: null },
     ]);
     // An expense "Gift" is not counted by an income "Gift".
-    expect(set.expense.map((row) => [row.name, row.transactionCount, row.monthlyLimit])).toEqual([
-      ['Food', 48, '5000.00'],
-      ['Gift', 0, null],
+    expect(set.expense.map((row) => [row.name, row.transactionCount, row.total, row.monthlyLimit])).toEqual([
+      ['Food', 48, '24000.00', '5000.00'],
+      ['Gift', 0, '0.00', null],
     ]);
   });
 
@@ -164,15 +164,19 @@ describe('Category Set', () => {
       Promise.resolve(
         where.transaction.transactionType === 'EXPENSE'
           ? [
-              { categoryId: 'Zakat', _count: { _all: 2 } },
-              { categoryId: 'Bank charge', _count: { _all: 3 } },
+              { categoryId: 'Zakat', _count: { _all: 2 }, _sum: { amount: '5000' } },
+              { categoryId: 'Bank charge', _count: { _all: 3 }, _sum: { amount: '45' } },
+              { categoryId: 'Other', _count: { _all: 1 }, _sum: { amount: null } },
             ]
           : [],
       ),
     );
     const set = await service.listCategorySet('biz-1');
     expect(set.expense[0]).toMatchObject({ name: 'Zakat', system: 'zakat', transactionCount: 2 });
-    expect(set.automatic).toEqual([{ type: 'EXPENSE', name: 'Bank charge', kind: 'charges', transactionCount: 3 }]);
+    expect(set.automatic).toEqual([
+      { type: 'EXPENSE', name: 'Bank charge', kind: 'charges', transactionCount: 3, total: '45.00' },
+      { type: 'EXPENSE', name: 'Other', kind: 'charges', transactionCount: 1, total: '0.00' },
+    ]);
   });
 
   it('keeps the names the app files money under for the app', async () => {
