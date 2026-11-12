@@ -11,7 +11,7 @@ import { UpdateBudgetTargetDto } from './dto/update-budget-target.dto.js';
 import { UpdateIncomeGoalDto } from './dto/update-income-goal.dto.js';
 import { SaveMonthlyPlanDto } from './dto/save-monthly-plan.dto.js';
 import { BUDGET_CATEGORY_COLORS } from './budget-category-visuals.js';
-import { BUILT_IN_CHARGE_CATEGORIES, isReservedCategoryName, seedStarterCategories, ZAKAT_CATEGORY } from './app-categories.js';
+import { CHARGE_CATEGORIES, isReservedCategoryName, seedStarterCategories, ZAKAT_CATEGORY } from './app-categories.js';
 
 // Which side of the ledger a category's "spent"/"earned" figure is summed
 // against, and which Business column backs its "total target" -- the one
@@ -310,7 +310,7 @@ export class BudgetsService {
     return {
       income: categories.filter((category) => category.type === 'INCOME').map(rowOf),
       expense: categories.filter((category) => category.type === 'EXPENSE').map(rowOf),
-      automatic: BUILT_IN_CHARGE_CATEGORIES.filter((name) => !own.has(name) && (expenseCounts.get(name) ?? 0) > 0).map((name) => ({
+      automatic: CHARGE_CATEGORIES.filter((name) => !own.has(name) && (expenseCounts.get(name) ?? 0) > 0).map((name) => ({
         type: 'EXPENSE' as const,
         name,
         kind: 'charges' as const,
