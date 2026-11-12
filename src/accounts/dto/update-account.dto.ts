@@ -1,6 +1,6 @@
 import { Transform } from 'class-transformer';
 import { IsIn, IsNotEmpty, IsOptional, IsString, Matches, ValidateIf } from 'class-validator';
-import { ACCOUNT_COLORS } from '../account-colors.js';
+import { CARD_COLORS } from '../account-colors.js';
 import { MONEY_STRING_MESSAGE, MONEY_STRING_REGEX, trim, whenSent } from '../../common/dto.js';
 
 // accountType is deliberately NOT editable here -- see
@@ -22,10 +22,10 @@ export class UpdateAccountDto {
   @IsString()
   accountNumber?: string;
 
-  // A money account's card colour, one of ACCOUNT_COLORS; null goes back to its type's own.
+  // A money account's card colour, one of CARD_COLORS; null goes back to its type's own.
   @ValidateIf((dto: UpdateAccountDto) => dto.color !== undefined && dto.color !== null)
   @Transform(({ value }: { value: unknown }) => (typeof value === 'string' ? value.trim().toLowerCase() : value))
-  @IsIn(ACCOUNT_COLORS, { message: 'Pick one of the card colours' })
+  @IsIn(CARD_COLORS, { message: 'Pick one of the card colours' })
   color?: string | null;
 
   // A money account's opening balance, entered wrong and put right (Balance >

@@ -7,6 +7,7 @@ import { MailService } from '../mail/mail.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { TransactionsService } from '../transactions/transactions.service.js';
 import { AddContributionDto } from './dto/add-contribution.dto.js';
+import { AddProfitDto } from './dto/add-profit.dto.js';
 import { CreateSavingsGoalDto } from './dto/create-savings-goal.dto.js';
 import { CreateSavingsTransferDto } from './dto/create-savings-transfer.dto.js';
 import { UpdateSavingsGoalDto } from './dto/update-savings-goal.dto.js';
@@ -14,6 +15,7 @@ import { UpdateSavingsGoalStatusDto } from './dto/update-savings-goal-status.dto
 import { UpdateSavingsPlanDto } from './dto/update-savings-plan.dto.js';
 import { WithdrawSavingsGoalDto } from './dto/withdraw-savings-goal.dto.js';
 import { WithdrawToBalanceDto } from './dto/withdraw-to-balance.dto.js';
+import { GOAL_COLORS } from './goal-colors.js';
 import { entrySign, goalHoldings, splitLargestFirst, type HoldingEntry, type Holdings, type WalletPart } from './savings-holdings.js';
 import { planPace } from './savings-plan.js';
 import { renderStatementPdf, statementFileName, type StatementRowKind } from './savings-statement-pdf.js';
@@ -33,6 +35,7 @@ const ENTRY_SELECT = {
   relatedGoalId: true,
   transactionId: true,
   groupId: true,
+  category: true,
   notes: true,
 } satisfies Prisma.SavingsGoalEntrySelect;
 
@@ -180,6 +183,8 @@ export class SavingsGoalsService {
         id: wallet.id,
         name: wallet.isSystemAccount ? `${wallet.name} (Legacy Pool)` : wallet.name,
         accountNumber: wallet.accountNumber,
+        // Its card colour (CARD_COLORS); null draws the colour of its place.
+        color: wallet.color,
         status: wallet.status,
         openingBalance: wallet.openingBalance.toFixed(2),
         totalIn: (inByWallet.get(wallet.id) ?? new Prisma.Decimal(0)).toFixed(2),
@@ -244,7 +249,7 @@ export class SavingsGoalsService {
     const rows: {
       id: string;
       date: Date;
-      kind: 'ALREADY_SAVED' | 'ADDED' | 'MOVED' | 'WITHDRAWN' | 'ACCOUNT_IN' | 'ACCOUNT_OUT';
+      kind: 'ALREADY_SAVED' | 'ADDED' | 'PROFIT' | 'MOVED' | 'WITHDRAWN' | 'ACCOUNT_IN' | 'ACCOUNT_OUT';
       goalName: string;
       otherGoalName: string | null;
       accountName: string | null;
@@ -283,7 +288,10 @@ export class SavingsGoalsService {
       if (here.length === 0 || entry.type === 'TRANSFER_IN') continue;
       const amount = sum(here);
       const name = goalName.get(entry.savingsGoalId) ?? '';
-      if (entry.type === 'CONTRIBUTION') {
+      if (entry.type === 'PROFIT') {
+        // accountName: the income category it counts under.
+        rows.push({ id: entry.id, date: entry.date, kind: 'PROFIT', goalName: name, otherGoalName: null, accountName: entry.category, amount: amount.toFixed(2), notes: entry.notes });
+      } else if (entry.type === 'CONTRIBUTION') {
         rows.push({
           id: entry.id,
           date: entry.date,
@@ -373,6 +381,7 @@ export class SavingsGoalsService {
         savingsAccountName: e.savingsAccountId ? (ledger.accountNames.get(e.savingsAccountId) ?? null) : null,
         relatedGoalName: e.relatedGoalId ? (goalNameById.get(e.relatedGoalId) ?? null) : null,
         groupId: e.groupId,
+        category: e.category,
         notes: e.notes,
       })),
     };
@@ -394,7 +403,7 @@ export class SavingsGoalsService {
     const groups: EntryRow[][] = [];
     const byGroup = new Map<string, EntryRow[]>();
     for (const entry of entries) {
-      if (!entry.groupId || entry.type === 'CONTRIBUTION') {
+      if (!entry.groupId || entry.type === 'CONTRIBUTION' || entry.type === 'PROFIT') {
         groups.push([entry]);
         continue;
       }
@@ -413,8 +422,8 @@ export class SavingsGoalsService {
     let balance = ZERO;
     let moneyIn = ZERO;
     let moneyOut = ZERO;
-    const sources = new Map<string, { kind: 'ACCOUNT' | 'ALREADY_SAVED' | 'GOAL'; name: string | null; amount: Prisma.Decimal }>();
-    const addSource = (kind: 'ACCOUNT' | 'ALREADY_SAVED' | 'GOAL', name: string | null, amount: Prisma.Decimal) => {
+    const sources = new Map<string, { kind: 'ACCOUNT' | 'ALREADY_SAVED' | 'GOAL' | 'PROFIT'; name: string | null; amount: Prisma.Decimal }>();
+    const addSource = (kind: 'ACCOUNT' | 'ALREADY_SAVED' | 'GOAL' | 'PROFIT', name: string | null, amount: Prisma.Decimal) => {
       const key = `${kind}|${name ?? ''}`;
       const source = sources.get(key);
       if (source) source.amount = source.amount.plus(amount);
@@ -430,6 +439,13 @@ export class SavingsGoalsService {
         if (first.type === 'ACCOUNT_CHANGE') {
           const left = [...new Set(group.map((e) => accountName(e.moneyAccountId)).filter((name): name is string => !!name))];
           return { date: first.date, kind: 'ACCOUNT_CHANGED' as StatementRowKind, from: left.join(', ') || null, to: accountName(first.savingsAccountId), notes: first.notes, moneyIn: null, moneyOut: null, balance: balance.toFixed(2), moved: amount.toFixed(2) };
+        }
+        if (first.type === 'PROFIT') {
+          balance = balance.plus(amount);
+          moneyIn = moneyIn.plus(amount);
+          addSource('PROFIT', first.category, amount);
+          // From: the income category; to: the savings wallet it was paid into.
+          return { date: first.date, kind: 'PROFIT' as StatementRowKind, from: first.category, to: wallets(group).join(', ') || null, notes: first.notes, moneyIn: amount.toFixed(2), moneyOut: null, balance: balance.toFixed(2), moved: null };
         }
         const incoming = first.type === 'CONTRIBUTION' || first.type === 'TRANSFER_IN';
         balance = incoming ? balance.plus(amount) : balance.minus(amount);
@@ -510,11 +526,26 @@ export class SavingsGoalsService {
       reminderDate: dto.reminderDate ? new Date(dto.reminderDate) : undefined,
       reminderChannel: dto.reminderDate ? (dto.reminderChannel ?? 'EMAIL') : dto.reminderChannel,
       description: dto.description,
+      color: dto.color ?? null,
       startAmount,
       accountId: keptIn,
       ...(reached && { status: 'COMPLETED' as const, reachedAt: today }),
     };
-    if (startAmount.isZero()) return this.prisma.savingsGoal.create({ data });
+    // Start goal on a saving plan: the plan goes in the same database
+    // transaction, so it is never both a plan and a goal, and a second
+    // start of the same plan finds it gone.
+    const claimPlan = async (tx: Prisma.TransactionClient) => {
+      if (!dto.fromPlanId) return;
+      const { count } = await tx.savingsPlan.deleteMany({ where: { id: dto.fromPlanId, businessId } });
+      if (count === 0) throw new NotFoundException('That saving plan was not found. It may have been started already.');
+    };
+    if (startAmount.isZero()) {
+      if (!dto.fromPlanId) return this.prisma.savingsGoal.create({ data });
+      return this.prisma.$transaction(async (tx) => {
+        await claimPlan(tx);
+        return tx.savingsGoal.create({ data });
+      });
+    }
 
     // The money already saved is recorded as the goal's first contribution,
     // into the savings wallet that holds it: a real posting, so the wallet's
@@ -524,6 +555,7 @@ export class SavingsGoalsService {
     return this.transactionsService.withLocks([`account:${accountId}`], async (tx) => {
       const wallet = await this.requireSavingsAccount(businessId, accountId, tx);
       if (wallet.status !== 'ACTIVE') throw new BadRequestException('Pick a savings wallet that is not archived.');
+      await claimPlan(tx);
       const goal = await tx.savingsGoal.create({ data });
       const opening = await this.requireOrCreateOpeningAccount(businessId, tx);
       const transaction = await this.transactionsService.createTransaction(
@@ -562,6 +594,7 @@ export class SavingsGoalsService {
       ...(dto.reminderDate !== undefined && { reminderDate: dto.reminderDate ? new Date(dto.reminderDate) : null }),
       ...(dto.reminderChannel !== undefined && { reminderChannel: dto.reminderChannel }),
       ...(dto.description !== undefined && { description: dto.description }),
+      ...(dto.color !== undefined && { color: dto.color }),
       ...(dto.accountId !== undefined && { accountId: dto.accountId }),
       ...(newReminder && { reminderSentFor: null }),
     };
@@ -721,6 +754,81 @@ export class SavingsGoalsService {
     });
     await this.maybeMarkCompleted(await this.requireGoal(businessId, goalId), undefined, entry.date);
     return entry;
+  }
+
+  // Profit the bank paid on the goal's savings: it lands in the account the
+  // goal keeps its money in and counts as income under the category picked
+  // (an INCOME posting, as Income & Expense makes one), with the goal's
+  // PROFIT entry in the same database transaction. Nothing comes out of
+  // the customer's own accounts.
+  async addProfit(businessId: string, goalId: string, dto: AddProfitDto, userId: string) {
+    const entry = await this.transactionsService.withLocks([`savings-goal:${goalId}`], async (tx) => {
+      const goal = await this.requireGoal(businessId, goalId, tx);
+      if (goal.status === 'WITHDRAWN') throw new BadRequestException('This goal has been withdrawn -- add profit to another goal.');
+      if (!goal.accountId) throw new BadRequestException('Pick the savings account this goal keeps its money in first.');
+      const wallet = await this.requireSavingsAccount(businessId, goal.accountId, tx);
+      const income = await this.requireProfitIncomeAccount(businessId, tx);
+      const transaction = await this.transactionsService.createTransaction(
+        businessId,
+        {
+          transactionType: 'INCOME',
+          transactionDate: dto.date,
+          description: dto.notes ? `Profit on savings: ${goal.name} -- ${dto.notes}` : `Profit on savings: ${goal.name}`,
+          entries: [
+            { accountId: wallet.id, entryType: 'DEBIT', amount: dto.amount },
+            { accountId: income.id, entryType: 'CREDIT', amount: dto.amount, categoryId: dto.category, note: dto.notes },
+          ],
+        },
+        userId,
+        tx,
+      );
+      return tx.savingsGoalEntry.create({
+        data: {
+          savingsGoalId: goalId,
+          businessId,
+          type: 'PROFIT',
+          amount: dto.amount,
+          date: new Date(dto.date),
+          savingsAccountId: wallet.id,
+          transactionId: transaction.id,
+          category: dto.category,
+          notes: dto.notes,
+        },
+      });
+    });
+    await this.maybeMarkCompleted(await this.requireGoal(businessId, goalId), undefined, entry.date);
+    return entry;
+  }
+
+  // Move back to plans: a goal nothing has been recorded against yet goes
+  // back to being a saving plan (its name, colour, target as the amount,
+  // its end date and its note), in one database transaction.
+  async moveToPlans(businessId: string, goalId: string) {
+    return this.transactionsService.withLocks([`savings-goal:${goalId}`], async (tx) => {
+      const goal = await this.requireGoal(businessId, goalId, tx);
+      if (goal.status === 'WITHDRAWN') throw new BadRequestException('This goal has been withdrawn.');
+      const entries = await tx.savingsGoalEntry.count({ where: { savingsGoalId: goalId } });
+      if (entries > 0) throw new BadRequestException('Money has moved for this goal, so it stays a goal. Pause it instead.');
+      const today = dhakaDateOnly(new Date());
+      const dated = goal.targetDate.getTime() > today.getTime();
+      const color = goal.color && (GOAL_COLORS as readonly string[]).includes(goal.color) ? goal.color : GOAL_COLORS[0];
+      const plan = await tx.savingsPlan.create({
+        data: {
+          businessId,
+          name: goal.name,
+          category: 'others',
+          color,
+          amount: goal.targetAmount,
+          horizon: dated ? 'BY_DATE' : 'SIX_MONTHS',
+          needBy: dated ? goal.targetDate : null,
+          priority: 'MEDIUM',
+          note: goal.description || null,
+          plannedOn: today,
+        },
+      });
+      await tx.savingsGoal.delete({ where: { id: goalId } });
+      return { planId: plan.id };
+    });
   }
 
   // A goal that reaches (or, via an over-contribution, passes) its
@@ -1032,6 +1140,8 @@ export class SavingsGoalsService {
 
     const withdrawals = mine.filter((e) => e.type === 'WITHDRAWAL').sort((a, b) => b.date.getTime() - a.date.getTime());
     const withdrawnAmount = sum(withdrawals);
+    // Profit the bank paid on it, all told.
+    const profitTotal = sum(mine.filter((e) => e.type === 'PROFIT'));
     const { start: thisMonthStart, end: thisMonthEnd } = dhakaMonthRange();
     const { start: lastMonthStart } = dhakaMonthRange(-1);
     // Money added from an account; what was already saved when the goal was
@@ -1060,6 +1170,7 @@ export class SavingsGoalsService {
       startAmount: decimal(goal.startAmount).toFixed(2),
       currentAmount: currentAmount.toFixed(2),
       withdrawnAmount: withdrawnAmount.toFixed(2),
+      profitTotal: profitTotal.toFixed(2),
       progressPercent,
       monthlyTarget: target.dividedBy(goal.durationMonths).toFixed(2),
       // The day it began (Dhaka) and its plan line's start.
@@ -1167,6 +1278,16 @@ export class SavingsGoalsService {
     if (account.accountType !== 'ASSET' || !account.accountSubtype || !MONEY_ACCOUNT_SUBTYPES.includes(account.accountSubtype)) {
       throw new BadRequestException('moneyAccountId must be a cash/bank/mobile-money account');
     }
+    return account;
+  }
+
+  // Where profit on savings is counted: an income account named for profit
+  // or interest when the workspace has one, else its default income account
+  // (the lowest display order, as Income & Expense picks it).
+  private async requireProfitIncomeAccount(businessId: string, client: Prisma.TransactionClient): Promise<Account> {
+    const accounts = await client.account.findMany({ where: { businessId, accountType: 'INCOME', status: 'ACTIVE' }, orderBy: [{ displayOrder: 'asc' }, { createdAt: 'asc' }] });
+    const account = accounts.find((a) => /profit|interest/i.test(a.name)) ?? accounts[0];
+    if (!account) throw new BadRequestException('Add an income category first, to count the profit under.');
     return account;
   }
 

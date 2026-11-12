@@ -1,7 +1,8 @@
 import { SavingsReminderChannel } from '@prisma/client';
-import { Type } from 'class-transformer';
-import { IsDateString, IsEnum, IsInt, IsNotEmpty, IsOptional, IsPositive, IsString, Max, ValidateIf } from 'class-validator';
+import { Transform, Type } from 'class-transformer';
+import { IsDateString, IsEnum, IsIn, IsInt, IsNotEmpty, IsOptional, IsPositive, IsString, Max, ValidateIf } from 'class-validator';
 import { IsMoney, whenSent } from '../../common/dto.js';
+import { GOAL_COLORS, lowerColor } from '../goal-colors.js';
 
 // No status here -- that goes through the dedicated status endpoint (Pause/
 // Resume/Complete), same split as ContactsService's update()/archive().
@@ -46,4 +47,10 @@ export class UpdateSavingsGoalDto {
   @IsString()
   @IsNotEmpty()
   accountId?: string;
+
+  // Its card colour, one of GOAL_COLORS.
+  @ValidateIf(whenSent)
+  @Transform(lowerColor)
+  @IsIn(GOAL_COLORS, { message: 'Pick one of the card colours' })
+  color?: string;
 }

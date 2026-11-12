@@ -1,6 +1,7 @@
 import { Body, Controller, Delete, Get, Header, Param, ParseEnumPipe, Patch, Post, Query, StreamableFile } from '@nestjs/common';
 import { MemberRole, SavingsGoalStatus } from '@prisma/client';
 import { AddContributionDto } from './dto/add-contribution.dto.js';
+import { AddProfitDto } from './dto/add-profit.dto.js';
 import { CreateSavingsGoalDto } from './dto/create-savings-goal.dto.js';
 import { CreateSavingsTransferDto } from './dto/create-savings-transfer.dto.js';
 import { UpdateSavingsGoalDto } from './dto/update-savings-goal.dto.js';
@@ -124,6 +125,20 @@ export class SavingsGoalsController {
   @Post(':id/contributions')
   addContribution(@Param('businessId') businessId: string, @Param('id') id: string, @Body() dto: AddContributionDto, @CurrentUser() user: RequestUser) {
     return this.savingsGoalsService.addContribution(businessId, id, dto, user.id);
+  }
+
+  // Profit the bank paid on the goal's savings, counted as income.
+  @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
+  @Post(':id/profits')
+  addProfit(@Param('businessId') businessId: string, @Param('id') id: string, @Body() dto: AddProfitDto, @CurrentUser() user: RequestUser) {
+    return this.savingsGoalsService.addProfit(businessId, id, dto, user.id);
+  }
+
+  // Move back to plans: a goal nothing has been recorded against yet.
+  @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
+  @Post(':id/to-plan')
+  moveToPlans(@Param('businessId') businessId: string, @Param('id') id: string) {
+    return this.savingsGoalsService.moveToPlans(businessId, id);
   }
 
   // Any amount up to what is saved, to a main balance account.
