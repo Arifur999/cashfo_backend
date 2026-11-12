@@ -16,6 +16,7 @@ import { UpdateSavingsPlanDto } from './dto/update-savings-plan.dto.js';
 import { WithdrawSavingsGoalDto } from './dto/withdraw-savings-goal.dto.js';
 import { WithdrawToBalanceDto } from './dto/withdraw-to-balance.dto.js';
 import { GOAL_COLORS } from './goal-colors.js';
+import { goalFromSnapshot, isGoalSnapshot, isPlanSnapshot, planFromSnapshot, toGoalSnapshot, toPlanSnapshot } from '../savings-plans/plan-snapshots.js';
 import { entrySign, goalHoldings, splitLargestFirst, type HoldingEntry, type Holdings, type WalletPart } from './savings-holdings.js';
 import { planPace } from './savings-plan.js';
 import { renderStatementPdf, statementFileName, type StatementRowKind } from './savings-statement-pdf.js';
@@ -533,17 +534,20 @@ export class SavingsGoalsService {
     };
     // Start goal on a saving plan: the plan goes in the same database
     // transaction, so it is never both a plan and a goal, and a second
-    // start of the same plan finds it gone.
-    const claimPlan = async (tx: Prisma.TransactionClient) => {
-      if (!dto.fromPlanId) return;
-      const { count } = await tx.savingsPlan.deleteMany({ where: { id: dto.fromPlanId, businessId } });
-      if (count === 0) throw new NotFoundException('That saving plan was not found. It may have been started already.');
+    // start of the same plan finds it gone. The goal keeps the plan as it
+    // was, for Undo (undoStart()).
+    const claimPlan = async (tx: Prisma.TransactionClient): Promise<Prisma.InputJsonValue | undefined> => {
+      if (!dto.fromPlanId) return undefined;
+      const plan = await tx.savingsPlan.findUnique({ where: { id: dto.fromPlanId } });
+      const { count } = plan && plan.businessId === businessId ? await tx.savingsPlan.deleteMany({ where: { id: plan.id, businessId } }) : { count: 0 };
+      if (!plan || count === 0) throw new NotFoundException('That saving plan was not found. It may have been started already.');
+      return toPlanSnapshot(plan) as unknown as Prisma.InputJsonValue;
     };
     if (startAmount.isZero()) {
       if (!dto.fromPlanId) return this.prisma.savingsGoal.create({ data });
       return this.prisma.$transaction(async (tx) => {
-        await claimPlan(tx);
-        return tx.savingsGoal.create({ data });
+        const fromPlan = await claimPlan(tx);
+        return tx.savingsGoal.create({ data: { ...data, fromPlan } });
       });
     }
 
@@ -555,8 +559,8 @@ export class SavingsGoalsService {
     return this.transactionsService.withLocks([`account:${accountId}`], async (tx) => {
       const wallet = await this.requireSavingsAccount(businessId, accountId, tx);
       if (wallet.status !== 'ACTIVE') throw new BadRequestException('Pick a savings wallet that is not archived.');
-      await claimPlan(tx);
-      const goal = await tx.savingsGoal.create({ data });
+      const fromPlan = await claimPlan(tx);
+      const goal = await tx.savingsGoal.create({ data: { ...data, fromPlan } });
       const opening = await this.requireOrCreateOpeningAccount(businessId, tx);
       const transaction = await this.transactionsService.createTransaction(
         businessId,
@@ -812,22 +816,70 @@ export class SavingsGoalsService {
       const today = dhakaDateOnly(new Date());
       const dated = goal.targetDate.getTime() > today.getTime();
       const color = goal.color && (GOAL_COLORS as readonly string[]).includes(goal.color) ? goal.color : GOAL_COLORS[0];
+      // A goal started from a plan goes back to that plan as it was; any
+      // other becomes a plan from its own name, colour, target, date and note.
+      const original = isPlanSnapshot(goal.fromPlan) ? planFromSnapshot(goal.fromPlan, businessId) : null;
       const plan = await tx.savingsPlan.create({
         data: {
-          businessId,
-          name: goal.name,
-          category: 'others',
-          color,
-          amount: goal.targetAmount,
-          horizon: dated ? 'BY_DATE' : 'SIX_MONTHS',
-          needBy: dated ? goal.targetDate : null,
-          priority: 'MEDIUM',
-          note: goal.description || null,
-          plannedOn: today,
+          ...(original ?? {
+            businessId,
+            name: goal.name,
+            category: 'others',
+            color,
+            amount: goal.targetAmount,
+            horizon: dated ? 'BY_DATE' : 'SIX_MONTHS',
+            needBy: dated ? goal.targetDate : null,
+            priority: 'MEDIUM',
+            note: goal.description || null,
+            plannedOn: today,
+          }),
+          // The goal as it was, for Undo (backToGoal()).
+          fromGoal: toGoalSnapshot(goal) as unknown as Prisma.InputJsonValue,
         },
       });
       await tx.savingsGoal.delete({ where: { id: goalId } });
       return { planId: plan.id };
+    });
+  }
+
+  // Undo of Start goal: the goal goes and its plan comes back as it was, in
+  // one database transaction. Only while nothing but what was already saved
+  // has been recorded on it: that opening posting is reversed (a real void,
+  // so the savings account's balance is as it was), anything more and the
+  // goal stays a goal.
+  async undoStart(businessId: string, goalId: string, userId: string) {
+    return this.transactionsService.withLocks([`savings-goal:${goalId}`], async (tx) => {
+      const goal = await this.requireGoal(businessId, goalId, tx);
+      if (!isPlanSnapshot(goal.fromPlan)) throw new BadRequestException('This goal was not started from a saving plan.');
+      const entries = await tx.savingsGoalEntry.findMany({ where: { savingsGoalId: goalId } });
+      if (entries.some((entry) => entry.type !== 'CONTRIBUTION' || entry.moneyAccountId !== null)) {
+        throw new BadRequestException('Money has moved for this goal since it started, so it stays a goal.');
+      }
+      // The entry goes first: a void refuses a posting a goal still owns.
+      for (const entry of entries) {
+        await tx.savingsGoalEntry.delete({ where: { id: entry.id } });
+        if (entry.transactionId) await this.transactionsService.voidTransaction(businessId, entry.transactionId, `Undo: ${goal.name} back to plans`, userId, tx);
+      }
+      const plan = await tx.savingsPlan.create({ data: planFromSnapshot(goal.fromPlan, businessId) });
+      await tx.savingsGoal.delete({ where: { id: goalId } });
+      return { planId: plan.id };
+    });
+  }
+
+  // Undo of Move back to plans: the plan goes and the goal comes back as it
+  // was, with its own id and start day, in one database transaction. Its
+  // account comes back too unless that account has been deleted since.
+  async backToGoal(businessId: string, planId: string) {
+    return this.prisma.$transaction(async (tx) => {
+      const plan = await tx.savingsPlan.findUnique({ where: { id: planId } });
+      if (!plan || plan.businessId !== businessId) throw new NotFoundException('That saving plan was not found. It may have been started or deleted.');
+      if (!isGoalSnapshot(plan.fromGoal)) throw new BadRequestException('This plan was not moved back from a goal.');
+      const snapshot = plan.fromGoal;
+      const account = snapshot.accountId ? await tx.account.findUnique({ where: { id: snapshot.accountId }, select: { businessId: true } }) : null;
+      const { count } = await tx.savingsPlan.deleteMany({ where: { id: planId, businessId } });
+      if (count === 0) throw new NotFoundException('That saving plan was not found. It may have been started or deleted.');
+      const goal = await tx.savingsGoal.create({ data: goalFromSnapshot(snapshot, businessId, account?.businessId === businessId) });
+      return { goalId: goal.id };
     });
   }
 
