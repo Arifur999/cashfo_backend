@@ -2,7 +2,7 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 import { Account, AccountType, Prisma } from '@prisma/client';
 import { MONEY_ACCOUNT_SUBTYPES } from '../accounts/accounts.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
-import { TransactionsService } from '../transactions/transactions.service.js';
+import { CORRECTED_REASON, TransactionsService } from '../transactions/transactions.service.js';
 import { CreateExpenseDto } from './dto/create-expense.dto.js';
 import { CreateIncomeDto } from './dto/create-income.dto.js';
 import { CreateTransferDto } from './dto/create-transfer.dto.js';
@@ -128,8 +128,9 @@ export class QuickEntriesService {
   // Editing an entry (decision D2): the original is voided with the reason
   // 'Corrected' and the corrected one posted in the same database
   // transaction, so the balances never show both or neither. An entry stays
-  // the kind it was; the void itself refuses a reversal, an entry already
-  // voided and one another feature (a savings goal, an asset) keeps.
+  // a transfer, or an income or expense (either one); the void itself
+  // refuses a reversal, an entry already voided and one another feature (a
+  // savings goal, an asset) keeps.
   correctIncome(businessId: string, transactionId: string, dto: CreateIncomeDto, userId: string) {
     return this.correct(businessId, transactionId, 'INCOME', userId, (tx) => this.createIncome(businessId, dto, userId, tx));
   }
@@ -154,10 +155,13 @@ export class QuickEntriesService {
       if (!original || original.businessId !== businessId) {
         throw new NotFoundException('Transaction not found');
       }
-      if (original.transactionType !== kind) {
-        throw new BadRequestException(`This entry is not a ${kind.toLowerCase()}, so it can't be corrected as one`);
+      // An income may become an expense and back (the Transactions popup's
+      // Type); a transfer stays a transfer, and nothing else is one of these.
+      const incomeOrExpense = (type: string) => type === 'INCOME' || type === 'EXPENSE';
+      if (kind === 'TRANSFER' ? original.transactionType !== 'TRANSFER' : !incomeOrExpense(original.transactionType)) {
+        throw new BadRequestException(`This entry is not ${kind === 'TRANSFER' ? 'a transfer' : 'an income or expense'}, so it can't be corrected as one`);
       }
-      await this.transactionsService.voidTransaction(businessId, transactionId, 'Corrected', userId, tx);
+      await this.transactionsService.voidTransaction(businessId, transactionId, CORRECTED_REASON, userId, tx);
       const corrected = await post(tx);
       // So History can say what it corrected (and the original, what replaced it).
       await tx.transaction.update({ where: { id: corrected.id }, data: { correctedFromId: transactionId } });

@@ -5,6 +5,7 @@ import { PrismaService } from '../prisma/prisma.service.js';
 import { BudgetQueryDto } from './dto/budget-query.dto.js';
 import { CreateBudgetCategoryDto } from './dto/create-budget-category.dto.js';
 import { CreateIncomeGoalDto } from './dto/create-income-goal.dto.js';
+import { RestoreBudgetCategoryDto } from './dto/restore-budget-category.dto.js';
 import { UpdateBudgetCategoryDto } from './dto/update-budget-category.dto.js';
 import { UpdateBudgetTargetDto } from './dto/update-budget-target.dto.js';
 import { UpdateIncomeGoalDto } from './dto/update-income-goal.dto.js';
@@ -255,7 +256,25 @@ export class BudgetsService {
   }
 
   // "Set monthly budget": makes the month's plan or replaces its figures.
+  // An edit that picked another month (from*) moves its plan there, notes
+  // and all, unless that month has a plan of its own.
   async saveMonthlyPlan(businessId: string, dto: SaveMonthlyPlanDto) {
+    if ((dto.fromMonth === undefined) !== (dto.fromYear === undefined)) throw new BadRequestException('Send both fromMonth and fromYear, or neither');
+    if (dto.fromMonth !== undefined && dto.fromYear !== undefined && (dto.fromMonth !== dto.month || dto.fromYear !== dto.year)) {
+      const from = { year: dto.fromYear, month: dto.fromMonth };
+      await this.prisma.$transaction(async (tx) => {
+        const plan = await tx.incomeGoal.findUnique({ where: { businessId_year_month: { businessId, ...from } } });
+        if (!plan) throw new NotFoundException('That plan no longer exists');
+        const taken = await tx.incomeGoal.findUnique({ where: { businessId_year_month: { businessId, year: dto.year, month: dto.month } } });
+        if (taken) throw new ConflictException('That month already has a plan');
+        // Two moves into the same month at once: the unique key refuses the second (409).
+        await tx.incomeGoal.update({
+          where: { id: plan.id },
+          data: { year: dto.year, month: dto.month, amount: dto.incomeTarget, expenseBudget: dto.expenseBudget },
+        });
+      });
+      return this.getMonthlyPlan(businessId, dto.year, dto.month);
+    }
     await this.prisma.incomeGoal.upsert({
       where: { businessId_year_month: { businessId, year: dto.year, month: dto.month } },
       create: { businessId, year: dto.year, month: dto.month, amount: dto.incomeTarget, expenseBudget: dto.expenseBudget },
@@ -416,7 +435,7 @@ export class BudgetsService {
     const inUse = (await this.useCount(businessId, category)) > 0;
     if (!inUse) {
       await this.prisma.budgetCategory.delete({ where: { id } });
-      return { id, moved: 0 };
+      return { id, moved: 0, movedEntryIds: [] as string[] };
     }
     const word = category.type === 'INCOME' ? 'income' : 'expense';
     if (!moveTo) {
@@ -431,15 +450,32 @@ export class BudgetsService {
     if (!target || target.businessId !== businessId || target.type !== category.type || target.id === id) {
       throw new BadRequestException(`Pick another ${word} category to move them to`);
     }
-    const moved = await this.prisma.$transaction(async (tx) => {
-      const result = await tx.transactionEntry.updateMany({
-        where: { categoryId: category.name, transaction: { businessId, transactionType: TRANSACTION_TYPE_FOR[category.type] } },
-        data: { categoryId: target.name },
-      });
+    // The entries moved are named in the reply, so Undo can carry exactly
+    // those back (restoreCategory).
+    const movedEntryIds = await this.prisma.$transaction(async (tx) => {
+      const where = { categoryId: category.name, transaction: { businessId, transactionType: TRANSACTION_TYPE_FOR[category.type] } };
+      const entries = await tx.transactionEntry.findMany({ where, select: { id: true } });
+      const ids = entries.map((entry) => entry.id);
+      await tx.transactionEntry.updateMany({ where: { ...where, id: { in: ids } }, data: { categoryId: target.name } });
       await tx.budgetCategory.delete({ where: { id } });
-      return result.count;
+      return ids;
     });
-    return { id, moved };
+    return { id, moved: movedEntryIds.length, movedEntryIds };
+  }
+
+  // Undo of a delete (Category Set's toast): the category made again as it
+  // was, and the entries the delete moved taken back from where they went --
+  // only those still filed there, in this workspace, of the category's type.
+  async restoreCategory(businessId: string, dto: RestoreBudgetCategoryDto) {
+    const { movedTo, entryIds, ...category } = dto;
+    if (!movedTo !== !entryIds?.length) throw new BadRequestException('Send the category they moved to with the entries it took');
+    const created = await this.createCategory(businessId, category);
+    if (!movedTo || !entryIds?.length) return { ...created, restored: 0 };
+    const result = await this.prisma.transactionEntry.updateMany({
+      where: { id: { in: entryIds }, categoryId: movedTo, transaction: { businessId, transactionType: TRANSACTION_TYPE_FOR[created.type] } },
+      data: { categoryId: created.name },
+    });
+    return { ...created, restored: result.count };
   }
 
   // How many standing transactions file under a category.

@@ -16,6 +16,10 @@ import { BUILT_IN_CHARGE_CATEGORIES, CHARGE_CATEGORY } from '../budgets/app-cate
 export const DELETED_REASON = 'Deleted from Transactions';
 // How long after it a delete can be undone.
 export const RESTORE_WINDOW_MINUTES = 10;
+// An entry replaced by an edit (decision D2) is voided with this reason.
+export const CORRECTED_REASON = 'Corrected';
+// The corrected entry, when its edit is undone (undoCorrection).
+export const EDIT_UNDONE_REASON = 'Edit undone';
 
 // Still counts: neither a voided original nor the reversal that undid it.
 const STANDING_TRANSACTION = { status: 'POSTED', reversalOfId: null } satisfies Prisma.TransactionWhereInput;
@@ -260,12 +264,42 @@ export class TransactionsService {
     return this.prisma.$transaction((tx) => this.restoreIn(tx, businessId, transactionId, userId, now));
   }
 
-  private async restoreIn(tx: Prisma.TransactionClient, businessId: string, transactionId: string, userId: string, now: Date) {
+  // Undo of an edit made minutes ago (the Transactions page's toast): the
+  // entry the edit posted is voided, and the one it replaced stands again as
+  // it was, its reversal gone. Only by the person who made the edit, within
+  // RESTORE_WINDOW_MINUTES, and only while the edit is the entry's latest.
+  async undoCorrection(businessId: string, correctedId: string, userId: string) {
+    const now = new Date();
+    return this.prisma.$transaction(async (tx) => {
+      const corrected = await tx.transaction.findUnique({
+        where: { id: correctedId },
+        select: { businessId: true, status: true, reversalOfId: true, correctedFromId: true, createdBy: true, createdAt: true },
+      });
+      if (!corrected || corrected.businessId !== businessId) {
+        throw new NotFoundException('Transaction not found');
+      }
+      if (!corrected.correctedFromId || corrected.reversalOfId || corrected.status !== 'POSTED') {
+        throw new BadRequestException('Only an edit that still stands can be undone');
+      }
+      if (corrected.createdBy !== userId) {
+        throw new ForbiddenException('Only the person who made the edit can undo it');
+      }
+      if (now.getTime() - corrected.createdAt.getTime() > RESTORE_WINDOW_MINUTES * 60_000) {
+        throw new BadRequestException('An edit can be undone for 10 minutes only');
+      }
+      await this.voidIn(tx, businessId, correctedId, EDIT_UNDONE_REASON, userId);
+      return this.restoreIn(tx, businessId, corrected.correctedFromId, userId, now, CORRECTED_REASON);
+    });
+  }
+
+  // Stands a voided transaction again: a delete's (DELETED_REASON) or, for
+  // undoCorrection, an edit's original (CORRECTED_REASON).
+  private async restoreIn(tx: Prisma.TransactionClient, businessId: string, transactionId: string, userId: string, now: Date, reason = DELETED_REASON) {
     const original = await tx.transaction.findUnique({ where: { id: transactionId }, include: { entries: true } });
     if (!original || original.businessId !== businessId) {
       throw new NotFoundException('Transaction not found');
     }
-    if (original.status !== 'VOIDED' || original.reversalOfId || original.voidedReason !== DELETED_REASON) {
+    if (original.status !== 'VOIDED' || original.reversalOfId || original.voidedReason !== reason) {
       throw new BadRequestException('Only a transaction deleted from Transactions can be brought back');
     }
     if (!original.voidedAt || now.getTime() - original.voidedAt.getTime() > RESTORE_WINDOW_MINUTES * 60_000) {
@@ -284,14 +318,14 @@ export class TransactionsService {
       if (paidWith?.status !== 'POSTED') throw new BadRequestException('Bring back the entry this charge was paid with first');
     }
 
-    await this.reinstate(tx, original, reversal.id, DELETED_REASON);
+    await this.reinstate(tx, original, reversal.id, reason);
 
     const charges = await tx.transaction.findMany({
-      where: { businessId, chargeForId: original.id, status: 'VOIDED', reversalOfId: null, voidedReason: DELETED_REASON },
+      where: { businessId, chargeForId: original.id, status: 'VOIDED', reversalOfId: null, voidedReason: reason },
       select: { id: true },
     });
     for (const charge of charges) {
-      await this.restoreIn(tx, businessId, charge.id, userId, now);
+      await this.restoreIn(tx, businessId, charge.id, userId, now, reason);
     }
 
     return { id: original.id, status: 'POSTED' as const };

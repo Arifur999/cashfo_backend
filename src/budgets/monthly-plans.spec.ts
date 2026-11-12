@@ -7,7 +7,8 @@ const money = (value: number | null) => ({ _sum: { amount: value === null ? null
 
 const setup = () => {
   const prisma = {
-    incomeGoal: { findMany: vi.fn(), findUnique: vi.fn(), upsert: vi.fn() },
+    incomeGoal: { findMany: vi.fn(), findUnique: vi.fn(), upsert: vi.fn(), update: vi.fn() },
+    $transaction: vi.fn(),
     transactionEntry: { aggregate: vi.fn(), groupBy: vi.fn() },
     budgetCategory: { findUnique: vi.fn().mockResolvedValue(null), findMany: vi.fn(), create: vi.fn((args: unknown) => Promise.resolve(args)) },
   };
@@ -15,8 +16,17 @@ const setup = () => {
   prisma.transactionEntry.aggregate.mockImplementation(({ where }: { where: { transaction: { transactionType: string } } }) =>
     Promise.resolve(money(where.transaction.transactionType === 'INCOME' ? 120500 : 63000)),
   );
+  prisma.$transaction.mockImplementation((run: (tx: typeof prisma) => unknown) => run(prisma));
   return { service: new BudgetsService(prisma as never), prisma };
 };
+
+const plan = (month: number, year: number) => ({
+  id: `g-${year}-${month}`,
+  month,
+  year,
+  amount: new Prisma.Decimal(135000),
+  expenseBudget: new Prisma.Decimal(72000),
+});
 
 describe('monthly plans', () => {
   it('reads a month with no plan as null figures and its real totals', async () => {
@@ -51,6 +61,52 @@ describe('monthly plans', () => {
       update: { amount: 135000, expenseBudget: 72000 },
     });
     expect(saved).toMatchObject({ id: 'g1', incomeTarget: '135000.00', expenseBudget: '72000.00', earned: '120500.00', spent: '63000.00' });
+  });
+
+  it('moves an edited plan to the month picked, notes and all', async () => {
+    const { service, prisma } = setup();
+    prisma.incomeGoal.findUnique.mockImplementation(({ where }: { where: { businessId_year_month: { year: number; month: number } } }) => {
+      const { year, month } = where.businessId_year_month;
+      // The plan is in October; November is free until it lands there.
+      if (month === 10) return Promise.resolve(plan(10, 2026));
+      return Promise.resolve(prisma.incomeGoal.update.mock.calls.length ? plan(month, year) : null);
+    });
+    await service.saveMonthlyPlan('biz-1', { month: 11, year: 2026, incomeTarget: 140000, expenseBudget: 70000, fromMonth: 10, fromYear: 2026 });
+    expect(prisma.incomeGoal.update).toHaveBeenCalledWith({
+      where: { id: 'g-2026-10' },
+      data: { year: 2026, month: 11, amount: 140000, expenseBudget: 70000 },
+    });
+    expect(prisma.incomeGoal.upsert).not.toHaveBeenCalled();
+  });
+
+  it("won't move a plan onto a month that has one", async () => {
+    const { service, prisma } = setup();
+    prisma.incomeGoal.findUnique.mockImplementation(({ where }: { where: { businessId_year_month: { year: number; month: number } } }) =>
+      Promise.resolve(plan(where.businessId_year_month.month, where.businessId_year_month.year)),
+    );
+    await expect(service.saveMonthlyPlan('biz-1', { month: 9, year: 2026, incomeTarget: 1, expenseBudget: 1, fromMonth: 10, fromYear: 2026 })).rejects.toThrow(
+      'That month already has a plan',
+    );
+    expect(prisma.incomeGoal.update).not.toHaveBeenCalled();
+  });
+
+  it('says so when the plan to move is gone', async () => {
+    const { service, prisma } = setup();
+    prisma.incomeGoal.findUnique.mockResolvedValue(null);
+    await expect(service.saveMonthlyPlan('biz-1', { month: 9, year: 2026, incomeTarget: 1, expenseBudget: 1, fromMonth: 10, fromYear: 2026 })).rejects.toThrow(
+      'That plan no longer exists',
+    );
+  });
+
+  it('treats a plan edited in its own month as a plain save, and wants both from fields', async () => {
+    const { service, prisma } = setup();
+    prisma.incomeGoal.findUnique.mockResolvedValue(plan(10, 2026));
+    await service.saveMonthlyPlan('biz-1', { month: 10, year: 2026, incomeTarget: 1, expenseBudget: 1, fromMonth: 10, fromYear: 2026 });
+    expect(prisma.incomeGoal.upsert).toHaveBeenCalledTimes(1);
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+    await expect(service.saveMonthlyPlan('biz-1', { month: 10, year: 2026, incomeTarget: 1, expenseBudget: 1, fromMonth: 9 })).rejects.toThrow(
+      'Send both fromMonth and fromYear',
+    );
   });
 
   it('lists every plan newest first, an old plan without a budget reading null', async () => {
@@ -174,7 +230,10 @@ describe('changing and deleting a category', () => {
   });
   const setupDelete = ({ uses = 0, others = 1, target = category({ id: 'c2', name: 'Groceries' }) as ReturnType<typeof category> | null } = {}) => {
     const tx = {
-      transactionEntry: { updateMany: vi.fn().mockResolvedValue({ count: uses }) },
+      transactionEntry: {
+        findMany: vi.fn().mockResolvedValue(Array.from({ length: uses }, (_, i) => ({ id: `e${i + 1}` }))),
+        updateMany: vi.fn().mockResolvedValue({ count: uses }),
+      },
       budgetCategory: { delete: vi.fn(), update: vi.fn() },
     };
     const prisma = {
@@ -184,7 +243,7 @@ describe('changing and deleting a category', () => {
         delete: vi.fn(),
         update: vi.fn(),
       },
-      transactionEntry: { count: vi.fn().mockResolvedValue(uses) },
+      transactionEntry: { count: vi.fn().mockResolvedValue(uses), updateMany: vi.fn().mockResolvedValue({ count: 2 }) },
       $transaction: vi.fn((work: (client: typeof tx) => unknown) => work(tx)),
     };
     return { service: new BudgetsService(prisma as never), prisma, tx };
@@ -192,16 +251,16 @@ describe('changing and deleting a category', () => {
 
   it('deletes an unused category at once', async () => {
     const { service, prisma } = setupDelete();
-    await expect(service.deleteCategory('biz-1', 'c1')).resolves.toEqual({ id: 'c1', moved: 0 });
+    await expect(service.deleteCategory('biz-1', 'c1')).resolves.toEqual({ id: 'c1', moved: 0, movedEntryIds: [] });
     expect(prisma.budgetCategory.delete).toHaveBeenCalledWith({ where: { id: 'c1' } });
   });
 
   it('moves the transactions of a category in use to another of its type first', async () => {
     const { service, prisma, tx } = setupDelete({ uses: 4 });
     await expect(service.deleteCategory('biz-1', 'c1')).rejects.toThrow('Pick the expense category they move to');
-    await expect(service.deleteCategory('biz-1', 'c1', 'c2')).resolves.toEqual({ id: 'c1', moved: 4 });
+    await expect(service.deleteCategory('biz-1', 'c1', 'c2')).resolves.toEqual({ id: 'c1', moved: 4, movedEntryIds: ['e1', 'e2', 'e3', 'e4'] });
     expect(tx.transactionEntry.updateMany).toHaveBeenCalledWith({
-      where: { categoryId: 'Food', transaction: { businessId: 'biz-1', transactionType: 'EXPENSE' } },
+      where: { categoryId: 'Food', transaction: { businessId: 'biz-1', transactionType: 'EXPENSE' }, id: { in: ['e1', 'e2', 'e3', 'e4'] } },
       data: { categoryId: 'Groceries' },
     });
     expect(tx.budgetCategory.delete).toHaveBeenCalledWith({ where: { id: 'c1' } });
@@ -213,6 +272,28 @@ describe('changing and deleting a category', () => {
       'Pick another expense category',
     );
     await expect(setupDelete({ uses: 2, others: 0 }).service.deleteCategory('biz-1', 'c1')).rejects.toThrow('This is the only expense category');
+  });
+
+  it('undoes a delete: the category again, and only its moved entries still in the other one back', async () => {
+    const { service, prisma } = setupDelete();
+    const created = category({ id: 'c9' });
+    const create = vi.spyOn(service, 'createCategory').mockResolvedValue(created as never);
+    await expect(
+      service.restoreCategory('biz-1', { type: 'EXPENSE', name: 'Food', color: 'orange', movedTo: 'Groceries', entryIds: ['e1', 'e2'] }),
+    ).resolves.toMatchObject({ id: 'c9', restored: 2 });
+    expect(create).toHaveBeenCalledWith('biz-1', { type: 'EXPENSE', name: 'Food', color: 'orange' });
+    expect(prisma.transactionEntry.updateMany).toHaveBeenCalledWith({
+      where: { id: { in: ['e1', 'e2'] }, categoryId: 'Groceries', transaction: { businessId: 'biz-1', transactionType: 'EXPENSE' } },
+      data: { categoryId: 'Food' },
+    });
+  });
+
+  it('undoes the delete of an unused category without touching entries', async () => {
+    const { service, prisma } = setupDelete();
+    vi.spyOn(service, 'createCategory').mockResolvedValue(category() as never);
+    await expect(service.restoreCategory('biz-1', { type: 'EXPENSE', name: 'Food' })).resolves.toMatchObject({ restored: 0 });
+    expect(prisma.transactionEntry.updateMany).not.toHaveBeenCalled();
+    await expect(service.restoreCategory('biz-1', { type: 'EXPENSE', name: 'Food', entryIds: ['e1'] })).rejects.toThrow('Send the category');
   });
 
   it('keeps Zakat for the Zakat page', async () => {

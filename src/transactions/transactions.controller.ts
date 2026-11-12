@@ -52,4 +52,11 @@ export class TransactionsController {
   restore(@Param('businessId') businessId: string, @Param('id') id: string, @CurrentUser() user: RequestUser) {
     return this.transactionsService.restoreTransaction(businessId, id, user.id);
   }
+
+  // Undo of an edit made minutes ago: :id is the entry the edit posted.
+  @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
+  @Post(':id/undo-edit')
+  undoEdit(@Param('businessId') businessId: string, @Param('id') id: string, @CurrentUser() user: RequestUser) {
+    return this.transactionsService.undoCorrection(businessId, id, user.id);
+  }
 }
