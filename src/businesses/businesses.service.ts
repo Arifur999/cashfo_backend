@@ -273,6 +273,12 @@ export class BusinessesService {
       throw new BadRequestException('Cannot delete a workspace that still has transactions.');
     }
 
+    // A group's money lives in its own entries: with any, it can only be paused.
+    if (business.type === 'GROUP') {
+      const [expenses, contributions] = await Promise.all([this.prisma.groupExpense.count({ where: { businessId } }), this.prisma.groupContribution.count({ where: { businessId } })]);
+      if (expenses + contributions > 0) throw new BadRequestException('This group has money entries, so it can’t be deleted. Pause it instead.');
+    }
+
     await this.prisma.business.update({ where: { id: businessId }, data: { deletedAt: new Date() } });
     return { success: true };
   }

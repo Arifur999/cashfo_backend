@@ -8,6 +8,7 @@ import { CreateGroupExpenseDto } from './dto/create-group-expense.dto.js';
 import { CreateGroupMemberDto } from './dto/create-group-member.dto.js';
 import { CreateGroupMonthBudgetDto } from './dto/create-group-month-budget.dto.js';
 import { GroupCategorySetupDto } from './dto/group-category-setup.dto.js';
+import { ReorderGroupCategoriesDto } from './dto/reorder-group-categories.dto.js';
 import { GroupCostSplitDto } from './dto/group-cost-split.dto.js';
 import {
   GroupActivityQueryDto,
@@ -218,6 +219,13 @@ export class GroupExpensesController {
     return this.groupExpensesService.updateExpenseCategory(businessId, id, dto, user.id);
   }
 
+  // The Categories page's drag handle: every category, in its new order.
+  @RequireRole(MemberRole.OWNER)
+  @Put('expenses/categories/order')
+  reorderExpenseCategories(@Param('businessId') businessId: string, @Body() dto: ReorderGroupCategoriesDto, @CurrentUser() user: RequestUser) {
+    return this.groupExpensesService.reorderExpenseCategories(businessId, dto.ids, user.id);
+  }
+
   @RequireRole(MemberRole.OWNER)
   @Delete('expenses/categories/:id')
   deleteExpenseCategory(@Param('businessId') businessId: string, @Param('id') id: string, @CurrentUser() user: RequestUser) {
@@ -308,6 +316,12 @@ export class GroupExpensesController {
   @Get('month-totals')
   monthTotals(@Param('businessId') businessId: string) {
     return this.groupExpensesService.monthTotals(businessId);
+  }
+
+  // How many money entries the group has (Settings' danger zone).
+  @Get('entries/count')
+  entryCount(@Param('businessId') businessId: string) {
+    return this.groupExpensesService.entryCount(businessId);
   }
 
   @Get('settings')
