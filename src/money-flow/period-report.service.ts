@@ -3,6 +3,7 @@ import { Prisma } from '@prisma/client';
 import { dhakaDateKey } from '../common/dhaka.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { ReceivablesPayablesService } from '../receivables-payables/receivables-payables.service.js';
+import { goalColorAt } from '../savings-goals/goal-colors.js';
 import { SavingsGoalsService } from '../savings-goals/savings-goals.service.js';
 import { MoneyFlowService } from './money-flow.service.js';
 import { NetWorthService, type WorthOn } from './net-worth.service.js';
@@ -75,9 +76,11 @@ export class PeriodReportService {
         takenOut: taka(taken._sum.amount),
         totalSaved: taka(open.reduce((sum, goal) => sum + Number(goal.currentAmount), 0)),
         completed: open.filter((goal) => goal.status === 'COMPLETED' && dhakaDateKey(goal.updatedAt) >= from && dhakaDateKey(goal.updatedAt) <= to).length,
+        // Each goal in its card colour, its place counted in the whole list as
+        // the Savings pages count it.
         goals: open
           .filter((goal) => goal.status !== 'COMPLETED' || addedTo(goal.id) > 0)
-          .map((goal) => ({ id: goal.id, name: goal.name, added: addedTo(goal.id), saved: taka(goal.currentAmount), target: taka(goal.targetAmount), status: goal.status }))
+          .map((goal) => ({ id: goal.id, name: goal.name, added: addedTo(goal.id), saved: taka(goal.currentAmount), target: taka(goal.targetAmount), status: goal.status, color: goalColorAt(goal.color, goals.indexOf(goal)) }))
           .sort((a, b) => b.added - a.added || b.saved - a.saved),
       },
     };
