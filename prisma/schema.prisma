@@ -3191,6 +3191,9 @@ enum GroupMemberRole {
 enum GroupKind {
   FAMILY
   MESS
+  // A trip or an office: everything shared equally, like a mess without meals.
+  TRIP
+  OFFICE
 }
 
 // How an expense is shared: equally (everyone that day, or the members it
