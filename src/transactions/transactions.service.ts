@@ -7,7 +7,7 @@ import { PrismaService } from '../prisma/prisma.service.js';
 import { CreateTransactionDto } from './dto/create-transaction.dto.js';
 import { CreateTransactionEntryDto } from './dto/create-transaction-entry.dto.js';
 import { ListTransactionsQueryDto } from './dto/list-transactions-query.dto.js';
-import { BUILT_IN_CHARGE_CATEGORIES, CHARGE_CATEGORY } from '../budgets/app-categories.js';
+import { BUILT_IN_CHARGE_CATEGORIES, CHARGE_CATEGORIES, CHARGE_CATEGORY } from '../budgets/app-categories.js';
 
 // The reason the Transactions page's Delete voids with. Only a void made
 // with it can be undone (restoreTransaction): the void endpoint takes only
@@ -383,7 +383,7 @@ export class TransactionsService {
     // A picked category must be a built-in one or one of the workspace's
     // expense categories.
     const category = charge.category?.trim() || CHARGE_CATEGORY;
-    if (!BUILT_IN_CHARGE_CATEGORIES.includes(category)) {
+    if (!CHARGE_CATEGORIES.includes(category)) {
       const known = await tx.budgetCategory.findFirst({ where: { businessId, type: 'EXPENSE', name: category }, select: { id: true } });
       if (!known) throw new BadRequestException(`No expense category named "${category}"`);
     }

@@ -18,6 +18,13 @@ export const GIFTS_CATEGORY = 'Gifts';
 export const CHARGE_CATEGORY = 'Bank charge';
 export const BUILT_IN_CHARGE_CATEGORIES = [CHARGE_CATEGORY, 'Mobile banking fee', 'Service charge'];
 
+// The transfer popup's last charge choice. Not reserved, like GIFTS_CATEGORY:
+// a customer's own "Other" expense category is the same money.
+export const OTHER_CHARGE_CATEGORY = 'Other';
+
+// Every name a charge can be filed under without a category row of its own.
+export const CHARGE_CATEGORIES = [...BUILT_IN_CHARGE_CATEGORIES, OTHER_CHARGE_CATEGORY];
+
 // Money with no category at all is read under this name (ReportsService).
 export const UNCATEGORISED = 'Uncategorised';
 
