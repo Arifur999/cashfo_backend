@@ -1,7 +1,8 @@
 import { SavingsReminderChannel } from '@prisma/client';
-import { Type } from 'class-transformer';
-import { IsDateString, IsEnum, IsInt, IsNotEmpty, IsOptional, IsPositive, IsString, Max, ValidateIf } from 'class-validator';
+import { Transform, Type } from 'class-transformer';
+import { IsDateString, IsEnum, IsIn, IsInt, IsNotEmpty, IsOptional, IsPositive, IsString, Max, ValidateIf } from 'class-validator';
 import { IsMoney, whenSent } from '../../common/dto.js';
+import { GOAL_COLORS, lowerColor } from '../goal-colors.js';
 
 export class CreateSavingsGoalDto {
   @IsString()
@@ -50,4 +51,18 @@ export class CreateSavingsGoalDto {
   @IsString()
   @IsNotEmpty()
   startAccountId?: string;
+
+  // Its card colour, one of GOAL_COLORS. Left out, the page draws it in the
+  // colour its place in the list gives it.
+  @ValidateIf(whenSent)
+  @Transform(lowerColor)
+  @IsIn(GOAL_COLORS, { message: 'Pick one of the card colours' })
+  color?: string;
+
+  // Start goal on a saving plan: the plan is removed in the same database
+  // transaction the goal is made in.
+  @ValidateIf(whenSent)
+  @IsString()
+  @IsNotEmpty()
+  fromPlanId?: string;
 }

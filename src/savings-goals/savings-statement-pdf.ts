@@ -5,7 +5,7 @@ import { isWinAnsiText, PdfDocument, type PdfColor, textWidth, wrapText } from '
 // money came from and where it sits now. English only: the PDF fonts have
 // no Bangla, so the app offers Print for a statement with Bangla names.
 
-export type StatementRowKind = 'ALREADY_SAVED' | 'ADDED' | 'MOVED_IN' | 'MOVED_OUT' | 'WITHDRAWN' | 'ACCOUNT_CHANGED';
+export type StatementRowKind = 'ALREADY_SAVED' | 'ADDED' | 'MOVED_IN' | 'MOVED_OUT' | 'WITHDRAWN' | 'ACCOUNT_CHANGED' | 'PROFIT';
 
 export interface StatementPdfInput {
   platformName: string;
@@ -14,7 +14,7 @@ export interface StatementPdfInput {
   today: string;
   rows: { date: Date; kind: StatementRowKind; from: string | null; to: string | null; notes: string | null; moneyIn: string | null; moneyOut: string | null; balance: string; moved?: string | null }[];
   totals: { opening: string; moneyIn: string; moneyOut: string; balance: string };
-  sources: { kind: 'ACCOUNT' | 'ALREADY_SAVED' | 'GOAL'; name: string | null; amount: string }[];
+  sources: { kind: 'ACCOUNT' | 'ALREADY_SAVED' | 'GOAL' | 'PROFIT'; name: string | null; amount: string }[];
   now: { name: string | null; amount: string }[];
 }
 
@@ -49,6 +49,9 @@ export function statementRowText(row: StatementPdfInput['rows'][number], goalNam
       return { details: 'Already saved when the goal was made', from: 'Already saved', to: shown(row.to) };
     case 'ADDED':
       return { details: `Money added${note}`, from: shown(row.from), to: shown(row.to) };
+    case 'PROFIT':
+      // From: the income category it counts under.
+      return { details: `Profit from the bank${note}`, from: `${shown(row.from, 'Profit')} (income)`, to: shown(row.to) };
     case 'MOVED_IN':
       return { details: `Moved in from another goal${note}`, from: `${shown(row.from)} (goal)`, to: shown(goalName) };
     case 'MOVED_OUT':
@@ -227,7 +230,7 @@ export function renderStatementPdf(input: StatementPdfInput): Buffer {
     return at + 4;
   };
   const sourceLabel = (source: StatementPdfInput['sources'][number]) =>
-    source.kind === 'ALREADY_SAVED' ? 'Already saved' : source.kind === 'GOAL' ? `Moved in from ${shown(source.name)}` : shown(source.name);
+    source.kind === 'ALREADY_SAVED' ? 'Already saved' : source.kind === 'PROFIT' ? `Profit - ${shown(source.name, 'Bank profit')}` : source.kind === 'GOAL' ? `Moved in from ${shown(source.name)}` : shown(source.name);
   const end = Math.max(
     box(MARGIN, 'Money came from', input.sources.map((source) => [sourceLabel(source), takaLabel(source.amount)]), 'Total in', takaLabel(input.totals.moneyIn), 'Nothing came in yet.'),
     box(MARGIN + half + 16, 'Where it is now', input.now.map((item) => [shown(item.name, 'Savings wallet'), takaLabel(item.amount)]), 'Current balance', takaLabel(input.totals.balance), 'Nothing is left in savings accounts.'),

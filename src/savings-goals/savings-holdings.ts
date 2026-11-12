@@ -111,6 +111,7 @@ export function goalHoldings(entries: readonly HoldingEntry[], parts?: Map<strin
     const record = (taken: WalletPart[]) => parts?.set(entry.id, taken);
     switch (entry.type) {
       case 'CONTRIBUTION':
+      case 'PROFIT':
         add(holdings, entry.savingsAccountId ?? '', amount);
         record([{ walletId: entry.savingsAccountId ?? '', amount }]);
         break;

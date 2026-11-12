@@ -2126,6 +2126,7 @@ model Business {
   budgetCategories            BudgetCategory[]
   incomeGoals                 IncomeGoal[]
   savingsGoals                SavingsGoal[]
+  savingsPlans                SavingsPlan[]
   zakatProfile                ZakatProfile?
   zakatExtras                 ZakatExtra[]
   zakatPayments               ZakatPayment[]
@@ -2525,6 +2526,10 @@ model SavingsGoal {
   // every deposit goes here. Money moved in from another goal can sit in
   // other accounts too (its holdings). Null for an older goal with no
   // deposits yet, or once its account is deleted.
+  // The card colour the customer picked (one of GOAL_COLORS,
+  // savings-goals/goal-colors.ts). Null: an older goal, drawn in the colour
+  // its place in the list gives it.
+  color                  String?
   accountId              String?
   account                Account?                @relation("SavingsGoalAccount", fields: [accountId], references: [id], onDelete: SetNull)
   createdAt              DateTime                @default(now())
@@ -2533,6 +2538,51 @@ model SavingsGoal {
 
   @@index([businessId])
   @@index([accountId])
+}
+
+// Savings Goals > Saving plans: things the customer wants to save for later.
+// A plan is only a note -- no money is saved or taken -- until it is started
+// as a goal (SavingsGoalsService.create() with fromPlanId removes it), and a
+// goal with no money moved yet can go back to being a plan.
+model SavingsPlan {
+  id         String              @id @default(uuid())
+  businessId String
+  business   Business            @relation(fields: [businessId], references: [id])
+  name       String
+  // What kind of thing it is (the form's chips): trip, phone, umrah,
+  // education, wedding or others (SAVINGS_PLAN_CATEGORIES).
+  category   String              @default("others")
+  // Its card colour, one of GOAL_COLORS; the goal it starts takes it.
+  color      String
+  amount     Decimal             @db.Decimal(14, 2)
+  // When it is needed: within 3 or 6 months or 1 or 2 years from now, by
+  // a date (needBy), or some day with no date.
+  horizon    SavingsPlanHorizon
+  needBy     DateTime?
+  priority   SavingsPlanPriority @default(MEDIUM)
+  note       String?
+  link       String?
+  // The day it was planned; kept when a deleted plan is put back.
+  plannedOn  DateTime
+  createdAt  DateTime            @default(now())
+  updatedAt  DateTime            @updatedAt
+
+  @@index([businessId])
+}
+
+enum SavingsPlanHorizon {
+  THREE_MONTHS
+  SIX_MONTHS
+  ONE_YEAR
+  TWO_YEARS
+  BY_DATE
+  SOMEDAY
+}
+
+enum SavingsPlanPriority {
+  HIGH
+  MEDIUM
+  LOW
 }
 
 enum SavingsGoalStatus {
@@ -2574,6 +2624,12 @@ enum SavingsEntryType {
   // (transactionId). One entry per wallet it left, sharing a groupId. The
   // goal's saved amount stays the same.
   ACCOUNT_CHANGE
+  // Profit the bank paid on the goal's savings (Add profit): real money
+  // into the goal's savings wallet (savingsAccountId), counted as income
+  // under the category picked (category), backed by an INCOME Transaction
+  // (transactionId). No account of the customer's pays it, so it is not
+  // money "added" from their balance.
+  PROFIT
 }
 
 // moneyAccountId/relatedGoalId/transactionId are deliberately plain string
@@ -2604,6 +2660,9 @@ model SavingsGoalEntry {
   // pair per wallet), and they share this id, so the move lists and undoes
   // as one.
   groupId          String?
+  // PROFIT only: the income category it is counted under (a category
+  // name, as TransactionEntry.categoryId holds it).
+  category         String?
   notes            String?
   createdAt        DateTime         @default(now())
 
