@@ -1,5 +1,5 @@
 import { GroupKind, GroupSplit } from '@prisma/client';
-import { IsBoolean, IsEnum, IsIn, IsInt, IsNumber, IsOptional, IsUUID, Matches, Max, Min, ValidateIf } from 'class-validator';
+import { IsBoolean, IsEnum, IsInt, IsNumber, IsOptional, IsUUID, Matches, Max, Min, ValidateIf } from 'class-validator';
 import { whenSent } from '../../common/dto.js';
 
 // Any of a group's settings; the rest stay as they are.
@@ -53,9 +53,12 @@ export class UpdateGroupSettingsDto {
   @Max(5)
   dinnerUnits?: number;
 
-  // Warn once this much of a month's budget is spent; null = never.
+  // Warn once this much of a month's budget is spent (50 to 100, as the
+  // v16 Budget board lets you type); null = never.
   @ValidateIf((_, value) => value !== undefined && value !== null)
-  @IsIn([80, 90, 100])
+  @IsInt()
+  @Min(50)
+  @Max(100)
   budgetWarnPercent?: number | null;
 
   // Pause the group (kept out of new entries) or resume it.
