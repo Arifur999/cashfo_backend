@@ -43,8 +43,10 @@ export interface SettleInput {
   end: string;
   // In join order; the order of the rows.
   members: SettleMember[];
-  // Signed: a return is negative.
-  contributions: { memberId: string; amount: number }[];
+  // Signed: a return is negative. kind: a settle-up (SETTLE) or a balance
+  // carried in at a close (CARRY) counts in the balance, but isn't money
+  // given: it stays out of grossDeposited / returned. Absent: a deposit.
+  contributions: { memberId: string; amount: number; kind?: string }[];
   expenses: SettleExpense[];
   // Meal units per member over the period (meal counting on).
   meals: { memberId: string; units: number }[];
@@ -172,15 +174,19 @@ export function settleGroup(input: SettleInput): SettleResult {
   const deposited = new Map<string, number>();
   const returned = new Map<string, number>();
   let contributedPaisa = 0;
+  // Everything in, settle-ups and carried balances too: what the balance uses.
+  const netContributed = new Map<string, number>();
   for (const contribution of input.contributions) {
     const amount = paisa(contribution.amount);
     contributedPaisa += amount;
+    netContributed.set(contribution.memberId, (netContributed.get(contribution.memberId) ?? 0) + amount);
+    if (contribution.kind === 'SETTLE' || contribution.kind === 'CARRY') continue;
     if (amount < 0) returned.set(contribution.memberId, (returned.get(contribution.memberId) ?? 0) - amount);
     else deposited.set(contribution.memberId, (deposited.get(contribution.memberId) ?? 0) + amount);
   }
 
   const sharingIds = new Set(sharing.map((member) => member.id));
-  const touched = (id: string) => deposited.has(id) || returned.has(id) || pocket.has(id) || meals.has(id) || shares.has(id);
+  const touched = (id: string) => netContributed.has(id) || deposited.has(id) || returned.has(id) || pocket.has(id) || meals.has(id) || shares.has(id);
   const rows = [...sharing, ...input.members.filter((member) => !sharingIds.has(member.id) && touched(member.id))].map((member): SettleRow => {
     const gross = deposited.get(member.id) ?? 0;
     const back = returned.get(member.id) ?? 0;
@@ -193,13 +199,13 @@ export function settleGroup(input: SettleInput): SettleResult {
       sharing: sharingIds.has(member.id),
       grossDeposited: taka(gross),
       returned: taka(back),
-      contributed: taka(gross - back),
+      contributed: taka(netContributed.get(member.id) ?? 0),
       pocketPaid: taka(pocketPaid),
       mealUnits: Math.round((mealUnits.get(member.id) ?? 0) * 100) / 100,
       mealCost: taka(mealCost),
       otherShare: taka(otherShare),
       share: taka(mealCost + otherShare),
-      balance: taka(gross - back + pocketPaid - mealCost - otherShare),
+      balance: taka((netContributed.get(member.id) ?? 0) + pocketPaid - mealCost - otherShare),
     };
   });
 

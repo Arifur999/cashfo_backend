@@ -1621,7 +1621,7 @@ export class GroupExpensesService {
     const inPeriod = { gte: periodStart, lte: periodEnd };
     const [members, contributions, expenses, meals, settings, cashRows, fundExpenses, handovers] = await Promise.all([
       client.groupMember.findMany({ where: { businessId }, orderBy: [{ isOwner: 'desc' }, { createdAt: 'asc' }] }),
-      client.groupContribution.findMany({ where: { businessId, date: inPeriod }, select: { groupMemberId: true, amount: true } }),
+      client.groupContribution.findMany({ where: { businessId, date: inPeriod }, select: { groupMemberId: true, amount: true, kind: true } }),
       client.groupExpense.findMany({ where: { businessId, date: inPeriod }, include: { splits: true } }),
       client.groupMeal.findMany({ where: { businessId, date: inPeriod } }),
       client.groupSettings.findUnique({ where: { businessId } }),
@@ -1651,7 +1651,7 @@ export class GroupExpensesService {
         leftOn: m.leftOn ? dayKey(m.leftOn) : null,
         shareUnits: custom ? Number(m.costPercent ?? 0) : 1,
       })),
-      contributions: contributions.map((c) => ({ memberId: c.groupMemberId, amount: Number(c.amount) })),
+      contributions: contributions.map((c) => ({ memberId: c.groupMemberId, amount: Number(c.amount), kind: c.kind })),
       expenses: expenses.map((e) => ({
         amount: Number(e.amount),
         date: dayKey(e.date),
