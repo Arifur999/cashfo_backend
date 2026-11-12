@@ -1,6 +1,8 @@
-import { IsDateString, IsNotEmpty, IsOptional, IsString } from 'class-validator';
-import { IsMoney } from '../../common/dto.js';
+import { Transform } from 'class-transformer';
+import { IsDateString, IsNotEmpty, IsOptional, IsString, MaxLength } from 'class-validator';
+import { IsMoney, trim } from '../../common/dto.js';
 
+// A sale, and a sale set right (Purchase & Sell › Edit sale).
 export class SellAssetDto {
   @IsMoney()
   soldPrice: number;
@@ -13,6 +15,8 @@ export class SellAssetDto {
   date: string;
 
   @IsOptional()
+  @Transform(trim)
   @IsString()
+  @MaxLength(300)
   notes?: string;
 }

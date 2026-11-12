@@ -318,23 +318,7 @@ export class TransactionsService {
       if (paidWith?.status !== 'POSTED') throw new BadRequestException('Bring back the entry this charge was paid with first');
     }
 
-    const distinctAccountIds = [...new Set(original.entries.map((e) => e.accountId))];
-    await this.lockAccounts(tx, distinctAccountIds);
-
-    // Claimed with a condition: of two undos racing, only one gets here.
-    const claimed = await tx.transaction.updateMany({
-      where: { id: original.id, status: 'VOIDED', voidedReason: reason },
-      data: { status: 'POSTED', voidedAt: null, voidedReason: null },
-    });
-    if (claimed.count === 0) {
-      throw new BadRequestException('This transaction is back already');
-    }
-    await tx.transactionEntry.deleteMany({ where: { transactionId: reversal.id } });
-    await tx.transaction.delete({ where: { id: reversal.id } });
-
-    for (const accountId of distinctAccountIds) {
-      await this.accountBalanceService.recalculateBalance(accountId, tx);
-    }
+    await this.reinstate(tx, original, reversal.id, reason);
 
     const charges = await tx.transaction.findMany({
       where: { businessId, chargeForId: original.id, status: 'VOIDED', reversalOfId: null, voidedReason: reason },
@@ -345,6 +329,43 @@ export class TransactionsService {
     }
 
     return { id: original.id, status: 'POSTED' as const };
+  }
+
+  // Brings back a posting a feature voided with `reason` (an asset delete
+  // that was undone), inside the caller's database transaction: the posting
+  // stands again and its reversal goes, as with an undone delete above.
+  // False when the posting isn't one voided that way (already back, or
+  // voided for another reason), so the caller leaves it as it is.
+  async reinstateVoided(tx: Prisma.TransactionClient, businessId: string, transactionId: string, reason: string): Promise<boolean> {
+    const original = await tx.transaction.findUnique({ where: { id: transactionId }, include: { entries: true } });
+    if (!original || original.businessId !== businessId) {
+      throw new NotFoundException('Transaction not found');
+    }
+    if (original.status !== 'VOIDED' || original.reversalOfId || original.voidedReason !== reason) return false;
+    const reversal = await tx.transaction.findFirst({ where: { reversalOfId: original.id }, select: { id: true } });
+    if (!reversal) return false;
+    await this.reinstate(tx, original, reversal.id, reason);
+    return true;
+  }
+
+  // The posting stands again (claimed with a condition: of two undos racing,
+  // only one gets here) and its reversal is removed, then every account it
+  // touches is recalculated.
+  private async reinstate(tx: Prisma.TransactionClient, original: { id: string; entries: { accountId: string }[] }, reversalId: string, reason: string) {
+    const distinctAccountIds = [...new Set(original.entries.map((e) => e.accountId))];
+    await this.lockAccounts(tx, distinctAccountIds);
+    const claimed = await tx.transaction.updateMany({
+      where: { id: original.id, status: 'VOIDED', voidedReason: reason },
+      data: { status: 'POSTED', voidedAt: null, voidedReason: null },
+    });
+    if (claimed.count === 0) {
+      throw new BadRequestException('This transaction is back already');
+    }
+    await tx.transactionEntry.deleteMany({ where: { transactionId: reversalId } });
+    await tx.transaction.delete({ where: { id: reversalId } });
+    for (const accountId of distinctAccountIds) {
+      await this.accountBalanceService.recalculateBalance(accountId, tx);
+    }
   }
 
   // A charge (a bank or service fee) paid with a loan entry, out of the
