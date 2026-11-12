@@ -12,7 +12,9 @@ const INCOME = [
   { id: 'interest', name: 'Interest Income', accountType: 'INCOME' },
 ];
 
-const setup = (goalOver: Record<string, unknown> = {}, entryCount = 0, planGone = false) => {
+const PLAN = { id: 'plan-9', businessId: 'biz-1', name: 'Hajj', category: 'umrah', color: '#235347', amount: new Prisma.Decimal(750000), horizon: 'BY_DATE', needBy: new Date('2029-05-31'), priority: 'HIGH', note: 'For Abba', link: null, plannedOn: new Date('2026-08-02'), fromGoal: null };
+
+const setup = (goalOver: Record<string, unknown> = {}, entryCount = 0, planGone = false, entries: Record<string, unknown>[] = [], plan: Record<string, unknown> | null = PLAN) => {
   const goal = {
     id: 'goal-1',
     businessId: 'biz-1',
@@ -23,6 +25,16 @@ const setup = (goalOver: Record<string, unknown> = {}, entryCount = 0, planGone 
     targetDate: new Date('2099-12-31'),
     description: 'With flights',
     color: '#b0593a',
+    durationMonths: 30,
+    startAmount: new Prisma.Decimal(0),
+    planStartAmount: null,
+    planStartDate: null,
+    reminderDate: null,
+    reminderChannel: null,
+    reachedAt: null,
+    monthlyReminder: false,
+    fromPlan: null,
+    createdAt: new Date('2026-11-03T12:00:00.000Z'),
     ...goalOver,
   };
   const tx = {
@@ -34,10 +46,13 @@ const setup = (goalOver: Record<string, unknown> = {}, entryCount = 0, planGone 
     savingsGoalEntry: {
       create: vi.fn(({ data }: { data: Record<string, unknown> }) => Promise.resolve({ id: 'e-1', ...data })),
       count: vi.fn(() => Promise.resolve(entryCount)),
+      findMany: vi.fn(() => Promise.resolve(entries)),
+      delete: vi.fn(() => Promise.resolve({})),
     },
     savingsPlan: {
       create: vi.fn(({ data }: { data: Record<string, unknown> }) => Promise.resolve({ id: 'plan-1', ...data })),
       deleteMany: vi.fn(() => Promise.resolve({ count: planGone ? 0 : 1 })),
+      findUnique: vi.fn(() => Promise.resolve(plan)),
     },
     account: { findUnique: vi.fn(() => Promise.resolve(WALLET)), findMany: vi.fn(() => Promise.resolve(INCOME)) },
   };
@@ -48,6 +63,7 @@ const setup = (goalOver: Record<string, unknown> = {}, entryCount = 0, planGone 
   const transactions = {
     withLocks: vi.fn((_keys: string[], run: (client: typeof tx) => Promise<unknown>) => run(tx)),
     createTransaction: vi.fn(() => Promise.resolve({ id: 'txn-1' })),
+    voidTransaction: vi.fn(() => Promise.resolve({})),
   };
   const service = new SavingsGoalsService(prisma as never, transactions as never, {} as never);
   vi.spyOn(service as unknown as Internals, 'maybeMarkCompleted').mockImplementation((value) => Promise.resolve(value));
@@ -112,7 +128,8 @@ describe('Saving plans and goals', () => {
     const dto = { name: 'Hajj', targetAmount: 750000, targetDate: '2029-05-31', durationMonths: 31, color: '#235347', fromPlanId: 'plan-9' } as CreateSavingsGoalDto;
     await service.create('biz-1', dto, 'u-1');
     expect(tx.savingsPlan.deleteMany).toHaveBeenCalledWith({ where: { id: 'plan-9', businessId: 'biz-1' } });
-    expect(tx.savingsGoal.create).toHaveBeenCalledWith({ data: expect.objectContaining({ name: 'Hajj', color: '#235347' }) });
+    // The goal keeps the plan as it was, for Undo.
+    expect(tx.savingsGoal.create).toHaveBeenCalledWith({ data: expect.objectContaining({ name: 'Hajj', color: '#235347', fromPlan: expect.objectContaining({ name: 'Hajj', priority: 'HIGH', plannedOn: '2026-08-02T00:00:00.000Z' }) }) });
   });
 
   it('does not make a second goal from a plan already started', async () => {
@@ -120,5 +137,53 @@ describe('Saving plans and goals', () => {
     const dto = { name: 'Hajj', targetAmount: 750000, targetDate: '2029-05-31', durationMonths: 31, fromPlanId: 'plan-9' } as CreateSavingsGoalDto;
     await expect(service.create('biz-1', dto, 'u-1')).rejects.toBeInstanceOf(NotFoundException);
     expect(tx.savingsGoal.create).not.toHaveBeenCalled();
+  });
+});
+
+describe('Undo of Start goal and of Move back to plans', () => {
+  const snapshot = { name: 'Hajj', category: 'umrah', color: '#235347', amount: '750000.00', horizon: 'BY_DATE', needBy: '2029-05-31T00:00:00.000Z', priority: 'HIGH', note: 'For Abba', link: null, plannedOn: '2026-08-02T00:00:00.000Z' };
+
+  it('puts the plan back as it was, reverses what was already saved and removes the goal', async () => {
+    const opening = { id: 'e-0', type: 'CONTRIBUTION', moneyAccountId: null, transactionId: 'txn-open' };
+    const { service, tx, transactions } = setup({ fromPlan: snapshot }, 1, false, [opening]);
+    await expect(service.undoStart('biz-1', 'goal-1', 'u-1')).resolves.toEqual({ planId: 'plan-1' });
+    // The entry goes before the void: a void refuses a posting a goal still owns.
+    expect(tx.savingsGoalEntry.delete).toHaveBeenCalledWith({ where: { id: 'e-0' } });
+    expect(transactions.voidTransaction).toHaveBeenCalledWith('biz-1', 'txn-open', expect.any(String), 'u-1', tx);
+    expect(tx.savingsPlan.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ name: 'Hajj', priority: 'HIGH', plannedOn: new Date('2026-08-02'), needBy: new Date('2029-05-31') }),
+    });
+    expect(tx.savingsGoal.delete).toHaveBeenCalledWith({ where: { id: 'goal-1' } });
+  });
+
+  it('keeps a goal money has moved for since it started', async () => {
+    const deposit = { id: 'e-1', type: 'CONTRIBUTION', moneyAccountId: 'cash', transactionId: 'txn-1' };
+    const { service, tx, transactions } = setup({ fromPlan: snapshot }, 1, false, [deposit]);
+    await expect(service.undoStart('biz-1', 'goal-1', 'u-1')).rejects.toBeInstanceOf(BadRequestException);
+    expect(transactions.voidTransaction).not.toHaveBeenCalled();
+    expect(tx.savingsGoal.delete).not.toHaveBeenCalled();
+  });
+
+  it('refuses a goal that was not started from a plan', async () => {
+    await expect(setup({ fromPlan: null }).service.undoStart('biz-1', 'goal-1', 'u-1')).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('moving back keeps the goal on the plan, and Undo makes it the same goal again', async () => {
+    const moved = setup();
+    await moved.service.moveToPlans('biz-1', 'goal-1');
+    const created = (moved.tx.savingsPlan.create.mock.calls[0] as unknown as [{ data: { fromGoal: Record<string, unknown> } }])[0].data;
+    expect(created.fromGoal).toEqual(expect.objectContaining({ id: 'goal-1', name: 'Umrah trip', accountId: 'dps', createdAt: '2026-11-03T12:00:00.000Z' }));
+
+    const back = setup({}, 0, false, [], { ...PLAN, fromGoal: created.fromGoal });
+    back.tx.account.findUnique = vi.fn(() => Promise.resolve({ ...WALLET, businessId: 'biz-1' }));
+    await expect(back.service.backToGoal('biz-1', 'plan-9')).resolves.toEqual({ goalId: 'goal-1' });
+    expect(back.tx.savingsPlan.deleteMany).toHaveBeenCalledWith({ where: { id: 'plan-9', businessId: 'biz-1' } });
+    expect(back.tx.savingsGoal.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ id: 'goal-1', name: 'Umrah trip', accountId: 'dps', createdAt: new Date('2026-11-03T12:00:00.000Z') }),
+    });
+  });
+
+  it('refuses Undo on a plan that never was a goal', async () => {
+    await expect(setup().service.backToGoal('biz-1', 'plan-9')).rejects.toBeInstanceOf(BadRequestException);
   });
 });

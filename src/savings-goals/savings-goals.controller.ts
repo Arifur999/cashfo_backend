@@ -141,6 +141,13 @@ export class SavingsGoalsController {
     return this.savingsGoalsService.moveToPlans(businessId, id);
   }
 
+  // Undo of Start goal: the plan comes back and the goal goes.
+  @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
+  @Post(':id/undo-start')
+  undoStart(@Param('businessId') businessId: string, @Param('id') id: string, @CurrentUser() user: RequestUser) {
+    return this.savingsGoalsService.undoStart(businessId, id, user.id);
+  }
+
   // Any amount up to what is saved, to a main balance account.
   @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
   @Post(':id/withdrawals')
