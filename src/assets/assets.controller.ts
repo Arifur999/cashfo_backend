@@ -77,14 +77,27 @@ export class AssetsController {
 
   @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
   @Patch(':id')
-  update(@Param('businessId') businessId: string, @Param('id') id: string, @Body() dto: UpdateAssetDto) {
-    return this.assetsService.update(businessId, id, dto);
+  update(@Param('businessId') businessId: string, @Param('id') id: string, @Body() dto: UpdateAssetDto, @CurrentUser() user: RequestUser) {
+    return this.assetsService.update(businessId, id, dto, user.id);
   }
 
   @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
   @Delete(':id')
   remove(@Param('businessId') businessId: string, @Param('id') id: string, @CurrentUser() user: RequestUser) {
     return this.assetsService.remove(businessId, id, user.id);
+  }
+
+  @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
+  @Patch(':id/sale')
+  editSale(@Param('businessId') businessId: string, @Param('id') id: string, @Body() dto: SellAssetDto, @CurrentUser() user: RequestUser) {
+    return this.assetsService.editSale(businessId, id, dto, user.id);
+  }
+
+  // Undo of a delete, for a few minutes after it.
+  @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
+  @Post(':id/restore')
+  restore(@Param('businessId') businessId: string, @Param('id') id: string, @CurrentUser() user: RequestUser) {
+    return this.assetsService.restore(businessId, id, user.id);
   }
 
   @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)

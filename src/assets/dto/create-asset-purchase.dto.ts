@@ -1,11 +1,15 @@
-import { IsDateString, IsNotEmpty, IsOptional, IsString } from 'class-validator';
-import { IsMoney } from '../../common/dto.js';
+import { Transform } from 'class-transformer';
+import { IsDateString, IsNotEmpty, IsOptional, IsString, MaxLength } from 'class-validator';
+import { IsMoney, trim } from '../../common/dto.js';
 
 export class CreateAssetPurchaseDto {
+  @Transform(trim)
   @IsString()
   @IsNotEmpty()
+  @MaxLength(60)
   name: string;
 
+  @Transform(trim)
   @IsString()
   @IsNotEmpty()
   category: string;
@@ -17,9 +21,8 @@ export class CreateAssetPurchaseDto {
   purchasePrice: number;
 
   // Either a regular money account (cash/bank/mfs) or a Savings Wallet --
-  // see AssetsService.requirePaymentAccount(). Omitted entirely by "Current
-  // Asset list"'s simpler Add Assets flow, which just records an asset
-  // without tracking which account paid for it -- see
+  // see AssetsService.requirePaymentAccount(). Omitted for an asset already
+  // owned: it is recorded at its value without any money moving -- see
   // AssetsService.purchase()'s comment.
   @IsOptional()
   @IsString()
@@ -27,6 +30,8 @@ export class CreateAssetPurchaseDto {
   purchaseAccountId?: string;
 
   @IsOptional()
+  @Transform(trim)
   @IsString()
+  @MaxLength(300)
   notes?: string;
 }

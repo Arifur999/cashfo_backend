@@ -2650,6 +2650,8 @@ model Asset {
   soldPrice             Decimal?            @db.Decimal(14, 2)
   soldAccountId         String?
   soldTransactionId     String?             @unique
+  // The note written with the sale (who bought it, papers handed over).
+  soldNote              String?
   notes                 String?
   // Gold or silver jewellery: its metal and weight in vori, so Zakat values
   // it at today's price per vori (null: by currentValue).
@@ -2696,6 +2698,21 @@ model AssetCategoryOption {
   updatedAt    DateTime @updatedAt
 
   @@unique([businessId, name])
+}
+
+// An asset deleted in the last few minutes, kept so the delete can be undone:
+// the asset and its value history as they were (snapshot), and who deleted
+// it. Its postings stay voided until the undo brings them back. Loose ids,
+// no relations: the row outlives the asset and housekeeping removes it once
+// the undo window has passed.
+model AssetDeletion {
+  assetId    String   @id
+  businessId String
+  deletedBy  String
+  deletedAt  DateTime @default(now())
+  snapshot   Json
+
+  @@index([deletedAt])
 }
 
 enum AssetStatus {

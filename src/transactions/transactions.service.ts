@@ -28,7 +28,8 @@ const ENTRY_ACCOUNT_SELECT = { id: true, name: true, nameBn: true, accountType: 
 // date, then by when it was made.
 type Moment = { transactionDate: Date; createdAt: Date };
 const atOrBefore = (a: Moment, b: Moment) =>
-  a.transactionDate.getTime() < b.transactionDate.getTime() || (a.transactionDate.getTime() === b.transactionDate.getTime() && a.createdAt.getTime() <= b.createdAt.getTime());
+  a.transactionDate.getTime() < b.transactionDate.getTime() ||
+  (a.transactionDate.getTime() === b.transactionDate.getTime() && a.createdAt.getTime() <= b.createdAt.getTime());
 
 // The category a loan entry's charge is filed under (categories are names),
 // and the charge categories every workspace has without making them (the
@@ -283,23 +284,7 @@ export class TransactionsService {
       if (paidWith?.status !== 'POSTED') throw new BadRequestException('Bring back the entry this charge was paid with first');
     }
 
-    const distinctAccountIds = [...new Set(original.entries.map((e) => e.accountId))];
-    await this.lockAccounts(tx, distinctAccountIds);
-
-    // Claimed with a condition: of two undos racing, only one gets here.
-    const claimed = await tx.transaction.updateMany({
-      where: { id: original.id, status: 'VOIDED', voidedReason: DELETED_REASON },
-      data: { status: 'POSTED', voidedAt: null, voidedReason: null },
-    });
-    if (claimed.count === 0) {
-      throw new BadRequestException('This transaction is back already');
-    }
-    await tx.transactionEntry.deleteMany({ where: { transactionId: reversal.id } });
-    await tx.transaction.delete({ where: { id: reversal.id } });
-
-    for (const accountId of distinctAccountIds) {
-      await this.accountBalanceService.recalculateBalance(accountId, tx);
-    }
+    await this.reinstate(tx, original, reversal.id, DELETED_REASON);
 
     const charges = await tx.transaction.findMany({
       where: { businessId, chargeForId: original.id, status: 'VOIDED', reversalOfId: null, voidedReason: DELETED_REASON },
@@ -310,6 +295,43 @@ export class TransactionsService {
     }
 
     return { id: original.id, status: 'POSTED' as const };
+  }
+
+  // Brings back a posting a feature voided with `reason` (an asset delete
+  // that was undone), inside the caller's database transaction: the posting
+  // stands again and its reversal goes, as with an undone delete above.
+  // False when the posting isn't one voided that way (already back, or
+  // voided for another reason), so the caller leaves it as it is.
+  async reinstateVoided(tx: Prisma.TransactionClient, businessId: string, transactionId: string, reason: string): Promise<boolean> {
+    const original = await tx.transaction.findUnique({ where: { id: transactionId }, include: { entries: true } });
+    if (!original || original.businessId !== businessId) {
+      throw new NotFoundException('Transaction not found');
+    }
+    if (original.status !== 'VOIDED' || original.reversalOfId || original.voidedReason !== reason) return false;
+    const reversal = await tx.transaction.findFirst({ where: { reversalOfId: original.id }, select: { id: true } });
+    if (!reversal) return false;
+    await this.reinstate(tx, original, reversal.id, reason);
+    return true;
+  }
+
+  // The posting stands again (claimed with a condition: of two undos racing,
+  // only one gets here) and its reversal is removed, then every account it
+  // touches is recalculated.
+  private async reinstate(tx: Prisma.TransactionClient, original: { id: string; entries: { accountId: string }[] }, reversalId: string, reason: string) {
+    const distinctAccountIds = [...new Set(original.entries.map((e) => e.accountId))];
+    await this.lockAccounts(tx, distinctAccountIds);
+    const claimed = await tx.transaction.updateMany({
+      where: { id: original.id, status: 'VOIDED', voidedReason: reason },
+      data: { status: 'POSTED', voidedAt: null, voidedReason: null },
+    });
+    if (claimed.count === 0) {
+      throw new BadRequestException('This transaction is back already');
+    }
+    await tx.transactionEntry.deleteMany({ where: { transactionId: reversalId } });
+    await tx.transaction.delete({ where: { id: reversalId } });
+    for (const accountId of distinctAccountIds) {
+      await this.accountBalanceService.recalculateBalance(accountId, tx);
+    }
   }
 
   // A charge (a bank or service fee) paid with a loan entry, out of the
@@ -502,7 +524,9 @@ export class TransactionsService {
       this.withVoidable(data),
       this.chargesFor(ids),
       filters.withLoanBalance ? this.loanBalancesAfter(businessId, data) : Promise.resolve(new Map<string, string>()),
-      filters.withBalanceAfter ? this.walletBalancesAfter(data, filters.accountId, 'auto', undefined, filters.standingOnly) : Promise.resolve(new Map<string, string>()),
+      filters.withBalanceAfter
+        ? this.walletBalancesAfter(data, filters.accountId, 'auto', undefined, filters.standingOnly)
+        : Promise.resolve(new Map<string, string>()),
     ]);
     // A transfer's two wallets just after it, the sending one after its
     // charge too (the charge is posted right after the transfer).
@@ -563,7 +587,10 @@ export class TransactionsService {
       const later = at?.get(row.id);
       return later && !atOrBefore(later, row) ? later : row;
     };
-    const newest = rows.reduce((latest, row) => (momentOf(row).transactionDate > latest ? momentOf(row).transactionDate : latest), momentOf(rows[0]).transactionDate);
+    const newest = rows.reduce(
+      (latest, row) => (momentOf(row).transactionDate > latest ? momentOf(row).transactionDate : latest),
+      momentOf(rows[0]).transactionDate,
+    );
     const [accounts, entries] = await Promise.all([
       this.prisma.account.findMany({ where: { id: { in: accountIds } }, select: { id: true, openingBalance: true } }),
       this.prisma.transactionEntry.findMany({
@@ -601,16 +628,26 @@ export class TransactionsService {
     if (ids.length === 0) return new Map();
     const charges = await this.prisma.transaction.findMany({
       where: { chargeForId: { in: ids }, reversalOfId: null },
-      select: { chargeForId: true, transactionDate: true, createdAt: true, entries: { where: { entryType: EntryType.DEBIT }, select: { amount: true, categoryId: true } } },
+      select: {
+        chargeForId: true,
+        transactionDate: true,
+        createdAt: true,
+        entries: { where: { entryType: EntryType.DEBIT }, select: { amount: true, categoryId: true } },
+      },
     });
     const sums = new Map<string, { sum: Prisma.Decimal; category: string | null; moment: Moment | null }>();
     for (const charge of charges) {
       if (!charge.chargeForId) continue;
       const amount = charge.entries.reduce((sum, entry) => sum.plus(entry.amount), new Prisma.Decimal(0));
       const was = sums.get(charge.chargeForId);
-      const moment: Moment | null = charge.transactionDate && charge.createdAt ? { transactionDate: charge.transactionDate, createdAt: charge.createdAt } : null;
+      const moment: Moment | null =
+        charge.transactionDate && charge.createdAt ? { transactionDate: charge.transactionDate, createdAt: charge.createdAt } : null;
       const latest = was?.moment && moment ? (atOrBefore(moment, was.moment) ? was.moment : moment) : (moment ?? was?.moment ?? null);
-      sums.set(charge.chargeForId, { sum: (was?.sum ?? new Prisma.Decimal(0)).plus(amount), category: was?.category ?? charge.entries[0]?.categoryId ?? null, moment: latest });
+      sums.set(charge.chargeForId, {
+        sum: (was?.sum ?? new Prisma.Decimal(0)).plus(amount),
+        category: was?.category ?? charge.entries[0]?.categoryId ?? null,
+        moment: latest,
+      });
     }
     return new Map([...sums].map(([id, { sum, category, moment }]) => [id, { amount: sum.toFixed(2), category, moment }]));
   }
@@ -731,7 +768,8 @@ export class TransactionsService {
     // A loan entry's charge shows on the entry's row, not as a row of its own.
     if (filters.excludeCharges) where.chargeForId = null;
     if (filters.standingOnly) Object.assign(where, STANDING_TRANSACTION);
-    if (filters.uncategorised) where.AND = [...(Array.isArray(where.AND) ? where.AND : where.AND ? [where.AND] : []), { entries: { none: { categoryId: { not: null } } } }];
+    if (filters.uncategorised)
+      where.AND = [...(Array.isArray(where.AND) ? where.AND : where.AND ? [where.AND] : []), { entries: { none: { categoryId: { not: null } } } }];
     if (filters.search) {
       // Quick entries keep what the customer typed on the entry (its note
       // and category), not on the transaction's description.
