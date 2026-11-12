@@ -5,6 +5,7 @@ import { BudgetQueryDto } from './dto/budget-query.dto.js';
 import { CreateBudgetCategoryDto } from './dto/create-budget-category.dto.js';
 import { CreateIncomeGoalDto } from './dto/create-income-goal.dto.js';
 import { DeleteBudgetCategoryQueryDto } from './dto/delete-budget-category.dto.js';
+import { RestoreBudgetCategoryDto } from './dto/restore-budget-category.dto.js';
 import { UpdateBudgetCategoryDto } from './dto/update-budget-category.dto.js';
 import { UpdateBudgetTargetDto } from './dto/update-budget-target.dto.js';
 import { UpdateIncomeGoalDto } from './dto/update-income-goal.dto.js';
@@ -106,6 +107,13 @@ export class BudgetsController {
   @Delete('categories/:id')
   deleteCategory(@Param('businessId') businessId: string, @Param('id') id: string, @Query() query: DeleteBudgetCategoryQueryDto) {
     return this.budgetsService.deleteCategory(businessId, id, query.moveTo);
+  }
+
+  // Undo of a delete: the category again, its moved entries back.
+  @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
+  @Post('categories/restore')
+  restoreCategory(@Param('businessId') businessId: string, @Body() dto: RestoreBudgetCategoryDto) {
+    return this.budgetsService.restoreCategory(businessId, dto);
   }
 
   // Category Set's "Add the usual ones".

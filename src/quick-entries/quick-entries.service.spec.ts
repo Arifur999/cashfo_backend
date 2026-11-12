@@ -37,8 +37,14 @@ describe('QuickEntriesService corrections', () => {
     expect(tx.transaction.update).toHaveBeenCalledWith({ where: { id: 'tx-2' }, data: { correctedFromId: 'tx-1' } });
   });
 
-  it('keeps an entry the kind it was', async () => {
+  it('turns an income into an expense', async () => {
     const { service, transactions } = setup({ original: { businessId: 'biz-1', transactionType: 'INCOME' } });
+    await expect(service.correctExpense('biz-1', 'tx-1', expense, 'user-1')).resolves.toEqual({ id: 'tx-2', correctedFromId: 'tx-1' });
+    expect(transactions.createTransaction.mock.calls[0][1]).toMatchObject({ transactionType: 'EXPENSE' });
+  });
+
+  it.each(['TRANSFER', 'JOURNAL'])('keeps a %s out of an expense correction', async (transactionType) => {
+    const { service, transactions } = setup({ original: { businessId: 'biz-1', transactionType } });
     await expect(service.correctExpense('biz-1', 'tx-1', expense, 'user-1')).rejects.toThrow(BadRequestException);
     expect(transactions.voidTransaction).not.toHaveBeenCalled();
     expect(transactions.createTransaction).not.toHaveBeenCalled();
@@ -57,6 +63,14 @@ describe('QuickEntriesService corrections', () => {
     expect(transactions.createTransaction).not.toHaveBeenCalled();
   });
 
+  it('keeps an expense out of a transfer correction', async () => {
+    const { service, transactions } = setup();
+    await expect(
+      service.correctTransfer('biz-1', 'tx-1', { fromAccountId: 'bank', toAccountId: 'cash', amount: 2000, date: '2026-10-17' }, 'user-1'),
+    ).rejects.toThrow(BadRequestException);
+    expect(transactions.voidTransaction).not.toHaveBeenCalled();
+  });
+
   it('corrects a transfer between two wallets', async () => {
     const { service, transactions } = setup({ original: { businessId: 'biz-1', transactionType: 'TRANSFER' } });
     await service.correctTransfer('biz-1', 'tx-1', { fromAccountId: 'bank', toAccountId: 'cash', amount: 2000, date: '2026-10-17' }, 'user-1');
@@ -67,9 +81,19 @@ describe('QuickEntriesService corrections', () => {
 describe('QuickEntriesService transfer charges', () => {
   it("posts a transfer's charge out of the sending wallet, in the picked category, in one transaction", async () => {
     const { service, tx, transactions } = setup();
-    await service.createTransfer('biz-1', { fromAccountId: 'bank', toAccountId: 'cash', amount: 5000, date: '2026-10-29', charge: 25, chargeCategory: 'Bank fees' }, 'user-1');
+    await service.createTransfer(
+      'biz-1',
+      { fromAccountId: 'bank', toAccountId: 'cash', amount: 5000, date: '2026-10-29', charge: 25, chargeCategory: 'Bank fees' },
+      'user-1',
+    );
     expect(transactions.createTransaction.mock.calls[0][3]).toBe(tx);
-    expect(transactions.postCharge).toHaveBeenCalledWith(tx, 'biz-1', 'tx-2', { amount: 25, moneyAccountId: 'bank', date: '2026-10-29', category: 'Bank fees' }, 'user-1');
+    expect(transactions.postCharge).toHaveBeenCalledWith(
+      tx,
+      'biz-1',
+      'tx-2',
+      { amount: 25, moneyAccountId: 'bank', date: '2026-10-29', category: 'Bank fees' },
+      'user-1',
+    );
   });
 
   it('posts no charge without one', async () => {
