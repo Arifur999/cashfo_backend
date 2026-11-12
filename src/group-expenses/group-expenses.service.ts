@@ -89,6 +89,8 @@ const DEFAULT_SETTINGS = {
   splitFromShares: false,
   budgetWarnPercent: 90,
   pausedAt: null,
+  newCategorySplit: 'EQUAL' as const,
+  firstMonth: null,
 };
 
 // The categories a group starts with when New group didn't choose its own.
@@ -108,6 +110,9 @@ const DEFAULT_EXPENSE_CATEGORIES: { name: string; icon: string; color: string; d
 const MAX_ACCOUNTANTS = 2;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+// The group month a day counts in, by the month start day: with months from
+// the 10th, 5 Oct is September's.
+export const groupMonthKey = (date: Date, monthStartDay: number) => new Date(date.getTime() - (Math.max(1, monthStartDay) - 1) * DAY_MS).toISOString().slice(0, 7);
 const dayKey = (date: Date) => date.toISOString().slice(0, 10);
 // undefined leaves a date as it is; null clears it.
 const dateOrNull = (value: string | null | undefined) => (value === undefined ? undefined : value === null ? null : new Date(value));
@@ -435,7 +440,23 @@ export class GroupExpensesService {
 
   // ---- Contributions ----
 
-  listContributions(businessId: string, filters: { groupMemberId?: string; from?: string; to?: string }) {
+  // The member who recorded each row ("Recorded by"): the member whose login
+  // made it, or the group's owner for the owner's own entries. Old rows
+  // without a recorder read null.
+  private async withRecorders<T extends { createdByUserId: string | null }>(businessId: string, rows: T[]): Promise<(T & { recordedByName: string | null })[]> {
+    const userIds = [...new Set(rows.map((row) => row.createdByUserId).filter((id): id is string => !!id))];
+    if (userIds.length === 0) return rows.map((row) => ({ ...row, recordedByName: null }));
+    const [linked, owners, ownerMember] = await Promise.all([
+      this.prisma.groupMember.findMany({ where: { businessId, userId: { in: userIds } }, select: { userId: true, name: true } }),
+      this.prisma.businessMember.findMany({ where: { businessId, userId: { in: userIds }, role: 'OWNER' }, select: { userId: true } }),
+      this.prisma.groupMember.findFirst({ where: { businessId, isOwner: true }, select: { name: true } }),
+    ]);
+    const names = new Map<string, string>(linked.flatMap((row) => (row.userId ? [[row.userId, row.name] as [string, string]] : [])));
+    for (const owner of owners) if (!names.has(owner.userId) && ownerMember) names.set(owner.userId, ownerMember.name);
+    return rows.map((row) => ({ ...row, recordedByName: (row.createdByUserId && names.get(row.createdByUserId)) || null }));
+  }
+
+  async listContributions(businessId: string, filters: { groupMemberId?: string; from?: string; to?: string }) {
     const where: Prisma.GroupContributionWhereInput = { businessId };
     if (filters.groupMemberId) where.groupMemberId = filters.groupMemberId;
     if (filters.from || filters.to) {
@@ -444,7 +465,7 @@ export class GroupExpensesService {
         ...(filters.to && { lte: new Date(filters.to) }),
       };
     }
-    return this.prisma.groupContribution.findMany({
+    const rows = await this.prisma.groupContribution.findMany({
       where,
       include: { groupMember: true, receivedBy: true },
       // Same-date entries (common -- several contributions logged the same
@@ -454,6 +475,7 @@ export class GroupExpensesService {
       // happens to place equal dates.
       orderBy: [{ date: 'desc' }, { createdAt: 'desc' }],
     });
+    return this.withRecorders(businessId, rows);
   }
 
   // "Given to": one of this group's accountants (or nobody).
@@ -530,6 +552,7 @@ export class GroupExpensesService {
           kind: 'SETTLE',
           date,
           note: dto.payerNote,
+          payMethod: dto.method ?? null,
           settleGroupId,
           createdByUserId: actorUserId,
         },
@@ -542,6 +565,7 @@ export class GroupExpensesService {
           kind: 'SETTLE',
           date,
           note: dto.receiverNote,
+          payMethod: dto.method ?? null,
           settleGroupId,
           createdByUserId: actorUserId,
         },
@@ -705,7 +729,9 @@ export class GroupExpensesService {
     if (existing) {
       throw new ConflictException(`An expense category named "${dto.name}" already exists`);
     }
-    const defaultMemberIds = await this.categoryMembers(businessId, dto.defaultSplit, dto.defaultMemberIds);
+    // Not chosen: the group's "How new categories are shared" setting.
+    const split = dto.defaultSplit ?? (await this.getSettings(businessId)).newCategorySplit;
+    const defaultMemberIds = await this.categoryMembers(businessId, split, dto.defaultMemberIds);
     const count = await this.prisma.groupExpenseCategoryOption.count({ where: { businessId } });
     const created = await this.prisma.groupExpenseCategoryOption.create({
       data: {
@@ -714,9 +740,10 @@ export class GroupExpensesService {
         icon: dto.icon,
         color: dto.color,
         displayOrder: count,
-        ...(dto.defaultSplit && { defaultSplit: dto.defaultSplit }),
+        defaultSplit: split,
         ...(defaultMemberIds && { defaultMemberIds }),
         ...(dto.hidden !== undefined && { hidden: dto.hidden }),
+        ...(dto.monthlyLimit !== undefined && { monthlyLimit: dto.monthlyLimit }),
       },
     });
     await this.record(businessId, actorUserId, { action: 'ADDED', entity: 'CATEGORY', entityId: created.id, summary: { category: created.name } });
@@ -749,16 +776,31 @@ export class GroupExpensesService {
           ...(dto.defaultSplit !== undefined && { defaultSplit: dto.defaultSplit }),
           ...(defaultMemberIds && { defaultMemberIds }),
           ...(dto.hidden !== undefined && { hidden: dto.hidden }),
+          ...(dto.monthlyLimit !== undefined && { monthlyLimit: dto.monthlyLimit }),
         },
       });
     });
+    const limitOf = (value: Prisma.Decimal | number | null | undefined) => (value === undefined ? undefined : value === null ? null : money(value));
     const change = changesOf(
-      { name: current.name, icon: current.icon, color: current.color, defaultSplit: current.defaultSplit, hidden: current.hidden },
-      { name: dto.name, icon: dto.icon, color: dto.color, defaultSplit: dto.defaultSplit, hidden: dto.hidden },
+      { name: current.name, icon: current.icon, color: current.color, defaultSplit: current.defaultSplit, hidden: current.hidden, monthlyLimit: limitOf(current.monthlyLimit) },
+      { name: dto.name, icon: dto.icon, color: dto.color, defaultSplit: dto.defaultSplit, hidden: dto.hidden, monthlyLimit: limitOf(dto.monthlyLimit) },
     );
     if (change.length > 0)
       await this.record(businessId, actorUserId, { action: 'EDITED', entity: 'CATEGORY', entityId: id, summary: { category: updated.name }, change });
     return updated;
+  }
+
+  // Categories in the order given (the Categories page's drag handle). The
+  // list must name every one of the group's categories exactly once.
+  async reorderExpenseCategories(businessId: string, ids: string[], actorUserId: string | null = null) {
+    const current = await this.prisma.groupExpenseCategoryOption.findMany({ where: { businessId }, select: { id: true } });
+    const known = new Set(current.map((row) => row.id));
+    if (ids.length !== known.size || new Set(ids).size !== ids.length || ids.some((id) => !known.has(id))) {
+      throw new BadRequestException('Send every category of this group once, in the new order');
+    }
+    await this.prisma.$transaction(ids.map((id, index) => this.prisma.groupExpenseCategoryOption.update({ where: { id }, data: { displayOrder: index } })));
+    await this.record(businessId, actorUserId, { action: 'EDITED', entity: 'CATEGORY', summary: { reordered: true } });
+    return this.listExpenseCategories(businessId);
   }
 
   // A category's "Only selected" members, checked: each one of this
@@ -800,7 +842,7 @@ export class GroupExpensesService {
 
   // ---- Expenses ----
 
-  listExpenses(businessId: string, filters: { from?: string; to?: string; category?: string }) {
+  async listExpenses(businessId: string, filters: { from?: string; to?: string; category?: string }) {
     const where: Prisma.GroupExpenseWhereInput = { businessId };
     if (filters.category) where.category = filters.category;
     if (filters.from || filters.to) {
@@ -809,12 +851,13 @@ export class GroupExpensesService {
         ...(filters.to && { lte: new Date(filters.to) }),
       };
     }
-    return this.prisma.groupExpense.findMany({
+    const rows = await this.prisma.groupExpense.findMany({
       where,
       include: { paidByMember: true, splits: true },
       // Same tie-break reasoning as listContributions() above.
       orderBy: [{ date: 'desc' }, { createdAt: 'desc' }],
     });
+    return this.withRecorders(businessId, rows);
   }
 
   async createExpense(businessId: string, dto: CreateGroupExpenseDto, actorUserId: string | null = null) {
@@ -1081,6 +1124,25 @@ export class GroupExpensesService {
       ORDER BY 1`;
   }
 
+  // The group month ("2026-04") of the earliest expense or contribution,
+  // by the month start day; null when nothing was ever recorded.
+  async firstEntryMonth(businessId: string, monthStartDay: number): Promise<string | null> {
+    const [expense, contribution] = await Promise.all([
+      this.prisma.groupExpense.findFirst({ where: { businessId }, orderBy: { date: 'asc' }, select: { date: true } }),
+      this.prisma.groupContribution.findFirst({ where: { businessId }, orderBy: { date: 'asc' }, select: { date: true } }),
+    ]);
+    const dates = [expense?.date, contribution?.date].filter((date): date is Date => !!date).map((date) => date.getTime());
+    if (dates.length === 0) return null;
+    return groupMonthKey(new Date(Math.min(...dates)), monthStartDay);
+  }
+
+  // How many money entries the group has ever had (expenses and
+  // contributions): a group with any can only be paused, never deleted.
+  async entryCount(businessId: string): Promise<{ expenses: number; contributions: number; total: number }> {
+    const [expenses, contributions] = await Promise.all([this.prisma.groupExpense.count({ where: { businessId } }), this.prisma.groupContribution.count({ where: { businessId } })]);
+    return { expenses, contributions, total: expenses + contributions };
+  }
+
   async getSettings(businessId: string) {
     const settings = await this.prisma.groupSettings.findUnique({ where: { businessId } });
     return settings ?? { businessId, ...DEFAULT_SETTINGS };
@@ -1088,6 +1150,11 @@ export class GroupExpensesService {
 
   async updateSettings(businessId: string, dto: UpdateGroupSettingsDto, actorUserId: string | null = null) {
     const before = await this.getSettings(businessId);
+    // Months start at the first month: it can't come after the first entry.
+    if (dto.firstMonth) {
+      const first = await this.firstEntryMonth(businessId, dto.monthStartDay ?? before.monthStartDay);
+      if (first && dto.firstMonth > first) throw new BadRequestException(`The first month can't be after the first entry (${first})`);
+    }
     // The cash holder keeps the cash: picking a member who isn't an
     // accountant makes them one (the old mess "manager").
     if (dto.cashHolderMemberId) {
@@ -1106,6 +1173,8 @@ export class GroupExpensesService {
       ...(dto.lunchUnits !== undefined && { lunchUnits: dto.lunchUnits }),
       ...(dto.dinnerUnits !== undefined && { dinnerUnits: dto.dinnerUnits }),
       ...(dto.budgetWarnPercent !== undefined && { budgetWarnPercent: dto.budgetWarnPercent }),
+      ...(dto.newCategorySplit !== undefined && { newCategorySplit: dto.newCategorySplit }),
+      ...(dto.firstMonth !== undefined && { firstMonth: dto.firstMonth }),
       ...(dto.paused !== undefined && { pausedAt: dto.paused ? (before.pausedAt ?? new Date()) : null }),
     };
     const saved = await this.prisma.groupSettings.upsert({ where: { businessId }, update: data, create: { businessId, ...data } });
@@ -1116,6 +1185,8 @@ export class GroupExpensesService {
         cashHolderMemberId: before.cashHolderMemberId,
         mealsOn: before.mealsOn,
         budgetWarnPercent: before.budgetWarnPercent,
+        newCategorySplit: before.newCategorySplit,
+        firstMonth: before.firstMonth,
         paused: !!before.pausedAt,
       },
       {
@@ -1124,6 +1195,8 @@ export class GroupExpensesService {
         cashHolderMemberId: dto.cashHolderMemberId,
         mealsOn: dto.mealsOn,
         budgetWarnPercent: dto.budgetWarnPercent,
+        newCategorySplit: dto.newCategorySplit,
+        firstMonth: dto.firstMonth,
         paused: dto.paused,
       },
     );

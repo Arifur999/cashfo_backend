@@ -1,5 +1,5 @@
-import { GroupKind } from '@prisma/client';
-import { IsBoolean, IsEnum, IsIn, IsInt, IsNumber, IsOptional, IsUUID, Max, Min, ValidateIf } from 'class-validator';
+import { GroupKind, GroupSplit } from '@prisma/client';
+import { IsBoolean, IsEnum, IsIn, IsInt, IsNumber, IsOptional, IsUUID, Matches, Max, Min, ValidateIf } from 'class-validator';
 import { whenSent } from '../../common/dto.js';
 
 // Any of a group's settings; the rest stay as they are.
@@ -7,6 +7,16 @@ export class UpdateGroupSettingsDto {
   @IsOptional()
   @IsEnum(GroupKind)
   kind?: GroupKind;
+
+  // How a category made from now on is shared to start with.
+  @ValidateIf(whenSent)
+  @IsEnum(GroupSplit)
+  newCategorySplit?: GroupSplit;
+
+  // The group's first month ("2026-04"); null: its first member's.
+  @ValidateIf((_, value) => value !== undefined && value !== null)
+  @Matches(/^\d{4}-(0[1-9]|1[0-2])$/, { message: 'firstMonth must be a month like 2026-04' })
+  firstMonth?: string | null;
 
   // A month can start on any day up to the 28th, which every month has.
   @IsOptional()

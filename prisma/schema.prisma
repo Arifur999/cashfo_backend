@@ -1675,13 +1675,13 @@ model BookShelf {
 // correction the same day takes the pages back off; a day that ends at 0 has
 // no row. It gives the reading streak and the pages read each day.
 model BookLog {
-  id     String   @id @default(uuid())
-  bookId String
-  book   Book     @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  id       String   @id @default(uuid())
+  bookId   String
+  book     Book     @relation(fields: [bookId], references: [id], onDelete: Cascade)
   // The book's owner again, so a person's reading days come from one index.
-  userId String
-  date   DateTime @db.Date
-  pages  Int
+  userId   String
+  date     DateTime @db.Date
+  pages    Int
   // The page that day's reading began on (Reading now's "Read before, up to
   // page"), so the day can be corrected later; null on older rows.
   fromPage Int?
@@ -1746,41 +1746,41 @@ enum SkillStatus {
 }
 
 model Skill {
-  id             String      @id @default(uuid())
+  id             String          @id @default(uuid())
   userId         String
-  user           User        @relation(fields: [userId], references: [id])
+  user           User            @relation(fields: [userId], references: [id])
   name           String
   // Where it is learned from ("Udemy", "YouTube", "Self") -- optional.
-  source         String      @default("")
+  source         String          @default("")
   unit           SkillUnit
   target         Int
-  progress       Int         @default(0)
+  progress       Int             @default(0)
   // The progress the activity log last accounted for. It follows every
   // progress the user reports, but NOT a "Complete" jump (which isn't
   // activity), so undoing that jump by reporting the old progress again logs
   // nothing instead of erasing the day's real activity. See SkillsService.
-  loggedProgress Int         @default(0)
-  status         SkillStatus @default(WANT_TO_LEARN)
+  loggedProgress Int             @default(0)
+  status         SkillStatus     @default(WANT_TO_LEARN)
   // Keys into the colour / icon allow-lists (SKILL_COLORS / SKILL_ICONS) --
   // plain strings so adding one is a code change, not a migration.
-  color          String      @default("violet")
-  icon           String      @default("sparkles")
+  color          String          @default("violet")
+  icon           String          @default("sparkles")
   startedAt      DateTime?
   completedAt    DateTime?
-  createdAt      DateTime    @default(now())
-  updatedAt      DateTime    @updatedAt
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
   // The v16 Skills pages. Its group (SKILL_CATEGORIES), a link to the
   // course, the reason it is learned, the day it should be done by.
-  category       String      @default("life")
-  link           String      @default("")
-  why            String      @default("")
-  targetDate     DateTime?   @db.Date
+  category       String          @default("life")
+  link           String          @default("")
+  why            String          @default("")
+  targetDate     DateTime?       @db.Date
   // Put down for now: still LEARNING, shown under Up next until resumed.
   pausedAt       DateTime?
   // Ground covered before it was tracked here ("Already done"), in its unit
   // (minutes for HOURS). progress = base + every day logged, capped at the
   // target (the target itself once COMPLETED).
-  base           Int         @default(0)
+  base           Int             @default(0)
   // Deleted, kept a while so the delete can be undone; purged by
   // housekeeping (SkillsHousekeeping). Every read leaves these out.
   deletedAt      DateTime?
@@ -3172,6 +3172,11 @@ model GroupSettings {
   splitFromShares    Boolean        @default(false)
   // Warn once this much of a month's budget is spent; null = never.
   budgetWarnPercent  Int?           @default(90)
+  // How a category made from now on is shared to start with (Settings).
+  newCategorySplit   GroupSplit     @default(EQUAL)
+  // The group's first month ("2026-04"); null: its first member's. Months
+  // before it are not offered (the v16 Settings board).
+  firstMonth         String?
   // Paused: kept out of new entries and listed last. Nothing is deleted.
   pausedAt           DateTime?
   updatedAt          DateTime       @updatedAt
@@ -3204,6 +3209,14 @@ enum GroupSplit {
   SHARES
   MEALS
   EXACT
+}
+
+// How a member paid another to settle up.
+enum GroupPayMethod {
+  CASH
+  BKASH
+  NAGAD
+  BANK
 }
 
 enum GroupPaidFrom {
@@ -3297,6 +3310,8 @@ model GroupContribution {
   receivedBy         GroupMember?          @relation("ContributionReceiver", fields: [receivedByMemberId], references: [id])
   // The same id on both rows of one settle-up, so Undo removes the pair.
   settleGroupId      String?
+  // How a settle-up was paid (Settlement's "How"); null on other rows.
+  payMethod          GroupPayMethod?
   // Who recorded it (an Editor changes only their own); null = the owner,
   // before logins existed.
   createdByUserId    String?
@@ -3357,6 +3372,8 @@ model GroupExpenseCategoryOption {
   defaultMemberIds String[]   @default([])
   // Hidden: not offered for new expenses; old records keep it.
   hidden           Boolean    @default(false)
+  // What it may spend in a month; null: no limit (the v16 Budget board).
+  monthlyLimit     Decimal?   @db.Decimal(14, 2)
   createdAt        DateTime   @default(now())
   updatedAt        DateTime   @updatedAt
 

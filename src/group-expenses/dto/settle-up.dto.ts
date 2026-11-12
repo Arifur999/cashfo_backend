@@ -1,4 +1,6 @@
-import { IsDateString, IsNotEmpty, IsOptional, IsString, Matches, MaxLength } from 'class-validator';
+import { GroupPayMethod } from '@prisma/client';
+import { IsDateString, IsEnum, IsNotEmpty, IsOptional, IsString, Matches, MaxLength, ValidateIf } from 'class-validator';
+import { whenSent } from '../../common/dto.js';
 
 // A payment from one member to another, recorded as one commit.
 export class SettleUpDto {
@@ -16,6 +18,11 @@ export class SettleUpDto {
 
   @IsDateString()
   date: string;
+
+  // How it was paid (Settlement's "How"): cash, bKash, Nagad or bank.
+  @ValidateIf(whenSent)
+  @IsEnum(GroupPayMethod)
+  method?: GroupPayMethod;
 
   // Each side's note, in the reader's language ("Paid to Rahim").
   @IsOptional()
