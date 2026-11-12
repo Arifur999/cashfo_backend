@@ -30,6 +30,11 @@ describe('group v16 gaps', () => {
     expect(ok(UpdateGroupSettingsDto, { firstMonth: '2026-4' })).toBe(false);
   });
 
+  it('takes a budget warning from 50 to 100, or null for never', () => {
+    for (const value of [50, 75, 90, 100, null]) expect(ok(UpdateGroupSettingsDto, { budgetWarnPercent: value })).toBe(true);
+    for (const value of [49, 101, 85.5, '90']) expect(ok(UpdateGroupSettingsDto, { budgetWarnPercent: value })).toBe(false);
+  });
+
   it('takes how a settle-up was paid, or nothing', () => {
     expect(ok(SettleUpDto, settle({ method: 'BKASH' }))).toBe(true);
     expect(ok(SettleUpDto, settle({}))).toBe(true);

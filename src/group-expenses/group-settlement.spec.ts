@@ -85,3 +85,31 @@ describe('settleGroup', () => {
     expect(result.mealRate).toBe(0);
   });
 });
+
+describe('money given leaves out settle-ups and carried balances', () => {
+  it('keeps them in the balance but out of grossDeposited and returned', () => {
+    const result = settleGroup(
+      month({
+        members: [member('a'), member('b')],
+        contributions: [
+          { memberId: 'a', amount: 1000, kind: 'DEPOSIT' },
+          { memberId: 'a', amount: 500, kind: 'CARRY' },
+          { memberId: 'b', amount: 300, kind: 'SETTLE' },
+          { memberId: 'a', amount: -300, kind: 'SETTLE' },
+          { memberId: 'b', amount: -100, kind: 'RETURN' },
+        ],
+        expenses: [expense(1000)],
+      }),
+    );
+    const a = row(result, 'a')!;
+    const b = row(result, 'b')!;
+    expect(a.grossDeposited).toBe(1000);
+    expect(a.returned).toBe(0);
+    expect(a.contributed).toBe(1200);
+    expect(a.balance).toBe(700);
+    expect(b.grossDeposited).toBe(0);
+    expect(b.returned).toBe(100);
+    expect(b.contributed).toBe(200);
+    expect(b.balance).toBe(-300);
+  });
+});
