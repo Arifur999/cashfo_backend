@@ -183,6 +183,8 @@ export class SavingsGoalsService {
         id: wallet.id,
         name: wallet.isSystemAccount ? `${wallet.name} (Legacy Pool)` : wallet.name,
         accountNumber: wallet.accountNumber,
+        // Its card colour (CARD_COLORS); null draws the colour of its place.
+        color: wallet.color,
         status: wallet.status,
         openingBalance: wallet.openingBalance.toFixed(2),
         totalIn: (inByWallet.get(wallet.id) ?? new Prisma.Decimal(0)).toFixed(2),
