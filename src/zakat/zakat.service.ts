@@ -2,6 +2,7 @@ import { BadRequestException, ConflictException, Injectable, NotFoundException }
 import { Prisma, type ZakatGroup, type ZakatMetal, type ZakatProfile } from '@prisma/client';
 import { MONEY_ACCOUNT_SUBTYPES } from '../accounts/accounts.service.js';
 import { fromPaisa, toPaisa } from '../billing/pricing.js';
+import { dayOf } from '../investments/investment-figures.js';
 import { ensureExpenseCategory } from '../budgets/budgets.service.js';
 import { dhakaDateKey } from '../common/dhaka.js';
 import { PrismaService } from '../prisma/prisma.service.js';
@@ -22,6 +23,7 @@ import {
   daysBetween,
   debtWithinYearPaisa,
   dueDateFor,
+  investmentCapitalPaisa,
   metalValuePaisa,
   monthlyParts,
   nisabPaisa,
@@ -41,11 +43,11 @@ const MAX_KEYS = 500;
 // One line of a step, as the page shows it. Money is a 2-decimal string.
 export interface ZakatLine {
   key: string;
-  source: 'ACCOUNT' | 'CONTACT' | 'ASSET' | 'EXTRA';
+  source: 'ACCOUNT' | 'CONTACT' | 'ASSET' | 'INVESTMENT' | 'EXTRA';
   id: string;
   name: string;
-  // An account's subtype ("cash", "bank", "mfs", "savings") or number; an
-  // asset's category; a contact's category.
+  // An account's subtype ("cash", "bank", "mfs", "savings"); an
+  // asset's category; an investment's kind; a contact's category.
   detail: string | null;
   amount: string;
   counted: boolean;
@@ -60,6 +62,12 @@ export interface ZakatLine {
   debtMode?: 'YEAR' | 'FULL';
   // Land, a flat or a car: bought to sell, so counted under investments.
   forSale?: boolean;
+  // An investment's maturity day ('YYYY-MM-DD'), null when it has none.
+  maturesOn?: string | null;
+  // A wallet's number as "•••• 7890" (its subtype is the detail), and its
+  // Bangla name when it has one.
+  number?: string | null;
+  nameBn?: string | null;
 }
 
 export interface ZakatStepView {
@@ -94,13 +102,20 @@ export class ZakatService {
     const debtFull = new Set(profile.debtFull);
     const forSale = new Set(profile.forSale);
 
-    const [accounts, assets, contacts, extras, payments] = await Promise.all([
+    const [accounts, assets, investments, contacts, extras, payments] = await Promise.all([
       this.prisma.account.findMany({
         where: { businessId, status: 'ACTIVE', accountType: 'ASSET', accountSubtype: { in: [...MONEY_ACCOUNT_SUBTYPES, 'savings'] } },
         orderBy: [{ displayOrder: 'asc' }, { createdAt: 'asc' }],
-        select: { id: true, name: true, accountSubtype: true, accountNumber: true, currentBalance: true, isSystemAccount: true },
+        select: { id: true, name: true, nameBn: true, accountSubtype: true, accountNumber: true, currentBalance: true, isSystemAccount: true },
       }),
       this.prisma.asset.findMany({ where: { businessId, status: 'ACTIVE' }, orderBy: { purchaseDate: 'asc' } }),
+      // Open investments, at the capital still in them (as the Investments
+      // page shows it); a profit has already reached a wallet.
+      this.prisma.investment.findMany({
+        where: { businessId, closedAt: null },
+        orderBy: [{ startDate: 'asc' }, { createdAt: 'asc' }],
+        select: { id: true, name: true, kind: true, maturityDate: true, entries: { select: { type: true, amount: true, date: true } } },
+      }),
       this.prisma.contact.findMany({ where: { businessId, status: 'ACTIVE' }, select: { id: true, name: true, category: true, openingBalance: true } }),
       this.prisma.zakatExtra.findMany({ where: { businessId }, orderBy: { createdAt: 'asc' } }),
       this.prisma.zakatPayment.findMany({ where: { businessId, dueDate: due.date }, orderBy: [{ paidOn: 'desc' }, { createdAt: 'desc' }] }),
@@ -128,7 +143,9 @@ export class ZakatService {
         source: 'ACCOUNT',
         id: account.id,
         name: account.name,
-        detail: account.accountNumber ? `•••• ${account.accountNumber.replace(/\s/g, '').slice(-4)}` : account.accountSubtype,
+        nameBn: account.nameBn,
+        detail: account.accountSubtype,
+        number: account.accountNumber ? `•••• ${account.accountNumber.replace(/\s/g, '').slice(-4)}` : null,
         amount: money(paisa),
         counted: !excluded.has(key),
       });
@@ -179,6 +196,24 @@ export class ZakatService {
           forSale: false,
         });
       }
+    }
+
+    // Money put into an investment left its wallet for the hidden pooled
+    // account that no wallet list counts, so each one is counted here.
+    for (const investment of investments) {
+      const capital = investmentCapitalPaisa(investment.entries);
+      if (capital <= 0) continue;
+      const key = `investment:${investment.id}`;
+      push('INVESTMENTS', {
+        key,
+        source: 'INVESTMENT',
+        id: investment.id,
+        name: investment.name,
+        detail: investment.kind,
+        amount: money(capital),
+        counted: !excluded.has(key),
+        maturesOn: investment.maturityDate ? dayOf(investment.maturityDate) : null,
+      });
     }
 
     // What contacts owe (pawna) and what is owed to them (dena).

@@ -1,4 +1,6 @@
-import type { ZakatDateMode, ZakatMetal } from '@prisma/client';
+import type { Prisma, ZakatDateMode, ZakatMetal } from '@prisma/client';
+import { dayOf, figuresOf, type EntryKind } from '../investments/investment-figures.js';
+import { toPaisa } from '../billing/pricing.js';
 
 // Zakat's arithmetic and calendar, pure so it is tested on its own. Money is
 // in paisa (whole numbers); prices are whole taka per vori.
@@ -117,6 +119,15 @@ export function assetZakatOf(category: string): AssetZakat {
   if (/jewel|gold|silver|গয়না|গহনা|সোনা|স্বর্ণ|রুপা/i.test(category)) return 'GOLD';
   if (/invest|share|stock|bond|fund|sanchay|বিনিয়োগ|শেয়ার|সঞ্চয়পত্র/i.test(category)) return 'INVESTMENTS';
   return 'NOT_COUNTED';
+}
+
+// --- Investments ---
+
+// What an open investment counts for: the capital still in it (put in, less
+// what came back and what was lost), in paisa. Its profit already reached a
+// wallet, so it is not counted twice.
+export function investmentCapitalPaisa(entries: { type: EntryKind; amount: Prisma.Decimal | number | string; date: Date }[]): number {
+  return toPaisa(figuresOf(entries.map((entry) => ({ type: entry.type, amount: entry.amount, day: dayOf(entry.date) }))).capital);
 }
 
 // --- Debts ---
