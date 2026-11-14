@@ -196,6 +196,12 @@ export const BUDGET_CATEGORY_ICONS = [
   'business-income',
   'freelancing',
   'other-income',
+  // The Habit Tracker's own picks (DailyHabitDrawer board): walking, sleep,
+  // food and quitting something.
+  'footprints',
+  'moon',
+  'apple',
+  'ban',
 ] as const;
 
 // Original 8 plus a few more distinct Tailwind hues -- still small enough
