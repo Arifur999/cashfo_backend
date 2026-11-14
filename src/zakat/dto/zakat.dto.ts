@@ -36,9 +36,10 @@ export class UpdateZakatSettingsDto {
   silverPrice?: number | null;
 }
 
-// A line counted or left out: "account:<id>", "contact:<id>" or "asset:<id>".
+// A line counted or left out: "account:<id>", "contact:<id>", "asset:<id>"
+// or "investment:<id>".
 export class ZakatLineDto {
-  @Matches(/^(account|contact|asset):[0-9a-f-]{36}$/, { message: 'Unknown line' })
+  @Matches(/^(account|contact|asset|investment):[0-9a-f-]{36}$/, { message: 'Unknown line' })
   key: string;
 
   @IsBoolean()

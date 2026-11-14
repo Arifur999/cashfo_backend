@@ -4,6 +4,7 @@ import {
   debtWithinYearPaisa,
   dueDateFor,
   hijriOf,
+  investmentCapitalPaisa,
   metalValuePaisa,
   monthlyParts,
   nextCustomDate,
@@ -83,5 +84,20 @@ describe('assets and debts', () => {
     ];
     expect(debtWithinYearPaisa(300000, parts, today)).toBe(900000);
     expect(debtWithinYearPaisa(0, [], today)).toBe(0);
+  });
+});
+
+describe('investments', () => {
+  it('counts the capital still in an investment: put in, less what came back and what was lost, not the profit', () => {
+    const d = (day: string) => new Date(`${day}T00:00:00Z`);
+    const entries = [
+      { type: 'INVEST' as const, amount: '500000.00', date: d('2025-02-01') },
+      { type: 'ADD' as const, amount: 20000, date: d('2025-06-01') },
+      { type: 'PROFIT' as const, amount: '45000.50', date: d('2026-02-01') },
+      { type: 'BACK' as const, amount: '100000', date: d('2026-03-01') },
+      { type: 'LOSS' as const, amount: '0.25', date: d('2026-04-01') },
+    ];
+    expect(investmentCapitalPaisa(entries)).toBe(41999975);
+    expect(investmentCapitalPaisa([])).toBe(0);
   });
 });
