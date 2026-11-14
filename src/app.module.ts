@@ -17,6 +17,7 @@ import { AnnouncementsModule } from './announcements/announcements.module.js';
 import { AppController } from './app.controller.js';
 import { AppService } from './app.service.js';
 import { AssetsModule } from './assets/assets.module.js';
+import { InvestmentsModule } from './investments/investments.module.js';
 import { AuthModule } from './auth/auth.module.js';
 import { AuditLogsModule } from './audit-logs/audit-logs.module.js';
 import { BillingModule } from './billing/billing.module.js';
@@ -155,6 +156,7 @@ import { MonthlySummaryModule } from './monthly-summary/monthly-summary.module.j
     BudgetsModule,
     SavingsGoalsModule,
     AssetsModule,
+    InvestmentsModule,
     PasswordVaultModule,
     GroupExpensesModule,
     HabitsModule,

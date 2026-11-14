@@ -491,6 +491,9 @@ export class AdminOwnersService {
       await tx.assetValueHistory.deleteMany({ where: { asset: { businessId: business.id } } });
       await tx.asset.deleteMany({ where: { businessId: business.id } });
       await tx.assetCategoryOption.deleteMany({ where: { businessId: business.id } });
+      await tx.investmentEntry.deleteMany({ where: { businessId: business.id } });
+      await tx.investment.deleteMany({ where: { businessId: business.id } });
+      await tx.investmentDeletion.deleteMany({ where: { businessId: business.id } });
       await tx.budgetCategory.deleteMany({ where: { businessId: business.id } });
       await tx.incomeGoal.deleteMany({ where: { businessId: business.id } });
       await tx.account.updateMany({ where: { businessId: business.id }, data: { parentId: null } });

@@ -469,6 +469,10 @@ export class TransactionsService {
     if (gift) {
       throw new BadRequestException('This is a gift written down at an event. Delete it from Calendar & Events.');
     }
+    const investmentEntry = await client.investmentEntry.findUnique({ where: { transactionId: transaction.id }, select: { id: true } });
+    if (investmentEntry) {
+      throw new BadRequestException('This belongs to an investment. Change or delete it from Investments.');
+    }
   }
 
   async getTransaction(businessId: string, transactionId: string) {
@@ -497,15 +501,15 @@ export class TransactionsService {
 
   // `voidable` on every transaction the API returns: whether voidTransaction()
   // would accept it -- still POSTED, not itself a reversal, and not a
-  // posting a savings goal, an asset, a referral payout, zakat given or an event gift
+  // posting a savings goal, an asset, a referral payout, zakat given, an event gift or an investment
   // keeps its own record of. The UI shows Void only where this is true.
   private async withVoidable<T extends { id: string; status: string; reversalOfId: string | null; entries: { account: { accountSubtype: string | null } }[] }>(
     transactions: T[],
   ): Promise<(T & { voidable: boolean })[]> {
     const ids = transactions.map((t) => t.id);
-    const [savingsEntries, assets, zakat, gifts] =
+    const [savingsEntries, assets, zakat, gifts, investmentEntries] =
       ids.length === 0
-        ? [[], [], [], []]
+        ? [[], [], [], [], []]
         : await Promise.all([
             this.prisma.savingsGoalEntry.findMany({ where: { transactionId: { in: ids } }, select: { transactionId: true } }),
             this.prisma.asset.findMany({
@@ -514,12 +518,14 @@ export class TransactionsService {
             }),
             this.prisma.zakatPayment.findMany({ where: { transactionId: { in: ids } }, select: { transactionId: true } }),
             this.prisma.eventGift.findMany({ where: { transactionId: { in: ids } }, select: { transactionId: true } }),
+            this.prisma.investmentEntry.findMany({ where: { transactionId: { in: ids } }, select: { transactionId: true } }),
           ]);
     const owned = new Set<string | null>([
       ...savingsEntries.map((e) => e.transactionId),
       ...assets.flatMap((a) => [a.purchaseTransactionId, a.soldTransactionId]),
       ...zakat.map((z) => z.transactionId),
       ...gifts.map((g) => g.transactionId),
+      ...investmentEntries.map((e) => e.transactionId),
     ]);
     return transactions.map((t) => ({
       ...t,

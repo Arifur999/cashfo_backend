@@ -29,6 +29,9 @@ export const SAVINGS_OPENING_ACCOUNT_SUBTYPE = 'savings-opening';
 // The equity account "Match real balance" (Balance > Accounts) posts its
 // adjustments against, so the difference is neither income nor expense.
 export const BALANCE_ADJUSTMENT_ACCOUNT_SUBTYPE = 'balance-adjustment';
+// Investments' pooled capital account: money put into an investment from a
+// wallet goes here, capital back comes out of it.
+export const INVESTMENTS_ACCOUNT_SUBTYPE = 'investments';
 
 // Subtypes the app looks accounts up by and posts through on its own: the
 // seeded Accounts Receivable/Payable (Dena-Pawna, Loan Management) and the
@@ -42,6 +45,7 @@ export const RESERVED_ACCOUNT_SUBTYPES = [
   REFERRAL_BONUS_INCOME_SUBTYPE,
   SAVINGS_OPENING_ACCOUNT_SUBTYPE,
   BALANCE_ADJUSTMENT_ACCOUNT_SUBTYPE,
+  INVESTMENTS_ACCOUNT_SUBTYPE,
 ];
 
 const isReservedSystemAccount = (account: { isSystemAccount: boolean; accountSubtype: string | null }) =>

@@ -14,6 +14,8 @@ export const LEDGER_KINDS = [
   'PAYMENT_OUT',
   'ASSET_PURCHASE',
   'ASSET_SALE',
+  'INVESTMENT',
+  'INVESTMENT_RETURN',
   'ADJUSTMENT',
   'OTHER',
 ] as const;
@@ -38,6 +40,8 @@ export interface LedgerKindInput {
   contact: { name: string; category: 'BUSINESS' | 'LOAN' } | null;
   // The asset bought or sold by this transaction.
   asset: { name: string; side: 'PURCHASE' | 'SALE' } | null;
+  // The investment money was put into, came back from (capital or profit).
+  investment?: { name: string; type: 'INVEST' | 'ADD' | 'PROFIT' | 'BACK' | 'LOSS' } | null;
   // The savings goal this money moved for.
   goalName: string | null;
   adjustmentSubtype: string;
@@ -55,6 +59,13 @@ export function ledgerKind(input: LedgerKindInput): { kind: LedgerKind; party: s
 
   if (legs.some((leg) => leg.accountSubtype === input.adjustmentSubtype)) return { kind: 'ADJUSTMENT', party: null };
   if (input.asset) return { kind: input.asset.side === 'PURCHASE' ? 'ASSET_PURCHASE' : 'ASSET_SALE', party: input.asset.name };
+  // A profit is income from the investment; capital put in or taken back
+  // is the investment's own kind.
+  if (input.investment) {
+    const { name, type } = input.investment;
+    if (type === 'PROFIT') return { kind: 'INCOME', party: name };
+    return { kind: type === 'BACK' ? 'INVESTMENT_RETURN' : 'INVESTMENT', party: name };
+  }
 
   if (transactionType === 'TRANSFER') {
     const selfSavings = input.accountSubtype === 'savings';

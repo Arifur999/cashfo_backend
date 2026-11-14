@@ -63,6 +63,25 @@ describe('ledgerKind', () => {
     ).toEqual({ kind: 'ADJUSTMENT', party: null });
   });
 
+  it('names money put into an investment, capital back and its profit by the investment', () => {
+    const pool = [{ accountName: 'Investments (Internal)', accountSubtype: 'investments', categoryId: null }];
+    const investment = (type: 'INVEST' | 'ADD' | 'PROFIT' | 'BACK') => ({ name: 'Karim Garments', type });
+    expect(kind({ transactionType: 'JOURNAL', direction: 'out', legs: pool, investment: investment('INVEST') })).toEqual({
+      kind: 'INVESTMENT',
+      party: 'Karim Garments',
+    });
+    expect(kind({ transactionType: 'JOURNAL', direction: 'out', legs: pool, investment: investment('ADD') })).toEqual({
+      kind: 'INVESTMENT',
+      party: 'Karim Garments',
+    });
+    expect(kind({ transactionType: 'JOURNAL', direction: 'in', legs: pool, investment: investment('BACK') })).toEqual({
+      kind: 'INVESTMENT_RETURN',
+      party: 'Karim Garments',
+    });
+    // A profit is income, from the investment.
+    expect(kind({ investment: investment('PROFIT') })).toEqual({ kind: 'INCOME', party: 'Karim Garments' });
+  });
+
   it('calls anything else Other, naming its accounts', () => {
     expect(kind({ transactionType: 'JOURNAL', legs: [{ accountName: 'Owner equity', accountSubtype: null, categoryId: null }] })).toEqual({
       kind: 'OTHER',

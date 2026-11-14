@@ -47,6 +47,7 @@ const setup = (accountType: string, openingBalance: string, entries: Entry[]) =>
     // No asset or savings goal owns these rows.
     asset: { findMany: vi.fn().mockResolvedValue([]) },
     savingsGoalEntry: { findMany: vi.fn().mockResolvedValue([]) },
+    investmentEntry: { findMany: vi.fn().mockResolvedValue([]) },
     transactionEntry: {
       count: vi.fn(({ where }: { where: Record<string, unknown> }) => Promise.resolve(select(where).length)),
       aggregate: vi.fn(({ where }: { where: Record<string, unknown> }) => {
