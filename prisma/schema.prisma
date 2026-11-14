@@ -440,6 +440,9 @@ enum LegalDocType {
   PRIVACY_POLICY
   REFUND_POLICY
   FAQ
+  // Settings › Resources & legal lists these two beside the others.
+  COOKIE_POLICY
+  COMMUNITY_RULES
 }
 
 // Every saved version of a legal page: drafts being written and each one
