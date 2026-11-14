@@ -12,6 +12,8 @@ const LEGAL_PAGES: Record<string, LegalDocType> = {
   privacy: LegalDocType.PRIVACY_POLICY,
   'refund-policy': LegalDocType.REFUND_POLICY,
   faq: LegalDocType.FAQ,
+  'cookie-policy': LegalDocType.COOKIE_POLICY,
+  'community-rules': LegalDocType.COMMUNITY_RULES,
 };
 
 // Every route stays open during maintenance (see MaintenanceMiddleware): they

@@ -39,6 +39,9 @@ export async function seedLegalDocuments(prisma: PrismaClient, adminId: string) 
     { type: 'PRIVACY_POLICY', contentEn: `Privacy Policy\n\n${placeholder}` },
     { type: 'REFUND_POLICY', contentEn: `Refund Policy\n\n${placeholder}` },
     { type: 'FAQ', contentEn: `Frequently Asked Questions\n\n${placeholder}` },
+    // A first text that is true of the app as it is, for the team to edit.
+    { type: 'COOKIE_POLICY', contentEn: COOKIE_POLICY },
+    { type: 'COMMUNITY_RULES', contentEn: COMMUNITY_RULES },
   ];
 
   for (const doc of docs) {
@@ -128,3 +131,31 @@ export async function seedNotificationTemplates(prisma: PrismaClient) {
     });
   }
 }
+
+const COOKIE_POLICY = `Cookie Policy
+
+Smartly uses a few small files (cookies) so the app works. We do not use advertising or tracking cookies, and no other company places cookies through Smartly.
+
+Signing in: two cookies keep you signed in on this device and are deleted when you sign out.
+
+Your workspace: one cookie remembers which workspace you have open, and one remembers a workspace PIN you entered, for 12 hours.
+
+Your choices: the language, theme and similar settings you pick are kept on this device so the app opens the way you left it.
+
+You can delete cookies in your browser at any time. You will then need to sign in again.`;
+
+const COMMUNITY_RULES = `Community Rules for Groups
+
+Group Expense works when everyone can trust the numbers. These rules apply to every family, mess and group in Smartly.
+
+Be honest: add only real expenses and deposits, with the right amount and date.
+
+Be fair: split costs the way the group agreed. Ask before you change someone else's entry.
+
+Be kind: no insults, threats or shaming in notes or names.
+
+Admins: close a month only when the members have had time to check it, and explain any correction you make.
+
+Privacy: do not share another member's phone number or details outside the group.
+
+If someone breaks these rules, write to us from Settings › Help. We may limit or remove an account that keeps breaking them.`;

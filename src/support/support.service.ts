@@ -1,8 +1,9 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
-import { Prisma, TicketStatus } from '@prisma/client';
+import { Prisma, TicketPriority, TicketStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { CreateIdeaDto } from './dto/create-idea.dto.js';
 import { CreateSupportMessageDto, ReplySupportMessageDto } from './dto/support-message.dto.js';
+import { canSolve } from './solve.js';
 import { subjectOf } from './subject.js';
 
 // What a customer sees of a conversation: no admin ids, no notes the team
@@ -13,21 +14,29 @@ const CONVERSATION_SELECT = {
   number: true,
   subject: true,
   category: true,
+  priority: true,
   status: true,
   createdAt: true,
   updatedAt: true,
   messages: {
     where: { isInternal: false },
     orderBy: { createdAt: 'asc' },
-    select: { id: true, senderType: true, message: true, createdAt: true, attachment: { select: { id: true } } },
+    select: { id: true, senderType: true, senderId: true, message: true, createdAt: true, attachment: { select: { id: true } } },
   },
 } satisfies Prisma.SupportTicketSelect;
 
 type Conversation = Prisma.SupportTicketGetPayload<{ select: typeof CONVERSATION_SELECT }>;
 
-const toConversation = ({ messages, ...ticket }: Conversation) => ({
+// The team member who wrote an answer is shown by name (Settings > Help's
+// conversation: "Nadia Rahman · Smartly support"); the customer's own lines
+// carry none, and no sender id leaves the server.
+const toConversation = ({ messages, ...ticket }: Conversation, names: Map<string, string>) => ({
   ...ticket,
-  messages: messages.map(({ attachment, ...message }) => ({ ...message, attachmentId: attachment?.id ?? null })),
+  messages: messages.map(({ attachment, senderId, ...message }) => ({
+    ...message,
+    senderName: message.senderType === 'ADMIN' ? (names.get(senderId) ?? null) : null,
+    attachmentId: attachment?.id ?? null,
+  })),
 });
 
 // An answer reopens a conversation the team had put down.
@@ -42,11 +51,24 @@ const SHOWN_IDEAS = 100;
 export class SupportService {
   constructor(private readonly prisma: PrismaService) {}
 
+  // The names of the team members who answered in these conversations.
+  private async adminNames(tickets: Conversation[]): Promise<Map<string, string>> {
+    const ids = [...new Set(tickets.flatMap((ticket) => ticket.messages.filter((message) => message.senderType === 'ADMIN').map((message) => message.senderId)))];
+    if (ids.length === 0) return new Map();
+    const admins = await this.prisma.user.findMany({ where: { id: { in: ids } }, select: { id: true, name: true } });
+    return new Map(admins.map((admin) => [admin.id, admin.name]));
+  }
+
+  private async shown(ticket: Conversation) {
+    return toConversation(ticket, await this.adminNames([ticket]));
+  }
+
   async createMessage(userId: string, dto: CreateSupportMessageDto, screenshot?: Express.Multer.File) {
     const ticket = await this.prisma.supportTicket.create({
       data: {
         platformUserId: userId,
-        subject: subjectOf(dto.message),
+        subject: dto.subject || subjectOf(dto.message),
+        ...(dto.priority === 'URGENT' && { priority: TicketPriority.URGENT }),
         category: dto.category,
         fromHelpPage: true,
         messages: {
@@ -60,7 +82,7 @@ export class SupportService {
       },
       select: CONVERSATION_SELECT,
     });
-    return toConversation(ticket);
+    return this.shown(ticket);
   }
 
   async listMessages(userId: string) {
@@ -70,7 +92,8 @@ export class SupportService {
       take: 50,
       select: CONVERSATION_SELECT,
     });
-    return tickets.map(toConversation);
+    const names = await this.adminNames(tickets);
+    return tickets.map((ticket) => toConversation(ticket, names));
   }
 
   async reply(userId: string, ticketId: string, dto: ReplySupportMessageDto) {
@@ -88,7 +111,22 @@ export class SupportService {
       },
       select: CONVERSATION_SELECT,
     });
-    return toConversation(updated);
+    return this.shown(updated);
+  }
+
+  // "Mark as solved": the customer says the answer was enough. A closed
+  // conversation stays closed; one already solved is left as it is. Writing
+  // again reopens it (reply()).
+  async solve(userId: string, ticketId: string) {
+    const ticket = await this.prisma.supportTicket.findFirst({ where: { id: ticketId, platformUserId: userId }, select: { id: true, status: true } });
+    if (!ticket) throw new NotFoundException('Conversation not found');
+    if (!canSolve(ticket.status)) throw new BadRequestException('This conversation is closed. Send a new message instead.');
+    const updated = await this.prisma.supportTicket.update({
+      where: { id: ticketId },
+      data: ticket.status === TicketStatus.RESOLVED ? {} : { status: TicketStatus.RESOLVED, resolvedAt: new Date() },
+      select: CONVERSATION_SELECT,
+    });
+    return this.shown(updated);
   }
 
   // A screenshot from one of the customer's own messages.
