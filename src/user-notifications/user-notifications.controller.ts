@@ -41,4 +41,17 @@ export class UserNotificationsController {
   markRead(@CurrentUser() user: RequestUser, @Param('id', ParseUUIDPipe) id: string) {
     return this.service.markRead(user.id, id);
   }
+
+  // The bell's Delete and, from its Deleted tab, Restore.
+  @Post(':id/delete')
+  @HttpCode(200)
+  remove(@CurrentUser() user: RequestUser, @Param('id', ParseUUIDPipe) id: string) {
+    return this.service.remove(user.id, id);
+  }
+
+  @Post(':id/restore')
+  @HttpCode(200)
+  restore(@CurrentUser() user: RequestUser, @Param('id', ParseUUIDPipe) id: string) {
+    return this.service.restore(user.id, id);
+  }
 }

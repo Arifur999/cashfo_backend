@@ -3674,6 +3674,9 @@ model UserNotification {
   data       Json
   readAt     DateTime?
   createdAt  DateTime             @default(now())
+  // Deleted from the bell: kept (its key still stops the reminder coming
+  // back) in Deleted, from where it can be restored, until 30 days on.
+  deletedAt  DateTime?
 
   @@unique([userId, key])
   @@index([userId, createdAt])
