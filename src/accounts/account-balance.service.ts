@@ -322,13 +322,20 @@ export class AccountBalanceService {
     // In/Out/Adjustment leave out voided transactions and their reversals:
     // the pair nets to zero, but counted gross it reads as money that both
     // came in and went out.
+    // A wallet's move into or out of a savings goal is money out or in, as
+    // its ledger rows say (Savings, Savings withdraw), not a transfer between
+    // two of its own accounts. A savings wallet's own figures stay as they were.
+    const savingsMove: Prisma.TransactionWhereInput = { transactionType: 'TRANSFER', entries: { some: { accountId: { not: accountId }, account: { accountSubtype: 'savings' } } } };
+    const splitSavings = account.accountSubtype !== 'savings';
     const nonTransferWhere: Prisma.TransactionEntryWhereInput = {
       accountId,
-      transaction: { ...transactionDateFilter, ...LIVE_TRANSACTION, transactionType: { not: 'TRANSFER' } },
+      transaction: splitSavings
+        ? { ...transactionDateFilter, ...LIVE_TRANSACTION, OR: [{ transactionType: { not: 'TRANSFER' } }, savingsMove] }
+        : { ...transactionDateFilter, ...LIVE_TRANSACTION, transactionType: { not: 'TRANSFER' } },
     };
     const transferWhere: Prisma.TransactionEntryWhereInput = {
       accountId,
-      transaction: { ...transactionDateFilter, ...LIVE_TRANSACTION, transactionType: 'TRANSFER' },
+      transaction: { ...transactionDateFilter, ...LIVE_TRANSACTION, transactionType: 'TRANSFER', ...(splitSavings && { NOT: savingsMove }) },
     };
 
     const [debitAgg, creditAgg, transferDebitAgg, transferCreditAgg, transactionCount] = await Promise.all([
@@ -412,9 +419,11 @@ export class AccountBalanceService {
               : [],
             // How many entries each account has (any status: only an account
             // with none can be deleted, as removeOrArchive() decides) and the
-            // day it last moved money (standing transactions only).
-            this.prisma.$queryRaw<{ accountId: string; entries: number; lastActivity: Date | null }[]>`
+            // day it last moved money (standing transactions only), and how
+            // many of its entries still stand (what its ledger lists).
+            this.prisma.$queryRaw<{ accountId: string; entries: number; standing: number; lastActivity: Date | null }[]>`
               SELECT e."accountId" AS "accountId", COUNT(*)::int AS "entries",
+                     (COUNT(*) FILTER (WHERE t."status" = 'POSTED' AND t."reversalOfId" IS NULL))::int AS "standing",
                      MAX(t."transactionDate") FILTER (WHERE t."status" = 'POSTED' AND t."reversalOfId" IS NULL) AS "lastActivity"
               FROM "TransactionEntry" e JOIN "Transaction" t ON t."id" = e."transactionId"
               WHERE e."accountId" IN (${Prisma.join(accountIds)})
@@ -464,6 +473,7 @@ export class AccountBalanceService {
         // A YYYY-MM-DD day, or null before the first standing entry.
         lastActivity: activityByAccount.get(account.id)?.lastActivity?.toISOString().slice(0, 10) ?? null,
         entryCount: activityByAccount.get(account.id)?.entries ?? 0,
+        standingCount: activityByAccount.get(account.id)?.standing ?? 0,
         openingBalance: account.openingBalance.toFixed(2),
         totalIn: (inByAccount.get(account.id) ?? new Prisma.Decimal(0)).toFixed(2),
         totalOut: (outByAccount.get(account.id) ?? new Prisma.Decimal(0)).toFixed(2),

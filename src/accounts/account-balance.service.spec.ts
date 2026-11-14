@@ -257,7 +257,7 @@ describe('AccountBalanceService.getWalletsOverview', () => {
     const prisma = {
       account: { findMany: vi.fn().mockResolvedValue(accounts) },
       // Cash has entries; the others none yet.
-      $queryRaw: vi.fn().mockResolvedValue([{ accountId: 'cash', entries: 4, lastActivity: new Date('2026-09-20T00:00:00.000Z') }]),
+      $queryRaw: vi.fn().mockResolvedValue([{ accountId: 'cash', entries: 4, standing: 3, lastActivity: new Date('2026-09-20T00:00:00.000Z') }]),
       transactionEntry: {
         groupBy: vi.fn(({ by, where }: { by: string[]; where: Record<string, unknown> }) => {
           if (by.join() !== 'accountId,entryType') throw new Error(`The fake entries do not group by ${by.join()}`);
@@ -297,9 +297,9 @@ describe('AccountBalanceService.getWalletsOverview', () => {
       inactiveAmount: '0.00',
       availableBalance: '1385.00',
       accounts: [
-        { id: 'cash', name: 'cash', nameBn: null, accountNumber: null, accountSubtype: 'cash', status: 'ACTIVE', lastActivity: '2026-09-20', entryCount: 4, openingBalance: '100.00', totalIn: '500.00', totalOut: '240.00', savings: '0.00', adjustment: '-50.00', currentBalance: '310.00' },
-        { id: 'bank', name: 'bank', nameBn: null, accountNumber: null, accountSubtype: 'bank', status: 'ACTIVE', lastActivity: null, entryCount: 0, openingBalance: '1000.00', totalIn: '25.00', totalOut: '0.00', savings: '0.00', adjustment: '50.00', currentBalance: '1075.00' },
-        { id: 'bkash', name: 'bkash', nameBn: null, accountNumber: null, accountSubtype: 'mfs', status: 'ARCHIVED', lastActivity: null, entryCount: 0, openingBalance: '0.00', totalIn: '0.00', totalOut: '0.00', savings: '0.00', adjustment: '0.00', currentBalance: '0.00' },
+        { id: 'cash', name: 'cash', nameBn: null, accountNumber: null, accountSubtype: 'cash', status: 'ACTIVE', lastActivity: '2026-09-20', entryCount: 4, standingCount: 3, openingBalance: '100.00', totalIn: '500.00', totalOut: '240.00', savings: '0.00', adjustment: '-50.00', currentBalance: '310.00' },
+        { id: 'bank', name: 'bank', nameBn: null, accountNumber: null, accountSubtype: 'bank', status: 'ACTIVE', lastActivity: null, entryCount: 0, standingCount: 0, openingBalance: '1000.00', totalIn: '25.00', totalOut: '0.00', savings: '0.00', adjustment: '50.00', currentBalance: '1075.00' },
+        { id: 'bkash', name: 'bkash', nameBn: null, accountNumber: null, accountSubtype: 'mfs', status: 'ARCHIVED', lastActivity: null, entryCount: 0, standingCount: 0, openingBalance: '0.00', totalIn: '0.00', totalOut: '0.00', savings: '0.00', adjustment: '0.00', currentBalance: '0.00' },
       ],
     });
     expect(await setup().service.getWalletsOverview('biz-1', {})).toEqual(overview);
@@ -485,5 +485,48 @@ describe('AccountBalanceService.getLedger standing only', () => {
     expect(standing.running).toEqual(['700.00', '400.00']);
     // The pair nets to zero, so the closing balance is the same either way.
     expect(standing.closingBalance).toBe(all.closingBalance);
+  });
+});
+
+describe('AccountBalanceService.getAccountSummary', () => {
+  // [type, this account's side, amount, the other leg's subtype]
+  type Row = { type: string; entryType: 'DEBIT' | 'CREDIT'; amount: string; other: string };
+  // Just the filters the summary sends: the type (or not it), a savings leg (or not it).
+  const savingsLeg = (row: Row, leg: { transactionType?: string; entries?: unknown }) => row.type === leg.transactionType && row.other === 'savings';
+  const matchesTx = (row: Row, tx: Record<string, unknown>): boolean => {
+    if (tx.OR) return (tx.OR as Record<string, unknown>[]).some((part) => matchesTx(row, part));
+    if (tx.NOT && savingsLeg(row, tx.NOT as Row & { transactionType?: string })) return false;
+    const type = tx.transactionType as string | { not: string } | undefined;
+    if (typeof type === 'string' && row.type !== type) return false;
+    if (typeof type === 'object' && row.type === type.not) return false;
+    if (tx.entries && row.other !== 'savings') return false;
+    return true;
+  };
+  const summary = (subtype: string, rows: Row[]) => {
+    const aggregate = vi.fn(({ where }: { where: { entryType: string; transaction: Record<string, unknown> } }) => {
+      const hits = rows.filter((row) => row.entryType === where.entryType && matchesTx(row, where.transaction));
+      return Promise.resolve({ _sum: { amount: hits.length ? hits.reduce((sum, row) => sum.plus(row.amount), new Prisma.Decimal(0)) : null } });
+    });
+    const prisma = {
+      account: { findUnique: vi.fn().mockResolvedValue({ id: 'acc', businessId: 'biz-1', accountType: 'ASSET', accountSubtype: subtype, currentBalance: new Prisma.Decimal(0) }) },
+      transactionEntry: { aggregate, count: vi.fn().mockResolvedValue(rows.length) },
+    };
+    return new AccountBalanceService(prisma as never).getAccountSummary('biz-1', 'acc');
+  };
+  const rows: Row[] = [
+    { type: 'INCOME', entryType: 'DEBIT', amount: '1000', other: 'income' },
+    { type: 'TRANSFER', entryType: 'CREDIT', amount: '300', other: 'savings' },
+    { type: 'TRANSFER', entryType: 'DEBIT', amount: '50', other: 'savings' },
+    { type: 'TRANSFER', entryType: 'CREDIT', amount: '200', other: 'bank' },
+  ];
+
+  it('counts a move into or out of a savings goal as money out or in, and only wallet-to-wallet moves as transfers', async () => {
+    const result = await summary('cash', rows);
+    expect(result).toMatchObject({ totalIn: '1050.00', totalOut: '300.00', adjustment: '-200.00' });
+  });
+
+  it('keeps a savings wallet’s own moves as transfers', async () => {
+    const result = await summary('savings', rows);
+    expect(result).toMatchObject({ totalIn: '1000.00', totalOut: '0.00', adjustment: '-450.00' });
   });
 });
