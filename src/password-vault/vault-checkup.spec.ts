@@ -27,15 +27,37 @@ describe('securityCheckup', () => {
       { id: 'c', password: 'qwerty12', passwordChangedAt: at('2026-09-01'), checkupDismissedAt: null },
       { id: 'd', password: 'G8$kPz!x4Wq1', passwordChangedAt: at('2025-08-01'), checkupDismissedAt: null },
     ];
-    expect(securityCheckup(entries, person, now)).toEqual({ weak: ['c'], reused: ['a', 'b'], old: ['d'] });
+    expect(securityCheckup(entries, person, now)).toEqual({
+      weak: ['c'],
+      reused: ['a', 'b'],
+      old: ['d'],
+      reusedGroups: [['a', 'b']],
+      weakDetails: { c: { length: 8, digitsOnly: false } },
+    });
   });
 
-  it("hides an old password marked fine until it changes again", () => {
+  it('hides an old password marked fine until it changes again', () => {
     const old = { id: 'd', password: 'G8$kPz!x4Wq1', passwordChangedAt: at('2025-08-01'), checkupDismissedAt: at('2026-09-20') };
     expect(securityCheckup([old], person, now).old).toEqual([]);
     expect(securityCheckup([{ ...old, passwordChangedAt: at('2026-09-25'), checkupDismissedAt: at('2026-09-20') }], person, now).old).toEqual([]);
     expect(securityCheckup([{ ...old, checkupDismissedAt: at('2025-07-01') }], person, now).old).toEqual(['d']);
     // A weak password marked fine for its age is still weak.
-    expect(securityCheckup([{ ...old, password: 'qwerty12' }], person, now)).toEqual({ weak: ['d'], reused: [], old: [] });
+    expect(securityCheckup([{ ...old, password: 'qwerty12' }], person, now)).toMatchObject({ weak: ['d'], reused: [], old: [] });
+  });
+
+  it('groups the logins that share each password and says what makes a weak one weak, never the password', () => {
+    const entry = (id: string, password: string) => ({ id, password, passwordChangedAt: at('2026-09-01'), checkupDismissedAt: null });
+    const result = securityCheckup(
+      [entry('a', 'tR7#vLq2!mNw'), entry('b', '12345678'), entry('c', 'tR7#vLq2!mNw'), entry('d', '12345678'), entry('e', 'G8$kPz!x4Wq1')],
+      person,
+      now,
+    );
+    expect(result.reusedGroups).toEqual([
+      ['a', 'c'],
+      ['b', 'd'],
+    ]);
+    expect(result.weakDetails).toEqual({ b: { length: 8, digitsOnly: true }, d: { length: 8, digitsOnly: true } });
+    expect(JSON.stringify(result)).not.toContain('12345678');
+    expect(JSON.stringify(result)).not.toContain('tR7#');
   });
 });

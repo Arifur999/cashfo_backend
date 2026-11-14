@@ -26,7 +26,10 @@ export function isWeakPassword(password: string, person: { name: string; phone: 
   if (password.length < 8 || kinds < 2) return true;
   const lower = password.toLowerCase();
   if (COMMON.some((word) => lower.includes(word)) || hasRun(lower) || /(.)\1{3,}/.test(password)) return true;
-  const names = person.name.toLowerCase().split(/\s+/).filter((part) => part.length >= 3);
+  const names = person.name
+    .toLowerCase()
+    .split(/\s+/)
+    .filter((part) => part.length >= 3);
   if (names.some((part) => lower.includes(part))) return true;
   const digits = person.phone?.replace(/\D/g, '') ?? '';
   return digits.length >= 6 && password.replace(/\D/g, '').includes(digits.slice(-6));
@@ -44,6 +47,12 @@ export interface Checkup {
   weak: string[];
   reused: string[];
   old: string[];
+  // The reused logins in sets that share one password, so a login can name
+  // the others ("Same password as Instagram"). Ids only.
+  reusedGroups: string[][];
+  // What makes each weak password weak, without the password itself: its
+  // length and whether it is digits only ("8 characters, numbers only").
+  weakDetails: Record<string, { length: number; digitsOnly: boolean }>;
 }
 
 export function securityCheckup(entries: CheckupEntry[], person: { name: string; phone: string | null }, now: Date): Checkup {
@@ -51,9 +60,15 @@ export function securityCheckup(entries: CheckupEntry[], person: { name: string;
   for (const entry of entries) uses.set(entry.password, (uses.get(entry.password) ?? 0) + 1);
   // Only age can be marked fine; a weak or reused password stays flagged.
   const fine = (entry: CheckupEntry) => !!entry.checkupDismissedAt && entry.checkupDismissedAt >= entry.passwordChangedAt;
+  const weak = entries.filter((entry) => isWeakPassword(entry.password, person));
+  const reused = entries.filter((entry) => (uses.get(entry.password) ?? 0) > 1);
+  const groups = new Map<string, string[]>();
+  for (const entry of reused) groups.set(entry.password, [...(groups.get(entry.password) ?? []), entry.id]);
   return {
-    weak: entries.filter((entry) => isWeakPassword(entry.password, person)).map((entry) => entry.id),
-    reused: entries.filter((entry) => (uses.get(entry.password) ?? 0) > 1).map((entry) => entry.id),
+    weak: weak.map((entry) => entry.id),
+    reused: reused.map((entry) => entry.id),
     old: entries.filter((entry) => !fine(entry) && now.getTime() - entry.passwordChangedAt.getTime() > OLD_AFTER_MS).map((entry) => entry.id),
+    reusedGroups: [...groups.values()],
+    weakDetails: Object.fromEntries(weak.map((entry) => [entry.id, { length: [...entry.password].length, digitsOnly: /^\d+$/.test(entry.password) }])),
   };
 }
