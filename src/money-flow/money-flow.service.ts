@@ -12,8 +12,10 @@ const MAX_DAYS = 3 * 366;
 
 // Where a period's money went (the dashboard's Cash flow card): income and
 // expenses, what went into savings goals and came out, loans given, taken
-// and paid back, assets bought and sold, and cash gifts given at events
-// (kept apart from the expenses they are posted as). Also how much the net
+// and paid back, assets bought and sold, money put into investments and
+// what came back (their profit kept apart from the income it is posted as),
+// and cash gifts given at events (kept apart from the expenses they are
+// posted as). Also how much the net
 // worth moved since last month ended (NetWorthService, as Reports has it).
 @Injectable()
 export class MoneyFlowService {
@@ -28,13 +30,14 @@ export class MoneyFlowService {
     if ((dateOf(to).getTime() - dateOf(from).getTime()) / 86_400_000 > MAX_DAYS) throw new BadRequestException('Pick at most three years');
     const start = dateOf(from);
     const end = nextDay(to);
-    const [pnl, gifts, savings, loans, bought, sold, worthChange] = await Promise.all([
+    const [pnl, gifts, savings, loans, bought, sold, invested, worthChange] = await Promise.all([
       this.profitAndLoss(businessId, start, end),
       this.giftsGiven(businessId, start, end),
       this.prisma.savingsGoalEntry.groupBy({ by: ['type'], where: { businessId, type: { in: ['CONTRIBUTION', 'WITHDRAWAL'] }, date: { gte: start, lt: end } }, _sum: { amount: true } }),
       this.receivablesPayables.loanFlow(businessId, from, to),
       this.prisma.asset.aggregate({ where: { businessId, purchaseTransactionId: { not: null }, purchaseDate: { gte: start, lt: end } }, _sum: { purchasePrice: true } }),
       this.prisma.asset.aggregate({ where: { businessId, soldTransactionId: { not: null }, soldAt: { gte: start, lt: end } }, _sum: { soldPrice: true } }),
+      this.investmentFlow(businessId, start, end),
       this.worthChangeThisMonth(businessId, now),
     ]);
     const income = pnl.get('INCOME') ?? { amount: 0, count: 0 };
@@ -42,13 +45,17 @@ export class MoneyFlowService {
     return {
       dateFrom: from,
       dateTo: to,
-      income,
+      // An investment's profit is income, shown on the investments' line.
+      income: { amount: taka(income.amount - invested.profit), count: income.count - invested.profitCount },
       // Cash gifts at events are their own line.
       expenses: { amount: taka(expense.amount - gifts), count: expense.count },
       savings: { added: taka(savings.find((row) => row.type === 'CONTRIBUTION')?._sum.amount), takenOut: taka(savings.find((row) => row.type === 'WITHDRAWAL')?._sum.amount) },
       loans: { took: taka(loans.TOOK), gotBack: taka(loans.GOT_BACK), gave: taka(loans.GAVE), paidBack: taka(loans.PAID_BACK) },
       assets: { bought: taka(bought._sum.purchasePrice), sold: taka(sold._sum.soldPrice) },
       gifts: { gave: taka(gifts), got: 0 },
+      // Money put into investments from a wallet, and profit and capital that
+      // came back into one.
+      investments: { put: invested.put, profit: invested.profit, back: invested.back },
       worthChange,
     };
   }
@@ -61,6 +68,19 @@ export class MoneyFlowService {
         AND t."transactionType" IN ('INCOME', 'EXPENSE') AND t."transactionDate" >= ${start} AND t."transactionDate" < ${end}
       GROUP BY t."transactionType"`;
     return new Map(rows.map((row) => [row.type, { amount: taka(row.amount), count: row.count }]));
+  }
+
+  // Investments' money that moved through a wallet in the period: entries
+  // whose posting still stands (a loss and money put in earlier moved none).
+  private async investmentFlow(businessId: string, start: Date, end: Date) {
+    const rows = await this.prisma.investmentEntry.groupBy({
+      by: ['type'],
+      where: { businessId, transactionId: { not: null }, accountId: { not: null }, date: { gte: start, lt: end } },
+      _sum: { amount: true },
+      _count: { _all: true },
+    });
+    const sum = (...types: string[]) => taka(rows.filter((row) => types.includes(row.type)).reduce((total, row) => total + Number(row._sum.amount ?? 0), 0));
+    return { put: sum('INVEST', 'ADD'), profit: sum('PROFIT'), back: sum('BACK'), profitCount: rows.find((row) => row.type === 'PROFIT')?._count._all ?? 0 };
   }
 
   // Cash given at events that went into Transactions (a Gifts expense the

@@ -36,6 +36,20 @@ describe('NetWorthService', () => {
           { purchaseDate: new Date('2025-06-01T00:00:00Z'), purchasePrice: D(50_000), currentValue: D(50_000), soldAt: new Date('2026-11-03T06:00:00Z'), status: 'SOLD', valueHistory: [] },
         ]),
       },
+      investment: {
+        findMany: vi.fn().mockResolvedValue([
+          // 3,00,000 put in on 15 October, 50,000 taken back on 5 November.
+          {
+            entries: [
+              { type: 'INVEST', amount: D(300_000), date: new Date('2026-10-15T00:00:00Z') },
+              { type: 'PROFIT', amount: D(9_000), date: new Date('2026-10-30T00:00:00Z') },
+              { type: 'BACK', amount: D(50_000), date: new Date('2026-11-05T00:00:00Z') },
+            ],
+          },
+          // Closed with everything back: no capital left, not counted.
+          { entries: [{ type: 'INVEST', amount: D(10_000), date: new Date('2026-01-01T00:00:00Z') }, { type: 'LOSS', amount: D(10_000), date: new Date('2026-02-01T00:00:00Z') }] },
+        ]),
+      },
     };
     const loans = {
       loanBalancesAt: vi.fn().mockResolvedValue([
@@ -44,8 +58,10 @@ describe('NetWorthService', () => {
       ]),
     };
     const [before, after] = await new NetWorthService(prisma as never, loans as never).on('b1', ['2026-10-31', '2026-11-07'], '2026-11-07');
-    expect(before).toEqual({ day: '2026-10-31', parts: { cash: 4_000, savings: 3_000, assets: 160_000, pawna: 5_000, dena: 10_000 }, counts: { accounts: 1, assets: 2, pawna: 1, dena: 1 } });
-    expect(after.parts).toEqual({ cash: 3_000, savings: 3_000, assets: 120_000, pawna: 4_000, dena: 10_000 });
-    expect(netOf(after) - netOf(before)).toBe(-42_000);
+    expect(before).toEqual({ day: '2026-10-31', parts: { cash: 4_000, savings: 3_000, assets: 160_000, investments: 300_000, pawna: 5_000, dena: 10_000 },
+      counts: { accounts: 1, assets: 2, investments: 1, pawna: 1, dena: 1 },
+    });
+    expect(after.parts).toEqual({ cash: 3_000, savings: 3_000, assets: 120_000, investments: 250_000, pawna: 4_000, dena: 10_000 });
+    expect(netOf(after) - netOf(before)).toBe(-92_000);
   });
 });

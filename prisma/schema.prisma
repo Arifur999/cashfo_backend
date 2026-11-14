@@ -2135,6 +2135,7 @@ model Business {
   eventGifts                  EventGift[]
   assets                      Asset[]
   assetCategoryOptions        AssetCategoryOption[]
+  investments                 Investment[]
   groupMembers                GroupMember[]
   groupContributions          GroupContribution[]
   groupCashHandovers          GroupCashHandover[]
@@ -2777,6 +2778,126 @@ model AssetDeletion {
 enum AssetStatus {
   ACTIVE
   SOLD
+}
+
+// =====================================================================
+// Investments: money put into a business or partnership, a sanchayapatra,
+// a bank FDR, shares, a property or anything else that pays a profit.
+// Capital is never typed: it is what was put in (INVEST, ADD) less what
+// came back (BACK) and what was lost (LOSS), worked out from the entries.
+//
+// Money moves through TransactionsService like every other feature: money
+// put in from a wallet leaves it into a hidden pooled "Investments
+// (Internal)" system Account (subtype 'investments', outside the money
+// subtypes, so no wallet list or total sees it), capital back comes out of
+// it, and a profit is an INCOME posting into the wallet it came into. A
+// loss moves no money and has no posting; neither has money put in
+// earlier, before the app (accountId null). An entry owns its posting:
+// Transactions refuses to void it, the investment pages undo it.
+// =====================================================================
+
+model Investment {
+  id              String               @id @default(uuid())
+  businessId      String
+  business        Business             @relation(fields: [businessId], references: [id])
+  name            String
+  kind            InvestmentKind       @default(OTHER)
+  // The day the money was first put in (the INVEST entry's day).
+  startDate       DateTime             @db.Date
+  frequency       InvestmentFrequency  @default(IRREGULAR)
+  // What each payout is expected to be: a fixed amount, a yearly rate on
+  // the capital, or not fixed (NONE). Always NONE when frequency is
+  // IRREGULAR.
+  payoutMode      InvestmentPayoutMode @default(NONE)
+  fixedAmount     Decimal?             @db.Decimal(14, 2)
+  ratePercent     Decimal?             @db.Decimal(5, 2)
+  // The first payout's day; the rest follow every `frequency` from it.
+  firstDueDate    DateTime?            @db.Date
+  maturityDate    DateTime?            @db.Date
+  // The wallet profit is expected in (Record profit picks it first). Loose
+  // string FK, like Asset.purchaseAccountId.
+  profitAccountId String?
+  note            String?
+  // Set when the investment was closed (Close investment), null while open.
+  closedAt        DateTime?            @db.Date
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
+  entries         InvestmentEntry[]
+
+  @@index([businessId])
+}
+
+// One thing that happened to an investment: the first money put in, more
+// put in, a profit, capital back, or a loss.
+model InvestmentEntry {
+  id            String              @id @default(uuid())
+  investmentId  String
+  investment    Investment          @relation(fields: [investmentId], references: [id])
+  businessId    String
+  type          InvestmentEntryType
+  date          DateTime            @db.Date
+  amount        Decimal             @db.Decimal(14, 2)
+  // The wallet the money left or came into; null for a loss and for money
+  // put in earlier, before the app (no money moved). Loose string FK.
+  accountId     String?
+  // Its posting (null when no money moved). Unique: a posting belongs to
+  // one entry.
+  transactionId String?             @unique
+  note          String?
+  // Made by Close investment, so Undo of the close takes exactly these.
+  fromClose     Boolean             @default(false)
+  createdAt     DateTime            @default(now())
+
+  @@index([investmentId])
+  @@index([businessId, date])
+}
+
+// An investment or an entry deleted in the last few minutes, kept so the
+// delete can be undone, like AssetDeletion: the rows as they were
+// (snapshot) and who deleted them. Their postings stay voided until the
+// undo brings them back; housekeeping removes the row after the window.
+model InvestmentDeletion {
+  // The deleted investment's id, or the deleted entry's.
+  id           String   @id
+  kind         String // 'INVESTMENT' | 'ENTRY'
+  businessId   String
+  investmentId String
+  deletedBy    String
+  deletedAt    DateTime @default(now())
+  snapshot     Json
+
+  @@index([deletedAt])
+}
+
+enum InvestmentKind {
+  BUSINESS
+  SANCHAYAPATRA
+  FDR
+  SHARES
+  PROPERTY
+  OTHER
+}
+
+enum InvestmentFrequency {
+  MONTHLY
+  QUARTERLY
+  HALF_YEARLY
+  YEARLY
+  IRREGULAR
+}
+
+enum InvestmentPayoutMode {
+  FIXED
+  RATE
+  NONE
+}
+
+enum InvestmentEntryType {
+  INVEST
+  ADD
+  PROFIT
+  BACK
+  LOSS
 }
 
 // =====================================================================

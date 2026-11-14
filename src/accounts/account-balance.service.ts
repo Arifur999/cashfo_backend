@@ -152,9 +152,9 @@ export class AccountBalanceService {
     // receiving account.
     const transactionIds = [...new Set(entries.map((entry) => entry.transactionId))];
     const chargeForIds = [...new Set(entries.map((entry) => entry.transaction.chargeForId).filter((id): id is string => !!id))];
-    const [assets, goalEntries, chargedTransfers] =
+    const [assets, goalEntries, chargedTransfers, investmentEntries] =
       transactionIds.length === 0
-        ? [[], [], []]
+        ? [[], [], [], []]
         : await Promise.all([
             this.prisma.asset.findMany({
               where: { businessId, OR: [{ purchaseTransactionId: { in: transactionIds } }, { soldTransactionId: { in: transactionIds } }] },
@@ -164,12 +164,17 @@ export class AccountBalanceService {
             chargeForIds.length
               ? this.prisma.transactionEntry.findMany({ where: { transactionId: { in: chargeForIds }, entryType: 'DEBIT' }, select: { transactionId: true, account: { select: { name: true } } } })
               : [],
+            this.prisma.investmentEntry.findMany({
+              where: { businessId, transactionId: { in: transactionIds } },
+              select: { transactionId: true, type: true, investmentId: true, investment: { select: { name: true } } },
+            }),
           ]);
     const assetBy = new Map<string, { id: string; name: string; side: 'PURCHASE' | 'SALE' }>();
     for (const asset of assets) {
       if (asset.purchaseTransactionId) assetBy.set(asset.purchaseTransactionId, { id: asset.id, name: asset.name, side: 'PURCHASE' });
       if (asset.soldTransactionId) assetBy.set(asset.soldTransactionId, { id: asset.id, name: asset.name, side: 'SALE' });
     }
+    const investmentBy = new Map(investmentEntries.map((entry) => [entry.transactionId!, { id: entry.investmentId, name: entry.investment.name, type: entry.type }]));
     const goalBy = new Map(goalEntries.filter((entry) => entry.transactionId).map((entry) => [entry.transactionId!, entry.savingsGoal.name]));
     const chargedToBy = new Map(chargedTransfers.map((entry) => [entry.transactionId, entry.account.name]));
 
@@ -182,6 +187,7 @@ export class AccountBalanceService {
       running = running.plus(raises ? amount : amount.negated());
       const legs = (entry.transaction.entries ?? []).filter((leg) => leg.accountId !== accountId);
       const asset = assetBy.get(entry.transactionId) ?? null;
+      const investment = investmentBy.get(entry.transactionId) ?? null;
       const { kind, party } = ledgerKind({
         transactionType: entry.transaction.transactionType,
         direction: raises ? 'in' : 'out',
@@ -189,6 +195,7 @@ export class AccountBalanceService {
         legs: legs.map((leg) => ({ accountName: leg.account.name, accountSubtype: leg.account.accountSubtype, categoryId: leg.categoryId })),
         contact: entry.transaction.contact ? { name: entry.transaction.contact.name, category: entry.transaction.contact.category } : null,
         asset,
+        investment,
         goalName: goalBy.get(entry.transactionId) ?? null,
         adjustmentSubtype: BALANCE_ADJUSTMENT_ACCOUNT_SUBTYPE,
       });
@@ -221,6 +228,7 @@ export class AccountBalanceService {
         party,
         contactId: entry.transaction.contactId,
         assetId: asset?.id ?? null,
+        investmentId: investment?.id ?? null,
         // A transfer's charge: the transfer, and the account it went to.
         chargeForId: entry.transaction.chargeForId,
         chargeFor: entry.transaction.chargeForId ? (chargedToBy.get(entry.transaction.chargeForId) ?? null) : null,

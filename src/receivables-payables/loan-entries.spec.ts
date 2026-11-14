@@ -114,6 +114,7 @@ describe('TransactionsService and charges', () => {
       asset: { findFirst: vi.fn().mockResolvedValue(null) },
       zakatPayment: { findUnique: vi.fn().mockResolvedValue(null) },
       eventGift: { findUnique: vi.fn().mockResolvedValue(null) },
+      investmentEntry: { findUnique: vi.fn().mockResolvedValue(null) },
       account: { count: vi.fn().mockResolvedValue(0) },
       $queryRaw: vi.fn().mockResolvedValue([]),
     };
@@ -162,6 +163,7 @@ describe('TransactionsService and charges', () => {
       asset: { findMany: vi.fn().mockResolvedValue([]) },
       zakatPayment: { findMany: vi.fn().mockResolvedValue([]) },
       eventGift: { findMany: vi.fn().mockResolvedValue([]) },
+      investmentEntry: { findMany: vi.fn().mockResolvedValue([]) },
       contact: { findMany: vi.fn().mockResolvedValue([{ id: 'bank', openingBalance: new Prisma.Decimal(0) }]) },
       transactionEntry: {
         findMany: vi.fn().mockResolvedValue([

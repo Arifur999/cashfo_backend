@@ -15,6 +15,9 @@ export async function deleteWorkspaces(tx: Prisma.TransactionClient, businessIds
   await tx.assetValueHistory.deleteMany({ where: { asset: { businessId: inIds } } });
   await tx.asset.deleteMany({ where: { businessId: inIds } });
   await tx.assetCategoryOption.deleteMany({ where: { businessId: inIds } });
+  await tx.investmentEntry.deleteMany({ where: { businessId: inIds } });
+  await tx.investment.deleteMany({ where: { businessId: inIds } });
+  await tx.investmentDeletion.deleteMany({ where: { businessId: inIds } });
   await tx.budgetCategory.deleteMany({ where: { businessId: inIds } });
   await tx.incomeGoal.deleteMany({ where: { businessId: inIds } });
   await tx.account.updateMany({ where: { businessId: inIds }, data: { parentId: null } });
