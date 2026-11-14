@@ -846,7 +846,9 @@ export class ReceivablesPayablesService {
       const totalPayment = new Prisma.Decimal(receivable.totalInvoiced).plus(payable.totalPaid);
       const totalReceive = new Prisma.Decimal(payable.totalInvoiced).plus(receivable.totalPaid);
 
-      if (opening.equals(0) && totalPayment.equals(0) && totalReceive.equals(0)) continue;
+      // Nothing ever entered with them: no row. Profit alone still counts, so
+      // a contact with only profit postings keeps its Profit paid figure.
+      if (opening.equals(0) && totalPayment.equals(0) && totalReceive.equals(0) && !activity.byContact.get(contact.id)?.entries) continue;
 
       totalPaid = totalPaid.plus(totalPayment);
       totalReceived = totalReceived.plus(totalReceive);
