@@ -1,4 +1,4 @@
-import { BadRequestException, ForbiddenException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import type { InvestmentDto } from './dto/investment.dto.js';
 import { capitalStaysPositive, figuresOf } from './investment-figures.js';
@@ -86,7 +86,7 @@ const setup = () => {
       }),
       updateMany: vi.fn(({ where, data }) => {
         entries
-          .filter((e) => (!where.id || e.id === where.id) && (!where.investmentId || e.investmentId === where.investmentId))
+          .filter((e) => (!where.id || e.id === where.id || where.id.in?.includes(e.id)) && (!where.investmentId || e.investmentId === where.investmentId))
           .forEach((e) => Object.assign(e, data));
         return Promise.resolve({ count: 1 });
       }),
@@ -100,6 +100,10 @@ const setup = () => {
       }),
     },
     investmentDeletion: {
+      create: vi.fn(({ data }) => {
+        deletions.push({ ...data, deletedAt: new Date() });
+        return Promise.resolve({});
+      }),
       upsert: vi.fn(({ create }) => {
         deletions.push({ ...create, deletedAt: new Date() });
         return Promise.resolve({});
@@ -358,6 +362,46 @@ describe('InvestmentsService', () => {
     const back = await service.restore('b1', made.id, 'u1');
     expect(back).toMatchObject({ capital: '1000000.00', profit: '15000.00' });
     expect(postings.every((p) => p.status === 'POSTED')).toBe(true);
+  });
+
+  it('undoes an edit: the old posting stands again, the edit\x27s posting is voided, the details come back', async () => {
+    const { service, postings } = setup();
+    const made = await service.create('b1', form({ amount: 100_000 }), 'u1');
+    const edited = await service.update('b1', made.id, form({ name: 'Renamed', amount: 120_000, sourceAccountId: 'cash' }), 'u1');
+    expect(edited).toMatchObject({ name: 'Renamed', capital: '120000.00' });
+    await expect(service.undo('b1', made.id, edited.undoId, 'someone-else')).rejects.toThrow(ForbiddenException);
+    const back = await service.undo('b1', made.id, edited.undoId, 'u1');
+    expect(back).toMatchObject({ name: 'Karim Garments partnership', capital: '100000.00' });
+    expect(back.entries[0]).toMatchObject({ accountId: 'islami', transactionId: postings[0].id });
+    expect(postings.map((p) => p.status)).toEqual(['POSTED', 'VOIDED']);
+    // Once used, it is gone.
+    await expect(service.undo('b1', made.id, edited.undoId, 'u1')).rejects.toThrow();
+  });
+
+  it('undoes an entry\x27s edit, and refuses once the entry changed again', async () => {
+    const { service, postings } = setup();
+    const made = await service.create('b1', form(), 'u1');
+    const { entryId } = await service.addEntry('b1', made.id, { type: 'PROFIT', amount: 15_000, date: '2025-08-05', accountId: 'islami' }, 'u1');
+    const first = await service.updateEntry('b1', made.id, entryId, { amount: 16_000, date: '2025-08-06', accountId: 'cash' }, 'u1');
+    const second = await service.updateEntry('b1', made.id, entryId, { amount: 17_000, date: '2025-08-06', accountId: 'cash' }, 'u1');
+    await expect(service.undo('b1', made.id, first.undoId, 'u1')).rejects.toThrow(ConflictException);
+    const back = await service.undo('b1', made.id, second.undoId, 'u1');
+    expect(back.profit).toBe('16000.00');
+    expect(postings.filter((p) => p.status === 'POSTED').map((p) => p.entries[0].amount)).toEqual([1_000_000, 16_000]);
+  });
+
+  it('undoes a reopen: closed again on the same day, its close entries undoable again', async () => {
+    const { service, entriesOf } = setup();
+    const made = await service.create('b1', form({ amount: 150_000 }), 'u1');
+    await service.close('b1', made.id, { amount: 120_000, date: '2026-01-10', accountId: 'cash' }, 'u1');
+    const open = await service.reopen('b1', made.id, 'u1');
+    expect(open.closedAt).toBeNull();
+    expect(entriesOf().some((e) => e.fromClose)).toBe(false);
+    const closed = await service.undo('b1', made.id, open.undoId, 'u1');
+    expect(closed.closedAt).toEqual(day('2026-01-10'));
+    expect(entriesOf().filter((e) => e.fromClose)).toHaveLength(2);
+    const undone = await service.undoClose('b1', made.id, 'u1');
+    expect(undone).toMatchObject({ closedAt: null, capital: '150000.00' });
   });
 
   it('keeps where the money went: saved, kept by an older app that leaves it out, cleared by null', async () => {

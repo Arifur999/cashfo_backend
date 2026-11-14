@@ -86,7 +86,15 @@ export class InvestmentsController {
 
   @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
   @Post(':id/reopen')
-  reopen(@Param('businessId') businessId: string, @Param('id') id: string) {
-    return this.investments.reopen(businessId, id);
+  reopen(@Param('businessId') businessId: string, @Param('id') id: string, @CurrentUser() user: RequestUser) {
+    return this.investments.reopen(businessId, id, user.id);
+  }
+
+  // Undo of an edit, an entry's edit or a reopen (the undoId each returns),
+  // for a few minutes after it.
+  @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
+  @Post(':id/undo/:undoId')
+  undo(@Param('businessId') businessId: string, @Param('id') id: string, @Param('undoId') undoId: string, @CurrentUser() user: RequestUser) {
+    return this.investments.undo(businessId, id, undoId, user.id);
   }
 }

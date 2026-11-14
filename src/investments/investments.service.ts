@@ -1,4 +1,5 @@
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
 import { Account, Investment, InvestmentEntry, InvestmentEntryType, Prisma } from '@prisma/client';
 import { INVESTMENTS_ACCOUNT_SUBTYPE, MONEY_ACCOUNT_SUBTYPES } from '../accounts/accounts.service.js';
 import { dhakaDateKey } from '../common/dhaka.js';
@@ -13,6 +14,43 @@ export const INVESTMENT_DELETED_REASON = 'Investment deleted';
 export const INVESTMENT_ENTRY_DELETED_REASON = 'Investment entry deleted';
 const CORRECTED_REASON = 'Investment entry corrected';
 const CLOSE_UNDONE_REASON = 'Investment close undone';
+// The posting an edit made, voided when the edit is undone.
+const EDIT_UNDONE_REASON = 'Investment edit undone';
+
+// What an edit or a reopen changed, kept (in InvestmentDeletion, by an id
+// of its own) so its Undo can put it back for a few minutes.
+type UndoKind = 'EDIT' | 'ENTRY_EDIT' | 'REOPEN';
+interface PlanSnapshot {
+  name: string;
+  organisation: string | null;
+  kind: Investment['kind'];
+  startDate: string;
+  frequency: Investment['frequency'];
+  payoutMode: Investment['payoutMode'];
+  fixedAmount: string | null;
+  ratePercent: string | null;
+  firstDueDate: string | null;
+  maturityDate: string | null;
+  profitAccountId: string | null;
+  note: string | null;
+}
+interface EditUndo {
+  investment: PlanSnapshot;
+  invest: EntrySnapshot | null;
+  // The investment and its first entry right after the edit: an undo is
+  // refused once either changed again.
+  after: { updatedAt: string; investId: string | null; transactionId: string | null };
+}
+interface EntryEditUndo {
+  entry: EntrySnapshot;
+  after: { transactionId: string | null; amount: string; date: string };
+}
+interface ReopenUndo {
+  closedAt: string;
+  fromClose: string[];
+  // Every entry it had when reopened: one added since refuses the undo.
+  entryIds: string[];
+}
 
 // The income category a profit is filed under (categories are names).
 export const INVESTMENT_PROFIT_CATEGORY = 'Investment profit';
@@ -48,6 +86,21 @@ interface InvestmentSnapshot {
 }
 
 const toFigure = (entry: Pick<EntryRow, 'type' | 'amount' | 'date'>): FigureEntry => ({ type: entry.type, amount: entry.amount, day: dayOf(entry.date) });
+
+const planSnapshotOf = (investment: Investment): PlanSnapshot => ({
+  name: investment.name,
+  organisation: investment.organisation,
+  kind: investment.kind,
+  startDate: dayOf(investment.startDate),
+  frequency: investment.frequency,
+  payoutMode: investment.payoutMode,
+  fixedAmount: investment.fixedAmount === null ? null : new Prisma.Decimal(investment.fixedAmount).toFixed(2),
+  ratePercent: investment.ratePercent === null ? null : new Prisma.Decimal(investment.ratePercent).toFixed(2),
+  firstDueDate: investment.firstDueDate ? dayOf(investment.firstDueDate) : null,
+  maturityDate: investment.maturityDate ? dayOf(investment.maturityDate) : null,
+  profitAccountId: investment.profitAccountId,
+  note: investment.note,
+});
 
 const snapshotOfEntry = (entry: EntryRow): EntrySnapshot => ({
   id: entry.id,
@@ -151,9 +204,11 @@ export class InvestmentsService {
     const keys = [`investment:${id}`, `investments:${businessId}`];
     if (first?.accountId) keys.push(`account:${first.accountId}`);
     if (dto.sourceAccountId) keys.push(`account:${dto.sourceAccountId}`);
-    await this.transactionsService.withLocks(keys, async (tx) => {
+    const undoId = await this.transactionsService.withLocks(keys, async (tx) => {
       const investment = await this.requireInvestment(businessId, id, tx);
       const invest = investment.entries.find((entry) => entry.type === 'INVEST');
+      // As it was, for the Undo.
+      const was = { investment: planSnapshotOf(investment), invest: invest ? snapshotOfEntry(invest) : null };
       if ((invest?.accountId ?? null) !== (first?.accountId ?? null)) {
         throw new ConflictException('This investment changed meanwhile. Reload and try again.');
       }
@@ -186,31 +241,39 @@ export class InvestmentsService {
         !new Prisma.Decimal(invest.amount).equals(dto.amount) ||
         dayOf(invest.date) !== dto.startDate ||
         (invest.accountId ?? null) !== (nextSource?.id ?? null);
-      if (!moneyChanged) return;
-      if (invest) await this.voidPosting(tx, businessId, invest, CORRECTED_REASON, userId);
-      const transactionId = nextSource
-        ? (await this.post(tx, businessId, userId, dto.name, 'INVEST', dto.startDate, dto.amount, nextSource.id, null)).id
-        : null;
-      if (invest) {
-        await tx.investmentEntry.update({
-          where: { id: invest.id },
-          data: { date: dateOf(dto.startDate), amount: dto.amount, accountId: nextSource?.id ?? null, transactionId },
-        });
-      } else {
-        await tx.investmentEntry.create({
-          data: {
-            investmentId: id,
-            businessId,
-            type: 'INVEST',
-            date: dateOf(dto.startDate),
-            amount: dto.amount,
-            accountId: nextSource?.id ?? null,
-            transactionId,
-          },
-        });
+      if (moneyChanged) {
+        if (invest) await this.voidPosting(tx, businessId, invest, CORRECTED_REASON, userId);
+        const transactionId = nextSource
+          ? (await this.post(tx, businessId, userId, dto.name, 'INVEST', dto.startDate, dto.amount, nextSource.id, null)).id
+          : null;
+        if (invest) {
+          await tx.investmentEntry.update({
+            where: { id: invest.id },
+            data: { date: dateOf(dto.startDate), amount: dto.amount, accountId: nextSource?.id ?? null, transactionId },
+          });
+        } else {
+          await tx.investmentEntry.create({
+            data: {
+              investmentId: id,
+              businessId,
+              type: 'INVEST',
+              date: dateOf(dto.startDate),
+              amount: dto.amount,
+              accountId: nextSource?.id ?? null,
+              transactionId,
+            },
+          });
+        }
       }
+      const after = await this.requireInvestment(businessId, id, tx);
+      const afterInvest = after.entries.find((entry) => entry.type === 'INVEST') ?? null;
+      const snapshot: EditUndo = {
+        ...was,
+        after: { updatedAt: after.updatedAt.toISOString(), investId: afterInvest?.id ?? null, transactionId: afterInvest?.transactionId ?? null },
+      };
+      return this.saveUndo(tx, 'EDIT', businessId, id, userId, snapshot);
     });
-    return this.fetch(id);
+    return { ...(await this.fetch(id)), undoId };
   }
 
   // The payout plan a form describes, made consistent: profit at no fixed
@@ -281,11 +344,12 @@ export class InvestmentsService {
     const keys = [`investment:${id}`, `investments:${businessId}`];
     if (before.accountId) keys.push(`account:${before.accountId}`);
     if (nextAccountId) keys.push(`account:${nextAccountId}`);
-    await this.transactionsService.withLocks(keys, async (tx) => {
+    const undoId = await this.transactionsService.withLocks(keys, async (tx) => {
       const investment = await this.requireInvestment(businessId, id, tx);
       const entry = investment.entries.find((row) => row.id === entryId);
       if (!entry) throw new NotFoundException('Entry not found');
       if (entry.type === 'INVEST') throw new BadRequestException('Edit the investment to change the first amount.');
+      const was = snapshotOfEntry(entry);
       if (entry.accountId !== before.accountId) throw new ConflictException('This entry changed meanwhile. Reload and try again.');
       this.requireOnOrAfterStart(dto.date, investment);
       if (investment.closedAt && dto.date > dayOf(investment.closedAt)) {
@@ -308,8 +372,10 @@ export class InvestmentsService {
         where: { id: entryId },
         data: { amount: dto.amount, date: dateOf(dto.date), accountId: wallet?.id ?? null, transactionId, note },
       });
+      const snapshot: EntryEditUndo = { entry: was, after: { transactionId, amount: new Prisma.Decimal(dto.amount).toFixed(2), date: dto.date } };
+      return this.saveUndo(tx, 'ENTRY_EDIT', businessId, id, userId, snapshot);
     });
-    return this.fetch(id);
+    return { ...(await this.fetch(id)), undoId };
   }
 
   // Deletes an entry made by mistake and keeps it for a few minutes so the
@@ -432,14 +498,135 @@ export class InvestmentsService {
 
   // Reopen: the investment takes entries again. What the close recorded
   // stays; its entries are no longer the close's (an undo can't take them).
-  async reopen(businessId: string, id: string) {
-    await this.prisma.$transaction(async (tx) => {
+  async reopen(businessId: string, id: string, userId: string) {
+    const undoId = await this.transactionsService.withLocks([`investment:${id}`], async (tx) => {
       const investment = await this.requireInvestment(businessId, id, tx);
       if (!investment.closedAt) throw new BadRequestException('This investment is open.');
+      const snapshot: ReopenUndo = {
+        closedAt: dayOf(investment.closedAt),
+        fromClose: investment.entries.filter((entry) => entry.fromClose).map((entry) => entry.id),
+        entryIds: investment.entries.map((entry) => entry.id),
+      };
       await tx.investmentEntry.updateMany({ where: { investmentId: id, fromClose: true }, data: { fromClose: false } });
       await tx.investment.update({ where: { id }, data: { closedAt: null } });
+      return this.saveUndo(tx, 'REOPEN', businessId, id, userId, snapshot);
+    });
+    return { ...(await this.fetch(id)), undoId };
+  }
+
+  // ---- Undo of an edit, an entry's edit or a reopen ----
+
+  // Puts back what the edit or reopen changed, in one commit: an edit's new
+  // posting is voided and the posting it replaced stands again (not posted
+  // anew). Only by the person who made the change, for a few minutes, and
+  // only while nothing changed it again.
+  async undo(businessId: string, id: string, undoId: string, userId: string, now = new Date()) {
+    const record = await this.requireDeletion(businessId, undoId, ['EDIT', 'ENTRY_EDIT', 'REOPEN'], userId, now);
+    if (record.investmentId !== id) throw new NotFoundException('This change can no longer be undone.');
+    const current = await this.requireInvestment(businessId, id);
+    const keys = [`investment:${id}`, `investments:${businessId}`, ...current.entries.filter((e) => e.accountId).map((e) => `account:${e.accountId}`)];
+    const snapshot = record.snapshot as unknown;
+    if (record.kind === 'EDIT') {
+      const { invest } = snapshot as EditUndo;
+      if (invest?.accountId) keys.push(`account:${invest.accountId}`);
+    }
+    if (record.kind === 'ENTRY_EDIT') {
+      const { entry } = snapshot as EntryEditUndo;
+      if (entry.accountId) keys.push(`account:${entry.accountId}`);
+    }
+    await this.transactionsService.withLocks(keys, async (tx) => {
+      await this.claimDeletion(tx, businessId, undoId);
+      const investment = await this.requireInvestment(businessId, id, tx);
+      if (record.kind === 'EDIT') await this.undoEdit(tx, businessId, investment, snapshot as EditUndo, userId);
+      else if (record.kind === 'ENTRY_EDIT') await this.undoEntryEdit(tx, businessId, investment, snapshot as EntryEditUndo, userId);
+      else await this.undoReopen(tx, investment, snapshot as ReopenUndo);
     });
     return this.fetch(id);
+  }
+
+  private async undoEdit(tx: Client, businessId: string, investment: Investment & { entries: EntryRow[] }, undo: EditUndo, userId: string) {
+    const current = investment.entries.find((entry) => entry.type === 'INVEST') ?? null;
+    if (
+      investment.updatedAt.toISOString() !== undo.after.updatedAt ||
+      (current?.id ?? null) !== undo.after.investId ||
+      (current?.transactionId ?? null) !== undo.after.transactionId
+    ) {
+      throw new ConflictException('This investment changed since. The edit can no longer be undone.');
+    }
+    const others = investment.entries.filter((entry) => entry.id !== current?.id);
+    if (others.some((entry) => dayOf(entry.date) < undo.investment.startDate)) {
+      throw new BadRequestException('Some entries are now dated before the old start. The edit can no longer be undone.');
+    }
+    if (undo.invest && !capitalStaysPositive([...others.map(toFigure), { type: 'INVEST', amount: undo.invest.amount, day: undo.invest.date }])) {
+      throw new BadRequestException('More capital has been taken back or lost since. The edit can no longer be undone.');
+    }
+    const moved = (undo.invest?.transactionId ?? null) !== (current?.transactionId ?? null);
+    if (current && moved) await this.voidPosting(tx, businessId, current, EDIT_UNDONE_REASON, userId);
+    if (undo.invest && moved && undo.invest.transactionId) {
+      await this.transactionsService.reinstateVoided(tx, businessId, undo.invest.transactionId, CORRECTED_REASON);
+    }
+    if (current && undo.invest) {
+      await tx.investmentEntry.update({
+        where: { id: current.id },
+        data: { date: dateOf(undo.invest.date), amount: undo.invest.amount, accountId: undo.invest.accountId, transactionId: undo.invest.transactionId },
+      });
+    } else if (current) {
+      await tx.investmentEntry.delete({ where: { id: current.id } });
+    }
+    const plan = undo.investment;
+    await tx.investment.update({
+      where: { id: investment.id },
+      data: {
+        ...plan,
+        startDate: dateOf(plan.startDate),
+        firstDueDate: plan.firstDueDate ? dateOf(plan.firstDueDate) : null,
+        maturityDate: plan.maturityDate ? dateOf(plan.maturityDate) : null,
+      },
+    });
+  }
+
+  private async undoEntryEdit(tx: Client, businessId: string, investment: Investment & { entries: EntryRow[] }, undo: EntryEditUndo, userId: string) {
+    const current = investment.entries.find((entry) => entry.id === undo.entry.id);
+    if (!current) throw new NotFoundException('This entry was deleted. The edit can no longer be undone.');
+    if (
+      (current.transactionId ?? null) !== undo.after.transactionId ||
+      dayOf(current.date) !== undo.after.date ||
+      !new Prisma.Decimal(current.amount).equals(undo.after.amount)
+    ) {
+      throw new ConflictException('This entry changed since. The edit can no longer be undone.');
+    }
+    const rest = investment.entries.filter((entry) => entry.id !== current.id).map(toFigure);
+    if (!capitalStaysPositive([...rest, { type: undo.entry.type, amount: undo.entry.amount, day: undo.entry.date }])) {
+      throw new BadRequestException('More capital has been taken back or lost since. The edit can no longer be undone.');
+    }
+    const moved = (undo.entry.transactionId ?? null) !== (current.transactionId ?? null);
+    if (moved) await this.voidPosting(tx, businessId, current, EDIT_UNDONE_REASON, userId);
+    if (moved && undo.entry.transactionId) await this.transactionsService.reinstateVoided(tx, businessId, undo.entry.transactionId, CORRECTED_REASON);
+    await tx.investmentEntry.update({
+      where: { id: current.id },
+      data: {
+        date: dateOf(undo.entry.date),
+        amount: undo.entry.amount,
+        accountId: undo.entry.accountId,
+        transactionId: undo.entry.transactionId,
+        note: undo.entry.note,
+      },
+    });
+  }
+
+  private async undoReopen(tx: Client, investment: Investment & { entries: EntryRow[] }, undo: ReopenUndo) {
+    if (investment.closedAt) throw new BadRequestException('This investment is closed already.');
+    if (investment.entries.some((entry) => !undo.entryIds.includes(entry.id))) {
+      throw new ConflictException('Entries were added since it was reopened. Close it again instead.');
+    }
+    await tx.investment.update({ where: { id: investment.id }, data: { closedAt: dateOf(undo.closedAt) } });
+    if (undo.fromClose.length) await tx.investmentEntry.updateMany({ where: { id: { in: undo.fromClose } }, data: { fromClose: true } });
+  }
+
+  private async saveUndo(tx: Client, kind: UndoKind, businessId: string, investmentId: string, userId: string, snapshot: object): Promise<string> {
+    const id = randomUUID();
+    await tx.investmentDeletion.create({ data: { id, kind, businessId, investmentId, deletedBy: userId, snapshot: snapshot as Prisma.InputJsonValue } });
+    return id;
   }
 
   // ---- Delete / restore ----
@@ -483,7 +670,8 @@ export class InvestmentsService {
       for (const entry of investment.entries) {
         await this.voidPosting(tx, businessId, entry, INVESTMENT_DELETED_REASON, userId);
       }
-      await tx.investmentDeletion.deleteMany({ where: { investmentId: id, kind: 'ENTRY' } });
+      // Undos of its entries' deletes, edits and reopen go with it.
+      await tx.investmentDeletion.deleteMany({ where: { investmentId: id, kind: { not: 'INVESTMENT' } } });
       const json = snapshot as unknown as Prisma.InputJsonValue;
       await tx.investmentDeletion.upsert({
         where: { id },
@@ -545,9 +733,9 @@ export class InvestmentsService {
     };
   }
 
-  private async requireDeletion(businessId: string, id: string, kind: 'INVESTMENT' | 'ENTRY', userId: string, now: Date) {
+  private async requireDeletion(businessId: string, id: string, kind: string | string[], userId: string, now: Date) {
     const deletion = await this.prisma.investmentDeletion.findUnique({ where: { id } });
-    if (!deletion || deletion.businessId !== businessId || deletion.kind !== kind) {
+    if (!deletion || deletion.businessId !== businessId || !(Array.isArray(kind) ? kind : [kind]).includes(deletion.kind)) {
       throw new NotFoundException('This delete can no longer be undone.');
     }
     if (deletion.deletedBy !== userId) throw new ForbiddenException('Only the person who deleted it can undo the delete');
