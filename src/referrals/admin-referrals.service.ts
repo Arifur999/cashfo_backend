@@ -25,7 +25,8 @@ const COMMISSION_STATUSES: CommissionStatus[] = ['ON_HOLD', 'AVAILABLE', 'IN_WIT
 const EXPORT_LIMIT = 5000;
 const paisaMoney = (value: { toString(): string } | null | undefined) => (value == null ? null : fromPaisa(toPaisa(value)));
 
-const USER_SELECT = { id: true, name: true, email: true, phone: true } as const;
+// phoneVerifiedAt: the money-sent notice goes by SMS only to a verified phone.
+const USER_SELECT = { id: true, name: true, email: true, phone: true, phoneVerifiedAt: true } as const;
 
 // A request's lines with what the desk checks on each: did the friend's
 // payment reach us (and through which gateway), and was it refunded.

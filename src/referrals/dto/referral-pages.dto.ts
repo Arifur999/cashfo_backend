@@ -79,6 +79,11 @@ export class ReferralProfileDto {
   @ValidateIf(whenSent)
   @IsBoolean()
   emailPayouts?: boolean;
+
+  // "Monthly statement": an email on the 1st with last month's earnings.
+  @ValidateIf(whenSent)
+  @IsBoolean()
+  monthlyStatement?: boolean;
 }
 
 // An open of an invite link, from the sign-up page.

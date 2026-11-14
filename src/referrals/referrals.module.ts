@@ -11,6 +11,8 @@ import { AdminReferralsService } from './admin-referrals.service.js';
 import { PayoutMethodsService } from './payout-methods.service.js';
 import { ReferralCommissionsService } from './referral-commissions.service.js';
 import { ReferralNotices } from './referral-notices.js';
+import { ReferralStatements } from './referral-statements.js';
+import { SmsModule } from '../sms/sms.module.js';
 import { ReferralEarningsService } from './referral-earnings.service.js';
 import { ReferralFriendsService } from './referral-friends.service.js';
 import { ReferralLinksService } from './referral-links.service.js';
@@ -26,12 +28,13 @@ import { WithdrawalsService } from './withdrawals.service.js';
 // BillingHooks and the member's plan. Nothing imports this module back
 // (UserAuthModule records a sign-up's referral itself), so there's no cycle.
 @Module({
-  imports: [UserAuthModule, AdminAuthModule, TransactionsModule, SettingsModule, BillingModule, MailModule, OneTimeCodesModule],
+  imports: [UserAuthModule, AdminAuthModule, TransactionsModule, SettingsModule, BillingModule, MailModule, OneTimeCodesModule, SmsModule],
   controllers: [ReferralInviteController, ReferralsController, AdminReferralsController],
   providers: [
     ReferralsService,
     ReferralCommissionsService,
     ReferralNotices,
+    ReferralStatements,
     PayoutMethodsService,
     WithdrawalsService,
     AdminReferralsService,

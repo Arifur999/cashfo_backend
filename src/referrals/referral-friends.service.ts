@@ -104,7 +104,7 @@ export class ReferralFriendsService {
   private async views(rows: FriendRow[]) {
     const referralIds = rows.map((r) => r.id);
     const friendIds = rows.map((r) => r.referredUser.id);
-    const [lines, payments] = await Promise.all([
+    const [lines, payments, refunds] = await Promise.all([
       referralIds.length
         ? this.prisma.referralCommission.findMany({
             where: { referralId: { in: referralIds } },
@@ -116,6 +116,14 @@ export class ReferralFriendsService {
             by: ['userId', 'status'],
             where: { userId: { in: friendIds }, status: { in: ['SUCCESS', 'REFUNDED'] } },
             _count: { _all: true },
+          })
+        : [],
+      // When each friend was last refunded ("Refunded on 6 Sep").
+      friendIds.length
+        ? this.prisma.refund.findMany({
+            where: { payment: { userId: { in: friendIds }, status: 'REFUNDED' } },
+            select: { createdAt: true, payment: { select: { userId: true } } },
+            orderBy: { createdAt: 'desc' },
           })
         : [],
     ]);
@@ -153,6 +161,11 @@ export class ReferralFriendsService {
         paid: fromPaisa(sum.paidPaisa),
         earned: fromPaisa(sum.earnedPaisa),
         canRemind: standing === 'FREE',
+        // How often a paying friend pays ("Pays every month").
+        billingCycle: onPaidPlan && sub ? sub.plan.billingCycle : null,
+        // When a friend stopped (the period they did not renew) or was
+        // last refunded.
+        endedAt: standing === 'STOPPED' ? (sub?.currentPeriodEnd ?? null) : standing === 'REFUNDED' ? (refunds.find((r) => r.payment.userId === row.referredUser.id)?.createdAt ?? null) : null,
       };
     });
   }
