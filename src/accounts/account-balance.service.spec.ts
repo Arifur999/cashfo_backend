@@ -487,3 +487,46 @@ describe('AccountBalanceService.getLedger standing only', () => {
     expect(standing.closingBalance).toBe(all.closingBalance);
   });
 });
+
+describe('AccountBalanceService.getAccountSummary', () => {
+  // [type, this account's side, amount, the other leg's subtype]
+  type Row = { type: string; entryType: 'DEBIT' | 'CREDIT'; amount: string; other: string };
+  // Just the filters the summary sends: the type (or not it), a savings leg (or not it).
+  const savingsLeg = (row: Row, leg: { transactionType?: string; entries?: unknown }) => row.type === leg.transactionType && row.other === 'savings';
+  const matchesTx = (row: Row, tx: Record<string, unknown>): boolean => {
+    if (tx.OR) return (tx.OR as Record<string, unknown>[]).some((part) => matchesTx(row, part));
+    if (tx.NOT && savingsLeg(row, tx.NOT as Row & { transactionType?: string })) return false;
+    const type = tx.transactionType as string | { not: string } | undefined;
+    if (typeof type === 'string' && row.type !== type) return false;
+    if (typeof type === 'object' && row.type === type.not) return false;
+    if (tx.entries && row.other !== 'savings') return false;
+    return true;
+  };
+  const summary = (subtype: string, rows: Row[]) => {
+    const aggregate = vi.fn(({ where }: { where: { entryType: string; transaction: Record<string, unknown> } }) => {
+      const hits = rows.filter((row) => row.entryType === where.entryType && matchesTx(row, where.transaction));
+      return Promise.resolve({ _sum: { amount: hits.length ? hits.reduce((sum, row) => sum.plus(row.amount), new Prisma.Decimal(0)) : null } });
+    });
+    const prisma = {
+      account: { findUnique: vi.fn().mockResolvedValue({ id: 'acc', businessId: 'biz-1', accountType: 'ASSET', accountSubtype: subtype, currentBalance: new Prisma.Decimal(0) }) },
+      transactionEntry: { aggregate, count: vi.fn().mockResolvedValue(rows.length) },
+    };
+    return new AccountBalanceService(prisma as never).getAccountSummary('biz-1', 'acc');
+  };
+  const rows: Row[] = [
+    { type: 'INCOME', entryType: 'DEBIT', amount: '1000', other: 'income' },
+    { type: 'TRANSFER', entryType: 'CREDIT', amount: '300', other: 'savings' },
+    { type: 'TRANSFER', entryType: 'DEBIT', amount: '50', other: 'savings' },
+    { type: 'TRANSFER', entryType: 'CREDIT', amount: '200', other: 'bank' },
+  ];
+
+  it('counts a move into or out of a savings goal as money out or in, and only wallet-to-wallet moves as transfers', async () => {
+    const result = await summary('cash', rows);
+    expect(result).toMatchObject({ totalIn: '1050.00', totalOut: '300.00', adjustment: '-200.00' });
+  });
+
+  it('keeps a savings wallet’s own moves as transfers', async () => {
+    const result = await summary('savings', rows);
+    expect(result).toMatchObject({ totalIn: '1000.00', totalOut: '0.00', adjustment: '-450.00' });
+  });
+});

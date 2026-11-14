@@ -322,13 +322,20 @@ export class AccountBalanceService {
     // In/Out/Adjustment leave out voided transactions and their reversals:
     // the pair nets to zero, but counted gross it reads as money that both
     // came in and went out.
+    // A wallet's move into or out of a savings goal is money out or in, as
+    // its ledger rows say (Savings, Savings withdraw), not a transfer between
+    // two of its own accounts. A savings wallet's own figures stay as they were.
+    const savingsMove: Prisma.TransactionWhereInput = { transactionType: 'TRANSFER', entries: { some: { accountId: { not: accountId }, account: { accountSubtype: 'savings' } } } };
+    const splitSavings = account.accountSubtype !== 'savings';
     const nonTransferWhere: Prisma.TransactionEntryWhereInput = {
       accountId,
-      transaction: { ...transactionDateFilter, ...LIVE_TRANSACTION, transactionType: { not: 'TRANSFER' } },
+      transaction: splitSavings
+        ? { ...transactionDateFilter, ...LIVE_TRANSACTION, OR: [{ transactionType: { not: 'TRANSFER' } }, savingsMove] }
+        : { ...transactionDateFilter, ...LIVE_TRANSACTION, transactionType: { not: 'TRANSFER' } },
     };
     const transferWhere: Prisma.TransactionEntryWhereInput = {
       accountId,
-      transaction: { ...transactionDateFilter, ...LIVE_TRANSACTION, transactionType: 'TRANSFER' },
+      transaction: { ...transactionDateFilter, ...LIVE_TRANSACTION, transactionType: 'TRANSFER', ...(splitSavings && { NOT: savingsMove }) },
     };
 
     const [debitAgg, creditAgg, transferDebitAgg, transferCreditAgg, transactionCount] = await Promise.all([
