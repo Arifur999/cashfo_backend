@@ -113,6 +113,7 @@ export class InvestmentsService {
         data: {
           businessId,
           name: dto.name,
+          organisation: dto.organisation || null,
           kind: dto.kind,
           startDate: dateOf(dto.startDate),
           profitAccountId: dto.profitAccountId,
@@ -170,7 +171,15 @@ export class InvestmentsService {
       const nextSource = dto.sourceAccountId ? await this.requireWallet(businessId, dto.sourceAccountId, tx, invest?.accountId) : null;
       await tx.investment.update({
         where: { id },
-        data: { name: dto.name, kind: dto.kind, startDate: dateOf(dto.startDate), profitAccountId: dto.profitAccountId, note: dto.note || null, ...plan },
+        data: {
+          name: dto.name,
+          ...(dto.organisation !== undefined && { organisation: dto.organisation || null }),
+          kind: dto.kind,
+          startDate: dateOf(dto.startDate),
+          profitAccountId: dto.profitAccountId,
+          note: dto.note || null,
+          ...plan,
+        },
       });
       const moneyChanged =
         !invest ||
@@ -452,6 +461,7 @@ export class InvestmentsService {
           id: investment.id,
           businessId: investment.businessId,
           name: investment.name,
+          organisation: investment.organisation,
           kind: investment.kind,
           frequency: investment.frequency,
           payoutMode: investment.payoutMode,

@@ -360,6 +360,16 @@ describe('InvestmentsService', () => {
     expect(postings.every((p) => p.status === 'POSTED')).toBe(true);
   });
 
+  it('keeps where the money went: saved, kept by an older app that leaves it out, cleared by null', async () => {
+    const { service } = setup();
+    const made = await service.create('b1', form({ organisation: 'Karim Garments Ltd, Narayanganj' }), 'u1');
+    expect(made.organisation).toBe('Karim Garments Ltd, Narayanganj');
+    const kept = await service.update('b1', made.id, form(), 'u1');
+    expect(kept.organisation).toBe('Karim Garments Ltd, Narayanganj');
+    const cleared = await service.update('b1', made.id, form({ organisation: null }), 'u1');
+    expect(cleared.organisation).toBeNull();
+  });
+
   it('edits the first amount: the old posting is voided and the new one posted', async () => {
     const { service, postings } = setup();
     const made = await service.create('b1', form({ amount: 100_000 }), 'u1');

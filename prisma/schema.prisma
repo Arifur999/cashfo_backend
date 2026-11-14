@@ -2801,6 +2801,8 @@ model Investment {
   businessId      String
   business        Business             @relation(fields: [businessId], references: [id])
   name            String
+  // Where the money went: the company, bank or person (optional).
+  organisation    String?
   kind            InvestmentKind       @default(OTHER)
   // The day the money was first put in (the INVEST entry's day).
   startDate       DateTime             @db.Date

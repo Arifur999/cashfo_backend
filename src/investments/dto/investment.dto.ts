@@ -16,6 +16,14 @@ export class InvestmentDto {
   @MaxLength(60)
   name: string;
 
+  // Where the money went: the company, bank or person. Left out by an
+  // older app, which keeps what is saved; null or empty clears it.
+  @ValidateIf((dto: InvestmentDto) => dto.organisation !== undefined && dto.organisation !== null)
+  @Transform(trim)
+  @IsString()
+  @MaxLength(80)
+  organisation?: string | null;
+
   @IsIn(Object.values(InvestmentKind))
   kind: InvestmentKind;
 
