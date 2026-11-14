@@ -139,13 +139,13 @@ describe('UserNotificationsService Deleted', () => {
     expect(Date.now() - where.OR[1].deletedAt.lt.getTime()).toBeGreaterThanOrEqual(30 * 24 * 60 * 60 * 1000 - 1000);
   });
 
-  it('deletes (reading it too) and restores only the owner’s own row', async () => {
+  it('deletes, keeping its read state, and restores only the owner’s own row', async () => {
     const { service, prisma } = setup();
     const update = vi.fn().mockResolvedValue({});
-    Object.assign(prisma.userNotification, { findFirst: vi.fn().mockResolvedValueOnce({ id: 'n1', readAt: null, deletedAt: null }).mockResolvedValueOnce({ id: 'n1', deletedAt: new Date() }).mockResolvedValueOnce(null), update });
+    Object.assign(prisma.userNotification, { findFirst: vi.fn().mockResolvedValueOnce({ id: 'n1', deletedAt: null }).mockResolvedValueOnce({ id: 'n1', deletedAt: new Date() }).mockResolvedValueOnce(null), update });
 
     await service.remove('u1', 'n1');
-    expect(update).toHaveBeenLastCalledWith({ where: { id: 'n1' }, data: { deletedAt: expect.any(Date), readAt: expect.any(Date) } });
+    expect(update).toHaveBeenLastCalledWith({ where: { id: 'n1' }, data: { deletedAt: expect.any(Date) } });
     await service.restore('u1', 'n1');
     expect(update).toHaveBeenLastCalledWith({ where: { id: 'n1' }, data: { deletedAt: null } });
     await expect(service.remove('u2', 'n1')).rejects.toThrow('Notification not found');

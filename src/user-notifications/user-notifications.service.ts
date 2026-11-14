@@ -74,11 +74,12 @@ export class UserNotificationsService {
     return { data: rows.map(close), unreadCount, deleted: bin.map(close) };
   }
 
-  // Deleting reads it too, so the count never waits on a row out of view.
+  // Its read state stays as it was, so Restore (and Undo) bring it back
+  // unread if it was; the count leaves deleted rows out meanwhile.
   async remove(userId: string, id: string) {
-    const row = await this.prisma.userNotification.findFirst({ where: { id, userId }, select: { id: true, readAt: true, deletedAt: true } });
+    const row = await this.prisma.userNotification.findFirst({ where: { id, userId }, select: { id: true, deletedAt: true } });
     if (!row) throw new NotFoundException('Notification not found');
-    if (!row.deletedAt) await this.prisma.userNotification.update({ where: { id }, data: { deletedAt: new Date(), readAt: row.readAt ?? new Date() } });
+    if (!row.deletedAt) await this.prisma.userNotification.update({ where: { id }, data: { deletedAt: new Date() } });
     return { success: true };
   }
 
