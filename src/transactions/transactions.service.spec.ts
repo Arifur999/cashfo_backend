@@ -238,6 +238,17 @@ describe('TransactionsService.restoreTransaction', () => {
   });
 });
 
+describe('TransactionsService.linkCorrection', () => {
+  it('frees the original from an undone edit, then links the new edit to it', async () => {
+    const service = new TransactionsService({} as never, { recalculateBalance: vi.fn() } as never);
+    const tx = { transaction: { updateMany: vi.fn().mockResolvedValue({ count: 1 }), update: vi.fn().mockResolvedValue({}) } };
+    await service.linkCorrection(tx as never, 'tx-3', 'tx-1');
+    expect(tx.transaction.updateMany).toHaveBeenCalledWith({ where: { correctedFromId: 'tx-1', status: 'VOIDED' }, data: { correctedFromId: null } });
+    expect(tx.transaction.update).toHaveBeenCalledWith({ where: { id: 'tx-3' }, data: { correctedFromId: 'tx-1' } });
+    expect(tx.transaction.updateMany.mock.invocationCallOrder[0]).toBeLessThan(tx.transaction.update.mock.invocationCallOrder[0]);
+  });
+});
+
 describe('TransactionsService.undoCorrection', () => {
   const NOW = new Date('2026-11-03T10:00:00Z');
   const corrected = {

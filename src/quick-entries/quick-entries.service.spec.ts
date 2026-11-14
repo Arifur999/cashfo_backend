@@ -17,6 +17,7 @@ const setup = ({ original = { businessId: 'biz-1', transactionType: 'EXPENSE' } 
     voidTransaction: vi.fn().mockResolvedValue({ original: { id: 'tx-1', status: 'VOIDED' } }),
     createTransaction: vi.fn().mockResolvedValue({ id: 'tx-2' }),
     postCharge: vi.fn().mockResolvedValue({ id: 'charge-1' }),
+    linkCorrection: (tx: { transaction: { update: (args: unknown) => unknown } }, correctedId: string, originalId: string) => tx.transaction.update({ where: { id: correctedId }, data: { correctedFromId: originalId } }),
   };
   const service = new QuickEntriesService(prisma as never, transactions as never);
   return { service, tx, transactions };

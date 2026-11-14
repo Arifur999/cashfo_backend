@@ -164,7 +164,7 @@ export class QuickEntriesService {
       await this.transactionsService.voidTransaction(businessId, transactionId, CORRECTED_REASON, userId, tx);
       const corrected = await post(tx);
       // So History can say what it corrected (and the original, what replaced it).
-      await tx.transaction.update({ where: { id: corrected.id }, data: { correctedFromId: transactionId } });
+      await this.transactionsService.linkCorrection(tx, corrected.id, transactionId);
       return { ...corrected, correctedFromId: transactionId };
     });
   }
