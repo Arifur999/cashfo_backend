@@ -22,8 +22,10 @@ const LOAN_DAYS = 1;
 const FEED_SIZE = 30;
 // Older rows are cleared when the checks run.
 const KEEP_MS = 90 * 24 * 60 * 60 * 1000;
+// A deleted row waits in Deleted this long, then goes for good.
+const BIN_MS = 30 * 24 * 60 * 60 * 1000;
 
-const FEED_SELECT = { id: true, businessId: true, type: true, data: true, readAt: true, createdAt: true } as const;
+const FEED_SELECT = { id: true, businessId: true, type: true, data: true, readAt: true, createdAt: true, deletedAt: true } as const;
 
 // The bell's feed in the customer app. There is no scheduler: reading the
 // feed runs the reminder checks (budget, loan due dates, savings check-ins,
@@ -50,8 +52,9 @@ export class UserNotificationsService {
   async feed(user: RequestUser, unlockTokens: string[] = []) {
     const userId = user.id;
     await this.refresh(userId);
-    const [all, prefs] = await Promise.all([
-      this.prisma.userNotification.findMany({ where: { userId }, orderBy: { createdAt: 'desc' }, take: FEED_SIZE, select: FEED_SELECT }),
+    const [all, bin, prefs] = await Promise.all([
+      this.prisma.userNotification.findMany({ where: { userId, deletedAt: null }, orderBy: { createdAt: 'desc' }, take: FEED_SIZE, select: FEED_SELECT }),
+      this.prisma.userNotification.findMany({ where: { userId, deletedAt: { not: null } }, orderBy: { deletedAt: 'desc' }, take: FEED_SIZE, select: FEED_SELECT }),
       this.prefs.get(userId),
     ]);
     // Rows of an alert turned off in the bell are left out, and read, so
@@ -61,13 +64,30 @@ export class UserNotificationsService {
       return alert !== null && !prefs.alerts[alert]?.app;
     });
     if (hidden.some((row) => !row.readAt)) await this.prisma.userNotification.updateMany({ where: { id: { in: hidden.filter((row) => !row.readAt).map((row) => row.id) } }, data: { readAt: new Date() } });
-    const unreadCount = await this.prisma.userNotification.count({ where: { userId, readAt: null } });
+    const unreadCount = await this.prisma.userNotification.count({ where: { userId, readAt: null, deletedAt: null } });
     const rows = all.filter((row) => !hidden.includes(row));
-    const businessIds = [...new Set(rows.flatMap((row) => (row.businessId ? [row.businessId] : [])))];
+    const businessIds = [...new Set([...rows, ...bin].flatMap((row) => (row.businessId ? [row.businessId] : [])))];
     const workspaces = businessIds.length ? await this.prisma.business.findMany({ where: { id: { in: businessIds }, pinHash: { not: null } }, select: { id: true, pinHash: true } }) : [];
     const shut = new Set(workspaces.filter((workspace) => this.unlocks.isShut(user, workspace, unlockTokens)).map((workspace) => workspace.id));
-    const data = rows.map((row) => (row.businessId && shut.has(row.businessId) ? { ...row, data: {}, locked: true } : row));
-    return { data, unreadCount };
+    const close = <T extends { businessId: string | null }>(row: T) => (row.businessId && shut.has(row.businessId) ? { ...row, data: {}, locked: true } : row);
+    // deleted: the bell's Deleted tab, newest deletion first.
+    return { data: rows.map(close), unreadCount, deleted: bin.map(close) };
+  }
+
+  // Its read state stays as it was, so Restore (and Undo) bring it back
+  // unread if it was; the count leaves deleted rows out meanwhile.
+  async remove(userId: string, id: string) {
+    const row = await this.prisma.userNotification.findFirst({ where: { id, userId }, select: { id: true, deletedAt: true } });
+    if (!row) throw new NotFoundException('Notification not found');
+    if (!row.deletedAt) await this.prisma.userNotification.update({ where: { id }, data: { deletedAt: new Date() } });
+    return { success: true };
+  }
+
+  async restore(userId: string, id: string) {
+    const row = await this.prisma.userNotification.findFirst({ where: { id, userId }, select: { id: true, deletedAt: true } });
+    if (!row) throw new NotFoundException('Notification not found');
+    if (row.deletedAt) await this.prisma.userNotification.update({ where: { id }, data: { deletedAt: null } });
+    return { success: true };
   }
 
   async markRead(userId: string, id: string) {
@@ -78,7 +98,7 @@ export class UserNotificationsService {
   }
 
   async markAllRead(userId: string) {
-    const { count } = await this.prisma.userNotification.updateMany({ where: { userId, readAt: null }, data: { readAt: new Date() } });
+    const { count } = await this.prisma.userNotification.updateMany({ where: { userId, readAt: null, deletedAt: null }, data: { readAt: new Date() } });
     return { count };
   }
 
@@ -132,7 +152,9 @@ export class UserNotificationsService {
           skipDuplicates: true,
         });
       }
-      await this.prisma.userNotification.deleteMany({ where: { userId, createdAt: { lt: new Date(now.getTime() - KEEP_MS) } } });
+      await this.prisma.userNotification.deleteMany({
+        where: { userId, OR: [{ createdAt: { lt: new Date(now.getTime() - KEEP_MS) } }, { deletedAt: { lt: new Date(now.getTime() - BIN_MS) } }] },
+      });
     } catch (error) {
       this.logger.warn(`Reminder checks failed for user ${userId}: ${error instanceof Error ? error.message : String(error)}`);
     }

@@ -116,3 +116,38 @@ describe('UserNotificationsService and PIN-locked workspaces', () => {
     expect(prisma.business.findMany).toHaveBeenLastCalledWith({ where: { id: { in: ['locked', 'open'] }, pinHash: { not: null } }, select: { id: true, pinHash: true } });
   });
 });
+
+describe('UserNotificationsService Deleted', () => {
+  it('keeps deleted rows out of the feed and its count, and lists them under deleted', async () => {
+    const { service, prisma } = setup({ switches: { remindBudget: false, remindLoans: false, remindSavings: false } });
+    const gone = { id: 'n9', businessId: null, type: 'ANNOUNCEMENT', data: { title: 'Old news' }, readAt: new Date(), createdAt: new Date(), deletedAt: new Date() };
+    prisma.userNotification.findMany.mockResolvedValueOnce([]).mockResolvedValueOnce([gone]);
+
+    const feed = await service.feed(user);
+
+    expect(prisma.userNotification.findMany.mock.calls[0][0].where).toEqual({ userId: 'u1', deletedAt: null });
+    expect(prisma.userNotification.findMany.mock.calls[1][0].where).toEqual({ userId: 'u1', deletedAt: { not: null } });
+    expect(prisma.userNotification.count).toHaveBeenCalledWith({ where: { userId: 'u1', readAt: null, deletedAt: null } });
+    expect(feed.deleted).toEqual([gone]);
+  });
+
+  it('clears rows deleted over 30 days ago with the old ones', async () => {
+    const { service, prisma } = setup({ switches: { remindBudget: false, remindLoans: false, remindSavings: false } });
+    await service.feed(user);
+    const where = prisma.userNotification.deleteMany.mock.calls[0][0].where;
+    expect(where.OR).toHaveLength(2);
+    expect(Date.now() - where.OR[1].deletedAt.lt.getTime()).toBeGreaterThanOrEqual(30 * 24 * 60 * 60 * 1000 - 1000);
+  });
+
+  it('deletes, keeping its read state, and restores only the owner’s own row', async () => {
+    const { service, prisma } = setup();
+    const update = vi.fn().mockResolvedValue({});
+    Object.assign(prisma.userNotification, { findFirst: vi.fn().mockResolvedValueOnce({ id: 'n1', deletedAt: null }).mockResolvedValueOnce({ id: 'n1', deletedAt: new Date() }).mockResolvedValueOnce(null), update });
+
+    await service.remove('u1', 'n1');
+    expect(update).toHaveBeenLastCalledWith({ where: { id: 'n1' }, data: { deletedAt: expect.any(Date) } });
+    await service.restore('u1', 'n1');
+    expect(update).toHaveBeenLastCalledWith({ where: { id: 'n1' }, data: { deletedAt: null } });
+    await expect(service.remove('u2', 'n1')).rejects.toThrow('Notification not found');
+  });
+});
