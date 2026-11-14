@@ -2531,6 +2531,9 @@ model SavingsGoal {
   // savings-goals/goal-colors.ts). Null: an older goal, drawn in the colour
   // its place in the list gives it.
   color                  String?
+  // Started from a saving plan: the plan as it was (savings-plans
+  // PlanSnapshot), so Undo can put it back. Null otherwise.
+  fromPlan               Json?
   accountId              String?
   account                Account?                @relation("SavingsGoalAccount", fields: [accountId], references: [id], onDelete: SetNull)
   createdAt              DateTime                @default(now())
@@ -2565,6 +2568,9 @@ model SavingsPlan {
   link       String?
   // The day it was planned; kept when a deleted plan is put back.
   plannedOn  DateTime
+  // Moved back from a goal: the goal as it was (GoalSnapshot), so Undo
+  // can make it the goal again. Null otherwise.
+  fromGoal   Json?
   createdAt  DateTime            @default(now())
   updatedAt  DateTime            @updatedAt
 

@@ -5,13 +5,17 @@ import { RequireRole } from '../business-access/decorators/require-role.decorato
 import { CreateSavingsPlanDto } from './dto/create-savings-plan.dto.js';
 import { UpdateSavingsPlanDto } from './dto/update-savings-plan.dto.js';
 import { SavingsPlansService } from './savings-plans.service.js';
+import { SavingsGoalsService } from '../savings-goals/savings-goals.service.js';
 
 // Viewing open to every member; changes to OWNER/ACCOUNTANT, as on the
 // savings goals.
 @RequireBusinessMembership()
 @Controller('api/businesses/:businessId/savings-plans')
 export class SavingsPlansController {
-  constructor(private readonly savingsPlansService: SavingsPlansService) {}
+  constructor(
+    private readonly savingsPlansService: SavingsPlansService,
+    private readonly savingsGoalsService: SavingsGoalsService,
+  ) {}
 
   @Get()
   list(@Param('businessId') businessId: string) {
@@ -28,6 +32,13 @@ export class SavingsPlansController {
   @Patch(':id')
   update(@Param('businessId') businessId: string, @Param('id') id: string, @Body() dto: UpdateSavingsPlanDto) {
     return this.savingsPlansService.update(businessId, id, dto);
+  }
+
+  // Undo of Move back to plans: the goal comes back as it was.
+  @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
+  @Post(':id/back-to-goal')
+  backToGoal(@Param('businessId') businessId: string, @Param('id') id: string) {
+    return this.savingsGoalsService.backToGoal(businessId, id);
   }
 
   @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
