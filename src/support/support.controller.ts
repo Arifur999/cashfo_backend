@@ -37,6 +37,12 @@ export class SupportController {
     return this.service.reply(user.id, id, dto);
   }
 
+  @Throttle(WRITE_THROTTLE)
+  @Post('messages/:id/solve')
+  solve(@CurrentUser() user: RequestUser, @Param('id', ParseUUIDPipe) id: string) {
+    return this.service.solve(user.id, id);
+  }
+
   // Never cached by the browser: it may show the customer's money.
   @Get('attachments/:id')
   @Header('Cache-Control', 'private, no-store')
