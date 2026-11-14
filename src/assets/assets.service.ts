@@ -52,14 +52,16 @@ export class AssetsService {
     });
   }
 
-  private readonly DEFAULT_ASSET_CATEGORIES: { name: string; icon: string; color: string }[] = [
-    { name: 'Land', icon: 'mountain', color: 'green' },
-    { name: 'Vehicle', icon: 'car', color: 'blue' },
-    { name: 'Property', icon: 'building-2', color: 'orange' },
-    { name: 'Jewellery', icon: 'gem', color: 'pink' },
-    { name: 'Electronics', icon: 'laptop', color: 'purple' },
-    { name: 'Investment', icon: 'trending-up', color: 'teal' },
-    { name: 'Other', icon: 'package', color: 'indigo' },
+  // Other starts grey and switched off, as on the Category board: it stays
+  // out of the forms until switched on.
+  private readonly DEFAULT_ASSET_CATEGORIES: { name: string; icon: string; color: string; isActive: boolean }[] = [
+    { name: 'Land', icon: 'mountain', color: 'green', isActive: true },
+    { name: 'Vehicle', icon: 'car', color: 'blue', isActive: true },
+    { name: 'Property', icon: 'building-2', color: 'orange', isActive: true },
+    { name: 'Jewellery', icon: 'gem', color: 'pink', isActive: true },
+    { name: 'Electronics', icon: 'laptop', color: 'purple', isActive: true },
+    { name: 'Investment', icon: 'trending-up', color: 'teal', isActive: true },
+    { name: 'Other', icon: 'package', color: 'gray', isActive: false },
   ];
 
   // Lazily seeds the 7 defaults (the design's order) the first time a business ever
@@ -71,7 +73,7 @@ export class AssetsService {
     const existing = await this.prisma.assetCategoryOption.findMany({ where: { businessId }, orderBy: { displayOrder: 'asc' } });
     if (existing.length > 0) return existing;
     await this.prisma.assetCategoryOption.createMany({
-      data: this.DEFAULT_ASSET_CATEGORIES.map((c, i) => ({ businessId, name: c.name, icon: c.icon, color: c.color, displayOrder: i })),
+      data: this.DEFAULT_ASSET_CATEGORIES.map((c, i) => ({ businessId, name: c.name, icon: c.icon, color: c.color, isActive: c.isActive, displayOrder: i })),
     });
     return this.prisma.assetCategoryOption.findMany({ where: { businessId }, orderBy: { displayOrder: 'asc' } });
   }
