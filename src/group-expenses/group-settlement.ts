@@ -51,6 +51,9 @@ export interface SettleInput {
   // Meal units per member over the period (meal counting on).
   meals: { memberId: string; units: number }[];
   mealsOn: boolean;
+  // A member's cost-split weight on a day (group-weights.ts), when the group
+  // keeps a history of them; undefined: their shareUnits.
+  weightOn?: (memberId: string, day: string) => number | undefined;
 }
 
 export interface SettleRow {
@@ -157,7 +160,9 @@ export function settleGroup(input: SettleInput): SettleResult {
       if (rest !== 0 && everyone.length > 0) for (const member of everyone) add(member.id, rest / everyone.length);
       continue;
     } else if (expense.split === 'SHARES') {
-      weights = named.length > 0 ? named.map((split) => [split.memberId, split.units ?? units.get(split.memberId) ?? 1]) : everyone.map((member) => [member.id, member.shareUnits]);
+      // The weights of the expense's own date: a later change of shares never moves it.
+      const weightOf = (id: string) => input.weightOn?.(id, expense.date) ?? units.get(id) ?? 1;
+      weights = named.length > 0 ? named.map((split) => [split.memberId, split.units ?? weightOf(split.memberId)]) : everyone.map((member) => [member.id, weightOf(member.id)]);
     } else {
       weights = named.length > 0 ? named.map((split) => [split.memberId, 1]) : everyone.map((member) => [member.id, 1]);
     }

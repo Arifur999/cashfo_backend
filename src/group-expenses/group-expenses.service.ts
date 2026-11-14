@@ -25,6 +25,7 @@ import { SettleUpDto } from './dto/settle-up.dto.js';
 import { cashbook, cashByAccountant, cashMovements } from './group-cash.js';
 import { initialsOf } from './group-names.js';
 import { settleGroup } from './group-settlement.js';
+import { weightChanges, weightsOn } from './group-weights.js';
 
 export interface SettlementMemberRow {
   groupMemberId: string;
@@ -373,6 +374,44 @@ export class GroupExpensesService {
   // hand is left alone -- a new member then has 0% until the owner edits
   // it. Run after a member is added, changes shares, leaves or comes back.
   async followShares(businessId: string): Promise<void> {
+    const before = await this.costWeights(businessId);
+    await this.followSharesNow(businessId);
+    await this.keepWeights(businessId, before);
+  }
+
+  // Each active member's weight in costs shared by the cost split now: their
+  // percent while it is custom, 1 each while it is equal.
+  private async costWeights(businessId: string): Promise<Map<string, number>> {
+    const [settings, active] = await Promise.all([
+      this.prisma.groupSettings.findUnique({ where: { businessId }, select: { costSplit: true } }),
+      this.prisma.groupMember.findMany({ where: { businessId, status: 'ACTIVE' }, select: { id: true, costPercent: true } }),
+    ]);
+    const custom = settings?.costSplit === 'CUSTOM';
+    return new Map(active.map((member) => [member.id, custom ? Number(member.costPercent ?? 0) : 1]));
+  }
+
+  // A change of shares or of the split counts from today: the weights are
+  // written dated today (and, the first time, the ones before from the
+  // start), so the open month's earlier expenses keep theirs.
+  private async keepWeights(businessId: string, before: Map<string, number>): Promise<void> {
+    const after = await this.costWeights(businessId);
+    const hasHistory = (await this.prisma.groupCostWeight.count({ where: { businessId } })) > 0;
+    const t = dhakaToday();
+    const today = `${t.year}-${String(t.month).padStart(2, '0')}-${String(t.day).padStart(2, '0')}`;
+    const rows = weightChanges({ hasHistory, before, after, today });
+    if (rows.length === 0) return;
+    await this.prisma.$transaction(
+      rows.map((row) =>
+        this.prisma.groupCostWeight.upsert({
+          where: { groupMemberId_effectiveFrom: { groupMemberId: row.memberId, effectiveFrom: new Date(`${row.from}T00:00:00.000Z`) } },
+          update: { weight: row.weight },
+          create: { businessId, groupMemberId: row.memberId, effectiveFrom: new Date(`${row.from}T00:00:00.000Z`), weight: row.weight },
+        }),
+      ),
+    );
+  }
+
+  private async followSharesNow(businessId: string): Promise<void> {
     const settings = await this.prisma.groupSettings.findUnique({ where: { businessId }, select: { costSplit: true, splitFromShares: true } });
     if (settings?.costSplit === 'CUSTOM' && !settings.splitFromShares) return;
     const active = await this.prisma.groupMember.findMany({
@@ -398,6 +437,13 @@ export class GroupExpensesService {
   }
 
   async setCostSplit(businessId: string, dto: GroupCostSplitDto, actorUserId: string | null = null) {
+    const weights = await this.costWeights(businessId);
+    const result = await this.setCostSplitNow(businessId, dto, actorUserId);
+    await this.keepWeights(businessId, weights);
+    return result;
+  }
+
+  private async setCostSplitNow(businessId: string, dto: GroupCostSplitDto, actorUserId: string | null) {
     const active = await this.prisma.groupMember.findMany({ where: { businessId, status: 'ACTIVE' }, select: { id: true, name: true, costPercent: true } });
     const before = await this.prisma.groupSettings.findUnique({ where: { businessId }, select: { costSplit: true } });
     if (dto.mode === 'CUSTOM') {
@@ -857,7 +903,67 @@ export class GroupExpensesService {
       // Same tie-break reasoning as listContributions() above.
       orderBy: [{ date: 'desc' }, { createdAt: 'desc' }],
     });
-    return this.withRecorders(businessId, rows);
+    const parts = await this.expenseParts(businessId, rows);
+    return (await this.withRecorders(businessId, rows)).map((row) => ({ ...row, parts: parts.get(row.id) ?? [] }));
+  }
+
+  // Each member's part of each expense, worked out as Settlement does (the
+  // members in the group that day, the cost-split weights of its date,
+  // rounded to the paisa so the parts add up to the amount). Empty for one
+  // shared at the month's meal rate while meals are counted: that part is
+  // known only from the month's meals.
+  private async expenseParts(
+    businessId: string,
+    rows: { id: string; amount: Prisma.Decimal; date: Date; paidFrom: string; paidByMemberId: string | null; split: GroupSplit; splits: { groupMemberId: string; units: Prisma.Decimal | null; amount: Prisma.Decimal | null }[] }[],
+  ): Promise<Map<string, { groupMemberId: string; amount: string }[]>> {
+    const out = new Map<string, { groupMemberId: string; amount: string }[]>();
+    if (rows.length === 0) return out;
+    const [members, settings, weightRows] = await Promise.all([
+      this.prisma.groupMember.findMany({ where: { businessId }, orderBy: [{ isOwner: 'desc' }, { createdAt: 'asc' }] }),
+      this.prisma.groupSettings.findUnique({ where: { businessId }, select: { costSplit: true, mealsOn: true } }),
+      this.prisma.groupCostWeight.findMany({ where: { businessId }, select: { groupMemberId: true, effectiveFrom: true, weight: true } }),
+    ]);
+    const custom = settings?.costSplit === 'CUSTOM';
+    const weightOn = weightsOn(weightRows.map((row) => ({ memberId: row.groupMemberId, from: dayKey(row.effectiveFrom), weight: Number(row.weight) })));
+    const settleMembers = members.map((m) => ({
+      id: m.id,
+      name: m.name,
+      active: m.status === 'ACTIVE',
+      joinedOn: m.joinedOn ? dayKey(m.joinedOn) : null,
+      leftOn: m.leftOn ? dayKey(m.leftOn) : null,
+      shareUnits: custom ? Number(m.costPercent ?? 0) : 1,
+    }));
+    for (const row of rows) {
+      if (row.split === 'MEALS' && settings?.mealsOn) {
+        out.set(row.id, []);
+        continue;
+      }
+      const day = dayKey(row.date);
+      const result = settleGroup({
+        start: day,
+        end: day,
+        members: settleMembers,
+        contributions: [],
+        expenses: [
+          {
+            amount: Number(row.amount),
+            date: day,
+            paidFromPocket: row.paidFrom === 'MEMBER',
+            paidByMemberId: row.paidByMemberId,
+            split: row.split,
+            splits: row.splits.map((sp) => ({ memberId: sp.groupMemberId, units: sp.units === null ? null : Number(sp.units), amount: sp.amount === null ? null : Number(sp.amount) })),
+          },
+        ],
+        meals: [],
+        mealsOn: false,
+        weightOn,
+      });
+      out.set(
+        row.id,
+        result.rows.filter((r) => Math.abs(r.otherShare) >= 0.005).map((r) => ({ groupMemberId: r.memberId, amount: r.otherShare.toFixed(2) })),
+      );
+    }
+    return out;
   }
 
   async createExpense(businessId: string, dto: CreateGroupExpenseDto, actorUserId: string | null = null) {
@@ -1632,6 +1738,7 @@ export class GroupExpensesService {
       client.groupExpense.findMany({ where: { businessId, paidFrom: 'FUND', date: { lte: periodEnd } } }),
       client.groupCashHandover.findMany({ where: { businessId, date: { lte: periodEnd } } }),
     ]);
+    const weightRows = await client.groupCostWeight.findMany({ where: { businessId, effectiveFrom: { lte: periodEnd } }, select: { groupMemberId: true, effectiveFrom: true, weight: true } });
     const units = {
       breakfast: Number(settings?.breakfastUnits ?? DEFAULT_SETTINGS.breakfastUnits),
       lunch: Number(settings?.lunchUnits ?? DEFAULT_SETTINGS.lunchUnits),
@@ -1669,6 +1776,7 @@ export class GroupExpensesService {
         units: m.breakfast * units.breakfast + m.lunch * units.lunch + m.dinner * units.dinner + Number(m.guests),
       })),
       mealsOn: settings?.mealsOn ?? false,
+      weightOn: weightsOn(weightRows.map((row) => ({ memberId: row.groupMemberId, from: dayKey(row.effectiveFrom), weight: Number(row.weight) }))),
     });
     const holder = settings?.cashHolderMemberId ?? null;
     const cash = cashByAccountant(this.movesOf(members, cashRows, fundExpenses, holder, handovers));

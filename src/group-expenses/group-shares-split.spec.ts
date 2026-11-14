@@ -7,6 +7,7 @@ const setup = (settings: { costSplit: 'EQUAL' | 'CUSTOM'; splitFromShares: boole
       findMany: vi.fn().mockResolvedValue(shares.map((units, index) => ({ id: `m${index}`, shareUnits: String(units) }))),
       update: vi.fn().mockImplementation((args: unknown) => args),
     },
+    groupCostWeight: { count: vi.fn().mockResolvedValue(0), upsert: vi.fn() },
     $transaction: vi.fn(),
   };
   return { service: new GroupExpensesService(prisma as never, { sync: vi.fn(), accessOf: vi.fn() } as never), prisma };
@@ -34,7 +35,8 @@ describe('shares and the cost split', () => {
   it('never touches a custom split the owner set by hand', async () => {
     const { service, prisma } = setup({ costSplit: 'CUSTOM', splitFromShares: false }, [3, 1, 4]);
     await service.followShares('biz-1');
-    expect(prisma.groupMember.findMany).not.toHaveBeenCalled();
+    // Its weights read before and after are the same: nothing is written.
+    expect(prisma.groupMember.update).not.toHaveBeenCalled();
     expect(prisma.$transaction).not.toHaveBeenCalled();
   });
 });
