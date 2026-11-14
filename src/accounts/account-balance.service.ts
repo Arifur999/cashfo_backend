@@ -419,9 +419,11 @@ export class AccountBalanceService {
               : [],
             // How many entries each account has (any status: only an account
             // with none can be deleted, as removeOrArchive() decides) and the
-            // day it last moved money (standing transactions only).
-            this.prisma.$queryRaw<{ accountId: string; entries: number; lastActivity: Date | null }[]>`
+            // day it last moved money (standing transactions only), and how
+            // many of its entries still stand (what its ledger lists).
+            this.prisma.$queryRaw<{ accountId: string; entries: number; standing: number; lastActivity: Date | null }[]>`
               SELECT e."accountId" AS "accountId", COUNT(*)::int AS "entries",
+                     (COUNT(*) FILTER (WHERE t."status" = 'POSTED' AND t."reversalOfId" IS NULL))::int AS "standing",
                      MAX(t."transactionDate") FILTER (WHERE t."status" = 'POSTED' AND t."reversalOfId" IS NULL) AS "lastActivity"
               FROM "TransactionEntry" e JOIN "Transaction" t ON t."id" = e."transactionId"
               WHERE e."accountId" IN (${Prisma.join(accountIds)})
@@ -471,6 +473,7 @@ export class AccountBalanceService {
         // A YYYY-MM-DD day, or null before the first standing entry.
         lastActivity: activityByAccount.get(account.id)?.lastActivity?.toISOString().slice(0, 10) ?? null,
         entryCount: activityByAccount.get(account.id)?.entries ?? 0,
+        standingCount: activityByAccount.get(account.id)?.standing ?? 0,
         openingBalance: account.openingBalance.toFixed(2),
         totalIn: (inByAccount.get(account.id) ?? new Prisma.Decimal(0)).toFixed(2),
         totalOut: (outByAccount.get(account.id) ?? new Prisma.Decimal(0)).toFixed(2),
