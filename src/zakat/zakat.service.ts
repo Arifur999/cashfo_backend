@@ -64,8 +64,10 @@ export interface ZakatLine {
   forSale?: boolean;
   // An investment's maturity day ('YYYY-MM-DD'), null when it has none.
   maturesOn?: string | null;
-  // A wallet's number as "•••• 7890" (its subtype is the detail).
+  // A wallet's number as "•••• 7890" (its subtype is the detail), and its
+  // Bangla name when it has one.
   number?: string | null;
+  nameBn?: string | null;
 }
 
 export interface ZakatStepView {
@@ -104,7 +106,7 @@ export class ZakatService {
       this.prisma.account.findMany({
         where: { businessId, status: 'ACTIVE', accountType: 'ASSET', accountSubtype: { in: [...MONEY_ACCOUNT_SUBTYPES, 'savings'] } },
         orderBy: [{ displayOrder: 'asc' }, { createdAt: 'asc' }],
-        select: { id: true, name: true, accountSubtype: true, accountNumber: true, currentBalance: true, isSystemAccount: true },
+        select: { id: true, name: true, nameBn: true, accountSubtype: true, accountNumber: true, currentBalance: true, isSystemAccount: true },
       }),
       this.prisma.asset.findMany({ where: { businessId, status: 'ACTIVE' }, orderBy: { purchaseDate: 'asc' } }),
       // Open investments, at the capital still in them (as the Investments
@@ -141,6 +143,7 @@ export class ZakatService {
         source: 'ACCOUNT',
         id: account.id,
         name: account.name,
+        nameBn: account.nameBn,
         detail: account.accountSubtype,
         number: account.accountNumber ? `•••• ${account.accountNumber.replace(/\s/g, '').slice(-4)}` : null,
         amount: money(paisa),
