@@ -48,4 +48,15 @@ describe('AssetsService asset categories', () => {
     await service.updateCategory('biz-1', vehicle.id, { isActive: false });
     expect(prisma.assetCategoryOption.update).toHaveBeenCalledWith({ where: { id: vehicle.id }, data: { isActive: false } });
   });
+
+  it('seeds the seven defaults with Other grey and switched off', async () => {
+    const createMany = vi.fn().mockResolvedValue({ count: 7 });
+    const findMany = vi.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+    const service = new AssetsService({ assetCategoryOption: { findMany, createMany } } as never, {} as never);
+    await service.listCategories('biz-1');
+    const rows = createMany.mock.calls[0][0].data as { name: string; color: string; isActive: boolean; displayOrder: number }[];
+    expect(rows.map((row) => row.name)).toEqual(['Land', 'Vehicle', 'Property', 'Jewellery', 'Electronics', 'Investment', 'Other']);
+    expect(rows.filter((row) => !row.isActive).map((row) => row.name)).toEqual(['Other']);
+    expect(rows[6]).toMatchObject({ color: 'gray', displayOrder: 6 });
+  });
 });
