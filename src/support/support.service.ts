@@ -1,5 +1,5 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
-import { Prisma, TicketStatus } from '@prisma/client';
+import { Prisma, TicketPriority, TicketStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { CreateIdeaDto } from './dto/create-idea.dto.js';
 import { CreateSupportMessageDto, ReplySupportMessageDto } from './dto/support-message.dto.js';
@@ -14,6 +14,7 @@ const CONVERSATION_SELECT = {
   number: true,
   subject: true,
   category: true,
+  priority: true,
   status: true,
   createdAt: true,
   updatedAt: true,
@@ -66,7 +67,8 @@ export class SupportService {
     const ticket = await this.prisma.supportTicket.create({
       data: {
         platformUserId: userId,
-        subject: subjectOf(dto.message),
+        subject: dto.subject || subjectOf(dto.message),
+        ...(dto.priority === 'URGENT' && { priority: TicketPriority.URGENT }),
         category: dto.category,
         fromHelpPage: true,
         messages: {
