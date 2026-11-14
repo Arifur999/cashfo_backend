@@ -14,6 +14,7 @@ import { EARNING_SELECT, earningView } from './referral-earnings.service.js';
 import { EARNED_STATUSES, FRIEND_STANDINGS, payingFriendWhere, standingWhere } from './referral-friends.js';
 import { referralBalances } from './referral-ledger.js';
 import { commissionPaisa } from './referral-money.js';
+import { expectedRenewalEarnings } from './referral-rules.js';
 
 const money = (paisa: number) => fromPaisa(paisa);
 const firstName = (name: string) => name.trim().split(/\s+/)[0] ?? name;
@@ -43,6 +44,8 @@ export class ReferralsService {
     await this.commissions.matureDue(now, userId);
     const { year, month } = dhakaToday();
     const chartStart = dhakaMonthStart(year, month - (CHART_MONTHS - 1));
+    const nextMonthStart = dhakaMonthStart(year, month + 1);
+    const nextMonthEnd = dhakaMonthStart(year, month + 2);
 
     const [user, settings, sub, balances, paidPayouts, paidPlans, links, people, chartLines, top, latest, renewing, firstEarned] = await Promise.all([
       this.prisma.user.findUniqueOrThrow({ where: { id: userId }, select: { referralCode: true, name: true, referralName: true } }),
@@ -75,18 +78,18 @@ export class ReferralsService {
         take: 5,
         select: EARNING_SELECT,
       }),
-      // Paying friends whose plan renews in the next 30 days.
+      // Paying friends whose plan renews in the next 30 days or next month.
       this.prisma.referral.findMany({
         where: {
           AND: [
             { referrerId: userId },
             payingFriendWhere(),
             {
-              referredUser: { subscription: { is: { cancelAtPeriodEnd: false, currentPeriodEnd: { gte: now, lte: new Date(now.getTime() + 30 * DAY_MS) } } } },
+              referredUser: { subscription: { is: { cancelAtPeriodEnd: false, currentPeriodEnd: { gte: now, lt: new Date(Math.max(now.getTime() + 30 * DAY_MS + 1, nextMonthEnd.getTime())) } } } },
             },
           ],
         },
-        select: { referredUser: { select: { subscription: { select: { lockedPrice: true, plan: { select: { price: true } } } } } } },
+        select: { referredUser: { select: { subscription: { select: { lockedPrice: true, currentPeriodEnd: true, plan: { select: { price: true } } } } } } },
       }),
       this.prisma.referralCommission.findFirst({
         where: { referrerId: userId, status: { in: [...EARNED_STATUSES] } },
@@ -118,10 +121,15 @@ export class ReferralsService {
     const nameOf = new Map(topNames.map((r) => [r.id, r.referredUser.name]));
     const planOf = new Map(topNames.map((r) => [r.id, r.referredUser.subscription?.plan.name ?? null]));
     const peopleCount = Object.fromEntries(FRIEND_STANDINGS.map((standing, i) => [standing, people[i]])) as Record<(typeof FRIEND_STANDINGS)[number], number>;
-    const expectedPaisa = renewing.reduce((total, r) => {
+    // What renewals in a window should earn: the next 30 days, and the
+    // next calendar month (the chart's dashed "Expected" bar).
+    const renewals = renewing.flatMap((r) => {
       const s = r.referredUser.subscription;
-      return s ? total + commissionPaisa(toPaisa(s.lockedPrice ?? s.plan.price), settings.commissionPct) : total;
-    }, 0);
+      return s ? [{ periodEnd: s.currentPeriodEnd, pricePaisa: toPaisa(s.lockedPrice ?? s.plan.price) }] : [];
+    });
+    const expectedIn = (from: Date, until: Date) => expectedRenewalEarnings(renewals, from, until, settings.commissionPct);
+    const next30 = expectedIn(now, new Date(now.getTime() + 30 * DAY_MS + 1));
+    const nextMonth = expectedIn(nextMonthStart, nextMonthEnd);
 
     return {
       referralCode: user.referralCode,
@@ -183,8 +191,11 @@ export class ReferralsService {
       months,
       people: { total: people.reduce((a, b) => a + b, 0), ...peopleCount },
       // What paying friends' renewals in the next 30 days should earn.
-      expectedNext30Days: money(expectedPaisa),
-      expectedRenewals: renewing.length,
+      expectedNext30Days: money(next30.paisa),
+      expectedRenewals: next30.count,
+      // What renewals due next month should earn ("In December you should
+      // earn about ...").
+      expectedNextMonth: { month: dhakaDateKey(nextMonthStart).slice(0, 7), amount: money(nextMonth.paisa), renewals: nextMonth.count },
       // When the first commission was earned ("Since August").
       firstEarnedAt: firstEarned ? (firstEarned.payment?.paidAt ?? firstEarned.createdAt) : null,
       // With the plan they are on now and how many of their payments earned.

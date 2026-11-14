@@ -1,4 +1,4 @@
-import { friendPaidOutcome, friendRefundedOutcome, friendStanding, isBlockedSignup, type FriendPaidInput } from './referral-rules.js';
+import { expectedRenewalEarnings, friendPaidOutcome, friendRefundedOutcome, friendStanding, isBlockedSignup, type FriendPaidInput } from './referral-rules.js';
 
 const PAID_AT = new Date('2026-09-28T06:00:00.000Z');
 const paid = (over: Partial<FriendPaidInput> = {}): FriendPaidInput => ({
@@ -86,5 +86,26 @@ describe('isBlockedSignup', () => {
     // A pre-v9 friend whose first payment was refunded still earns on renewals.
     expect(isBlockedSignup({ status: 'CANCELLED', cancelReason: 'FRIEND_REFUNDED' })).toBe(false);
     expect(isBlockedSignup({ status: 'JOINED', cancelReason: null })).toBe(false);
+  });
+});
+
+describe('expectedRenewalEarnings', () => {
+  const dec = new Date('2026-11-30T18:00:00.000Z'); // 1 Dec in Dhaka
+  const jan = new Date('2026-12-31T18:00:00.000Z');
+  const friends = [
+    { periodEnd: new Date('2026-12-05T00:00:00.000Z'), pricePaisa: 19_900 },
+    { periodEnd: new Date('2026-12-31T17:59:59.000Z'), pricePaisa: 191_000 },
+    { periodEnd: jan, pricePaisa: 19_900 },
+    { periodEnd: new Date('2026-11-20T00:00:00.000Z'), pricePaisa: 19_900 },
+    { periodEnd: null, pricePaisa: 19_900 },
+  ];
+
+  it('counts the renewals inside the window, end excluded, at the rate', () => {
+    expect(expectedRenewalEarnings(friends, dec, jan, 20)).toEqual({ paisa: 3_980 + 38_200, count: 2 });
+  });
+
+  it('includes a renewal on the first instant, and is nothing with no friends', () => {
+    expect(expectedRenewalEarnings(friends, jan, new Date('2027-01-01T00:00:00.000Z'), 20)).toEqual({ paisa: 3_980, count: 1 });
+    expect(expectedRenewalEarnings([], dec, jan, 20)).toEqual({ paisa: 0, count: 0 });
   });
 });

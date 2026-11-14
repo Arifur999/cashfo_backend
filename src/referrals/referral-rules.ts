@@ -86,3 +86,10 @@ export function friendStanding(input: { blocked: boolean; onPaidPlan: boolean; p
   if (input.paidCount === 0) return input.refundedCount > 0 ? 'REFUNDED' : 'FREE';
   return 'STOPPED';
 }
+
+// What renewals falling in [from, until) should earn the referrer: each
+// paying friend's price (their locked one if they have it) at the rate.
+export function expectedRenewalEarnings(friends: { periodEnd: Date | null; pricePaisa: number }[], from: Date, until: Date, ratePct: number): { paisa: number; count: number } {
+  const due = friends.filter((f) => f.periodEnd !== null && f.periodEnd >= from && f.periodEnd < until);
+  return { paisa: due.reduce((total, f) => total + commissionPaisa(f.pricePaisa, ratePct), 0), count: due.length };
+}
