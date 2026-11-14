@@ -5,6 +5,7 @@ import { dateLabel, formatTaka, localeOf } from '../billing/billing-text.js';
 import { toPaisa } from '../billing/pricing.js';
 import { MailService } from '../mail/mail.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { SmsService } from '../sms/sms.service.js';
 import { destinationLabel, type MethodSnapshot } from './payout-methods.js';
 
 type Client = PrismaService | Prisma.TransactionClient;
@@ -49,6 +50,7 @@ export class ReferralNotices {
     private readonly prisma: PrismaService,
     private readonly mail: MailService,
     private readonly config: ConfigService,
+    private readonly sms: SmsService,
   ) {}
 
   // True when the row is new.
@@ -112,6 +114,9 @@ export class ReferralNotices {
       incomeWallet,
     });
     if (!fresh) return;
+    // "We send your money": an SMS with the transaction ID to a verified
+    // phone, else the email.
+    if (await this.paidSms(payout)) return;
     await this.email(payout.userId, 'payouts', (user, locale) =>
       this.mail.sendPayoutNoticeEmail(user.email, locale, {
         kind: 'PAID',
@@ -152,6 +157,20 @@ export class ReferralNotices {
     );
   }
 
+  // True when the SMS went.
+  private async paidSms(payout: PayoutForNotice & { paidAmount: { toString(): string }; trxId: string }): Promise<boolean> {
+    if (!this.sms.configured) return false;
+    try {
+      const user = await this.prisma.user.findUnique({ where: { id: payout.userId }, select: { phone: true, phoneVerifiedAt: true, referralEmailPayouts: true, preferredLanguage: true } });
+      if (!user?.phone || !user.phoneVerifiedAt || !user.referralEmailPayouts) return false;
+      await this.sms.send(user.phone, payoutPaidSmsText(localeOf(user.preferredLanguage), formatTaka(toPaisa(payout.paidAmount), localeOf(user.preferredLanguage)), destinationLabel(payout.method), payout.trxId));
+      return true;
+    } catch (error) {
+      this.logger.warn(`Payout SMS for user ${payout.userId} failed: ${error instanceof Error ? error.message : String(error)}`);
+      return false;
+    }
+  }
+
   private link(path: string) {
     return `${this.config.get<string>('USER_FRONTEND_URL') ?? 'http://localhost:3000'}${path}`;
   }
@@ -177,4 +196,9 @@ export interface PayoutForNotice {
   displayId: string;
   amount: { toString(): string };
   method: MethodSnapshot;
+}
+
+// The text of the "money sent" SMS (amount already formatted).
+export function payoutPaidSmsText(locale: 'en' | 'bn', amount: string, destination: string, trxId: string): string {
+  return locale === 'en' ? `Smartly: Tk ${amount} sent to your ${destination}. TrxID ${trxId}.` : `Smartly: আপনার ${destination}-এ ৳ ${amount} পাঠানো হয়েছে। TrxID ${trxId}।`;
 }

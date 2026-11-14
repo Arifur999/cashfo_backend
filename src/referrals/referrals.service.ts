@@ -255,6 +255,7 @@ export class ReferralsService {
           phoneVerifiedAt: true,
           referralEmailEarned: true,
           referralEmailPayouts: true,
+          referralMonthlyStatement: true,
           referralCode: true,
         },
       }),
@@ -273,6 +274,7 @@ export class ReferralsService {
       phoneVerified: user.phoneVerifiedAt !== null,
       emailEarned: user.referralEmailEarned,
       emailPayouts: user.referralEmailPayouts,
+      monthlyStatement: user.referralMonthlyStatement,
     };
   }
 
@@ -281,6 +283,7 @@ export class ReferralsService {
     if (dto.referralName !== undefined) data.referralName = dto.referralName;
     if (dto.emailEarned !== undefined) data.referralEmailEarned = dto.emailEarned;
     if (dto.emailPayouts !== undefined) data.referralEmailPayouts = dto.emailPayouts;
+    if (dto.monthlyStatement !== undefined) data.referralMonthlyStatement = dto.monthlyStatement;
     await this.prisma.user.update({ where: { id: userId }, data });
     return this.profile(userId);
   }

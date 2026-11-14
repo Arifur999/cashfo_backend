@@ -910,6 +910,11 @@ model User {
   // me a commission, and about my withdrawals.
   referralEmailEarned     Boolean                  @default(true)
   referralEmailPayouts    Boolean                  @default(true)
+  // Referrals > Profile & payouts > Monthly statement: an email on the 1st
+  // with last month's earnings, and the month (YYYY-MM) last sent, so a
+  // month goes once.
+  referralMonthlyStatement Boolean                 @default(false)
+  referralStatementSentFor String?
   // Settings > Password Manager's own unlock secret -- deliberately separate
   // from the account password (a leaked account password must not also unlock
   // the vault). Null until the user completes first-time vault setup (see

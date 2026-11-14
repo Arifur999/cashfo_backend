@@ -12,6 +12,7 @@ import { renderOneTimeCodeEmail, type OneTimeCodeEmail } from './templates/one-t
 import { renderPasswordResetEmail } from './templates/password-reset-email.js';
 import { renderPayoutNoticeEmail, type PayoutNotice } from './templates/payout-notice-email.js';
 import { renderCommissionEarnedEmail, type CommissionEarnedEmail } from './templates/commission-earned-email.js';
+import { renderReferralStatementEmail, type ReferralStatementEmail } from './templates/referral-statement-email.js';
 import { renderPlanNoticeEmail, type PlanNotice } from './templates/plan-notice-email.js';
 import { renderSupportReplyEmail } from './templates/support-reply-email.js';
 import { renderTwoStepNoticeEmail, type TwoStepNotice } from './templates/two-step-notice-email.js';
@@ -120,6 +121,10 @@ export class MailService {
 
   async sendCommissionEarnedEmail(to: string, locale: 'en' | 'bn', email: CommissionEarnedEmail): Promise<void> {
     await this.sendEmail({ to, ...renderCommissionEarnedEmail(locale, email, await this.platformName()) });
+  }
+
+  async sendReferralStatementEmail(to: string, locale: 'en' | 'bn', email: ReferralStatementEmail): Promise<void> {
+    await this.sendEmail({ to, ...renderReferralStatementEmail(locale, email, await this.platformName()) });
   }
 
   async sendTwoStepNoticeEmail(to: string, locale: 'en' | 'bn', notice: TwoStepNotice): Promise<void> {
