@@ -85,8 +85,10 @@ export class MailService {
     await this.sendEmail({ to, ...renderWelcomeEmail(name, await this.platformName()) });
   }
 
+  // A link email, so in development it can be logged instead (devLog),
+  // like the admin ones below.
   async sendPasswordResetEmail(to: string, name: string, resetUrl: string): Promise<void> {
-    await this.sendEmail({ to, ...renderPasswordResetEmail(name, resetUrl, await this.platformName()) });
+    await this.sendOrLog({ to, ...renderPasswordResetEmail(name, resetUrl, await this.platformName()) }, `Password reset link for ${to}: ${resetUrl}`);
   }
 
   async sendSupportReplyEmail(to: string, name: string, subject: string, reply: string, link: string): Promise<void> {
