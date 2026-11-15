@@ -27,14 +27,14 @@ export class AnnouncementsController {
 
   @Roles(AdminRole.SUPER_ADMIN, AdminRole.CONTENT_ADMIN)
   @Post()
-  create(@Body() dto: CreateAnnouncementDto, @CurrentAdmin() admin: RequestAdminUser) {
-    return this.announcementsService.create(dto, admin.id);
+  create(@Body() dto: CreateAnnouncementDto, @CurrentAdmin() admin: RequestAdminUser, @Req() req: Request) {
+    return this.announcementsService.create(dto, admin.id, req.ip);
   }
 
   @Roles(AdminRole.SUPER_ADMIN, AdminRole.CONTENT_ADMIN)
   @Patch(':id')
-  update(@Param('id') id: string, @Body() dto: UpdateAnnouncementDto) {
-    return this.announcementsService.update(id, dto);
+  update(@Param('id') id: string, @Body() dto: UpdateAnnouncementDto, @CurrentAdmin() admin: RequestAdminUser, @Req() req: Request) {
+    return this.announcementsService.update(id, dto, admin.id, req.ip);
   }
 
   @Roles(AdminRole.SUPER_ADMIN, AdminRole.CONTENT_ADMIN)
