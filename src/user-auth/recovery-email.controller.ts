@@ -16,7 +16,7 @@ export class RecoveryEmailController {
   @Throttle({ default: { limit: 5, ttl: 60 * 1000 } })
   @Post()
   start(@CurrentUser() user: RequestUser, @Body() dto: StartRecoveryEmailDto) {
-    return this.recovery.start(user.id, dto);
+    return this.recovery.start(user, dto);
   }
 
   @Throttle({ default: { limit: 10, ttl: 60 * 1000 } })
