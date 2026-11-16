@@ -205,6 +205,10 @@ export class GroupAccessService {
       const { member } = link;
       if (link.kind === 'RESET') {
         if (!member.user || !member.user.portalOnly) throw new BadRequestException(GONE);
+        // Checked again as it is used, not only when it was made: the login
+        // may have joined another owner's group since, and then only that
+        // owner's own password reset stands.
+        if (!(await this.ownsEveryGroupOf(member.user.id, link.business.ownerId, tx))) throw new BadRequestException(GONE);
         await this.credentials.set(member.user.id, input.password, tx);
         return { userId: member.user.id, businessId: member.businessId, member, reset: true, username: null as string | null };
       }
