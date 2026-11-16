@@ -13,6 +13,18 @@ function computeStatus(a: { isActive: boolean; startAt: Date; endAt: Date | null
   return 'ACTIVE';
 }
 
+// What the audit log keeps of an announcement.
+export function auditView(a: { title: string; type: string; targetPlan: string | null; startAt: Date; endAt: Date | null; isActive: boolean }) {
+  return {
+    title: a.title,
+    type: a.type,
+    targetPlan: a.targetPlan,
+    startAt: a.startAt.toISOString(),
+    endAt: a.endAt?.toISOString() ?? null,
+    isActive: a.isActive,
+  };
+}
+
 @Injectable()
 export class AnnouncementsService {
   constructor(private readonly prisma: PrismaService) {}
@@ -44,28 +56,42 @@ export class AnnouncementsService {
     return rows;
   }
 
-  async create(dto: CreateAnnouncementDto, adminId: string) {
+  // Every admin write is in the audit log: what went out, by whom, from where.
+  async create(dto: CreateAnnouncementDto, adminId: string, ipAddress?: string) {
     if (dto.endAt && new Date(dto.endAt) <= new Date(dto.startAt)) {
       throw new BadRequestException('endAt must be after startAt');
     }
 
-    return this.prisma.announcement.create({
-      data: {
-        title: dto.title,
-        titleBn: dto.titleBn,
-        body: dto.body,
-        bodyBn: dto.bodyBn,
-        type: dto.type,
-        targetPlan: dto.targetPlan,
-        startAt: new Date(dto.startAt),
-        endAt: dto.endAt ? new Date(dto.endAt) : undefined,
-        linkUrl: dto.linkUrl || null,
-        createdBy: adminId,
-      },
+    return this.prisma.$transaction(async (tx) => {
+      const created = await tx.announcement.create({
+        data: {
+          title: dto.title,
+          titleBn: dto.titleBn,
+          body: dto.body,
+          bodyBn: dto.bodyBn,
+          type: dto.type,
+          targetPlan: dto.targetPlan,
+          startAt: new Date(dto.startAt),
+          endAt: dto.endAt ? new Date(dto.endAt) : undefined,
+          linkUrl: dto.linkUrl || null,
+          createdBy: adminId,
+        },
+      });
+      await tx.auditLog.create({
+        data: {
+          adminUserId: adminId,
+          action: 'ANNOUNCEMENT_CREATED',
+          entityType: 'Announcement',
+          entityId: created.id,
+          newValue: auditView(created),
+          ipAddress,
+        },
+      });
+      return created;
     });
   }
 
-  async update(id: string, dto: UpdateAnnouncementDto) {
+  async update(id: string, dto: UpdateAnnouncementDto, adminId: string, ipAddress?: string) {
     const existing = await this.requireAnnouncement(id);
 
     const startAt = dto.startAt !== undefined ? new Date(dto.startAt) : existing.startAt;
@@ -74,20 +100,34 @@ export class AnnouncementsService {
       throw new BadRequestException('endAt must be after startAt');
     }
 
-    return this.prisma.announcement.update({
-      where: { id },
-      data: {
-        ...(dto.title !== undefined && { title: dto.title }),
-        ...(dto.titleBn !== undefined && { titleBn: dto.titleBn }),
-        ...(dto.body !== undefined && { body: dto.body }),
-        ...(dto.bodyBn !== undefined && { bodyBn: dto.bodyBn }),
-        ...(dto.type !== undefined && { type: dto.type }),
-        ...(dto.targetPlan !== undefined && { targetPlan: dto.targetPlan }),
-        ...(dto.startAt !== undefined && { startAt }),
-        ...(dto.endAt !== undefined && { endAt }),
-        ...(dto.isActive !== undefined && { isActive: dto.isActive }),
-        ...(dto.linkUrl !== undefined && { linkUrl: dto.linkUrl || null }),
-      },
+    return this.prisma.$transaction(async (tx) => {
+      const updated = await tx.announcement.update({
+        where: { id },
+        data: {
+          ...(dto.title !== undefined && { title: dto.title }),
+          ...(dto.titleBn !== undefined && { titleBn: dto.titleBn }),
+          ...(dto.body !== undefined && { body: dto.body }),
+          ...(dto.bodyBn !== undefined && { bodyBn: dto.bodyBn }),
+          ...(dto.type !== undefined && { type: dto.type }),
+          ...(dto.targetPlan !== undefined && { targetPlan: dto.targetPlan }),
+          ...(dto.startAt !== undefined && { startAt }),
+          ...(dto.endAt !== undefined && { endAt }),
+          ...(dto.isActive !== undefined && { isActive: dto.isActive }),
+          ...(dto.linkUrl !== undefined && { linkUrl: dto.linkUrl || null }),
+        },
+      });
+      await tx.auditLog.create({
+        data: {
+          adminUserId: adminId,
+          action: 'ANNOUNCEMENT_UPDATED',
+          entityType: 'Announcement',
+          entityId: id,
+          oldValue: auditView(existing),
+          newValue: auditView(updated),
+          ipAddress,
+        },
+      });
+      return updated;
     });
   }
 
