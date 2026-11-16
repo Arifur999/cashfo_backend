@@ -30,7 +30,7 @@ const recording = (original: object | null = null) => {
     },
     transaction: { findUnique: vi.fn().mockResolvedValue(original) },
   };
-  const service = new ReceivablesPayablesService(prisma as never, { createTransaction, postCharge, voidTransaction, withLocks } as never);
+  const service = new ReceivablesPayablesService(prisma as never, { createTransaction, postCharge, voidTransaction, withLocks, linkCorrection: (tx: { transaction: { update: (args: unknown) => unknown } }, correctedId: string, originalId: string) => tx.transaction.update({ where: { id: correctedId }, data: { correctedFromId: originalId } }) } as never);
   return { service, createTransaction, postCharge, voidTransaction, withLocks, tx };
 };
 

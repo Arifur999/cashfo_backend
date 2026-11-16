@@ -264,6 +264,15 @@ export class TransactionsService {
     return this.prisma.$transaction((tx) => this.restoreIn(tx, businessId, transactionId, userId, now));
   }
 
+  // Links an edit to the entry it corrects (History reads the link). An
+  // earlier edit of the same entry that was undone (voided, the original
+  // standing again) lets go of it first: correctedFromId is unique, and
+  // without this the entry could never be edited again after an Undo.
+  async linkCorrection(tx: Prisma.TransactionClient, correctedId: string, originalId: string) {
+    await tx.transaction.updateMany({ where: { correctedFromId: originalId, status: 'VOIDED' }, data: { correctedFromId: null } });
+    await tx.transaction.update({ where: { id: correctedId }, data: { correctedFromId: originalId } });
+  }
+
   // Undo of an edit made minutes ago (the Transactions page's toast): the
   // entry the edit posted is voided, and the one it replaced stands again as
   // it was, its reversal gone. Only by the person who made the edit, within

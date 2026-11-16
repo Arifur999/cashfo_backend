@@ -380,7 +380,7 @@ export class ReceivablesPayablesService {
       await this.transactionsService.voidTransaction(businessId, transactionId, CORRECTED_REASON, userId, tx);
       const corrected = await post(tx);
       // So History can say what it corrected (and the original, what replaced it).
-      await tx.transaction.update({ where: { id: corrected.id }, data: { correctedFromId: transactionId } });
+      await this.transactionsService.linkCorrection(tx, corrected.id, transactionId);
       return { ...corrected, correctedFromId: transactionId };
     });
   }
@@ -846,7 +846,9 @@ export class ReceivablesPayablesService {
       const totalPayment = new Prisma.Decimal(receivable.totalInvoiced).plus(payable.totalPaid);
       const totalReceive = new Prisma.Decimal(payable.totalInvoiced).plus(receivable.totalPaid);
 
-      if (opening.equals(0) && totalPayment.equals(0) && totalReceive.equals(0)) continue;
+      // Nothing ever entered with them: no row. Profit alone still counts, so
+      // a contact with only profit postings keeps its Profit paid figure.
+      if (opening.equals(0) && totalPayment.equals(0) && totalReceive.equals(0) && !activity.byContact.get(contact.id)?.entries) continue;
 
       totalPaid = totalPaid.plus(totalPayment);
       totalReceived = totalReceived.plus(totalReceive);
