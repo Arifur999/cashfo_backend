@@ -1,11 +1,16 @@
 import type { ThrottlerGetTrackerFunction } from '@nestjs/throttler';
+import { toBdMobile } from '../sms/sms-text.js';
 
 const FIFTEEN_MINUTES = 15 * 60 * 1000;
 
 // The address and the account an attempt names: "default" counts per pair.
+// A group login can be named by its phone number too, written many ways
+// (017..., +880..., with spaces or dashes); each spelling of one number
+// counts in one bucket, so they can't buy extra guesses.
 export const accountTracker: ThrottlerGetTrackerFunction = (req) => {
-  const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase().slice(0, 254) : '';
-  return `${req.ip}|${email}`;
+  const raw = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase().slice(0, 254) : '';
+  const mobile = raw && !raw.includes('@') ? toBdMobile(raw) : null;
+  return `${req.ip}|${mobile ? `phone:${mobile}` : raw}`;
 };
 
 // Password sign-in: 5 attempts per 15 minutes for each IP and account, and
