@@ -2341,6 +2341,15 @@ model Transaction {
   updatedAt              DateTime           @updatedAt
   voidedAt               DateTime?
   voidedReason           String?
+  // Set by the Transactions page's Delete (deleteTransaction): who deleted
+  // it and when. Only such a delete can be undone (restoreTransaction), and
+  // both stay after an Undo, which adds restoredAt/restoredById, so the
+  // ledger keeps a record of the money taken out and put back. restoredById
+  // is null when a feature brought its own posting back (an asset undo).
+  deletedAt              DateTime?
+  deletedById            String?
+  restoredAt             DateTime?
+  restoredById           String?
   // If this transaction IS a reversal (created by voidTransaction()),
   // points back at the original it reverses. Plain field, no relation --
   // a self-relation isn't needed since nothing currently needs to traverse

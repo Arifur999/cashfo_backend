@@ -46,6 +46,14 @@ export class TransactionsController {
     return this.transactionsService.voidTransaction(businessId, id, dto.reason, user.id);
   }
 
+  // The Transactions page's Delete: a void the person can undo with
+  // :id/restore for a few minutes (a plain :id/void can't be undone).
+  @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
+  @Post(':id/delete')
+  delete(@Param('businessId') businessId: string, @Param('id') id: string, @CurrentUser() user: RequestUser) {
+    return this.transactionsService.deleteTransaction(businessId, id, user.id);
+  }
+
   // Undo of a delete made from the Transactions page minutes ago.
   @RequireRole(MemberRole.OWNER, MemberRole.ACCOUNTANT)
   @Post(':id/restore')
