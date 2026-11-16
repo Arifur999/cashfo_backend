@@ -16,6 +16,9 @@ const taka = (value: Prisma.Decimal | number | string | null | undefined) => Mat
 // and owed when the day before it ended, and at its end), where the money
 // went (MoneyFlowService), and the period's savings goals, loans, assets and
 // events.
+// The events section for a member who may not see Calendar & Events.
+const NO_EVENTS = { count: 0, given: 0, received: 0, list: [] };
+
 @Injectable()
 export class PeriodReportService {
   constructor(
@@ -26,7 +29,10 @@ export class PeriodReportService {
     private readonly netWorth: NetWorthService,
   ) {}
 
-  async report(businessId: string, from: string, to: string, now = new Date()) {
+  // `withEvents` false (a member Calendar & Events is closed to) gets the
+  // events section empty: the events API refuses them its titles, places
+  // and gifts, and this report must not hand them over instead.
+  async report(businessId: string, from: string, to: string, now = new Date(), withEvents = true) {
     const today = dhakaDateKey(now);
     if (from > today) throw new BadRequestException('Pick a period that has begun');
     const start = dayBefore(from);
@@ -37,7 +43,7 @@ export class PeriodReportService {
       this.netWorth.on(businessId, [start, end], today),
       this.savings(businessId, from, to),
       this.assets(businessId, from, to, end),
-      this.events(businessId, from, to),
+      withEvents ? this.events(businessId, from, to) : NO_EVENTS,
     ]);
     const worthAt = (row: WorthOn) => ({ ...row, counts: { ...row.counts, goals: savings.goalCount } });
     return {
@@ -63,8 +69,15 @@ export class PeriodReportService {
   private async savings(businessId: string, from: string, to: string) {
     const [goals, added, taken] = await Promise.all([
       this.savingsGoals.list(businessId),
-      this.prisma.savingsGoalEntry.groupBy({ by: ['savingsGoalId'], where: { businessId, type: 'CONTRIBUTION', date: { gte: dateOf(from), lt: new Date(dateOf(to).getTime() + 86_400_000) } }, _sum: { amount: true } }),
-      this.prisma.savingsGoalEntry.aggregate({ where: { businessId, type: 'WITHDRAWAL', date: { gte: dateOf(from), lt: new Date(dateOf(to).getTime() + 86_400_000) } }, _sum: { amount: true } }),
+      this.prisma.savingsGoalEntry.groupBy({
+        by: ['savingsGoalId'],
+        where: { businessId, type: 'CONTRIBUTION', date: { gte: dateOf(from), lt: new Date(dateOf(to).getTime() + 86_400_000) } },
+        _sum: { amount: true },
+      }),
+      this.prisma.savingsGoalEntry.aggregate({
+        where: { businessId, type: 'WITHDRAWAL', date: { gte: dateOf(from), lt: new Date(dateOf(to).getTime() + 86_400_000) } },
+        _sum: { amount: true },
+      }),
     ]);
     const addedTo = (id: string) => taka(added.find((row) => row.savingsGoalId === id)?._sum.amount);
     // A goal withdrawn and spent holds nothing any more.
@@ -80,7 +93,15 @@ export class PeriodReportService {
         // the Savings pages count it.
         goals: open
           .filter((goal) => goal.status !== 'COMPLETED' || addedTo(goal.id) > 0)
-          .map((goal) => ({ id: goal.id, name: goal.name, added: addedTo(goal.id), saved: taka(goal.currentAmount), target: taka(goal.targetAmount), status: goal.status, color: goalColorAt(goal.color, goals.indexOf(goal)) }))
+          .map((goal) => ({
+            id: goal.id,
+            name: goal.name,
+            added: addedTo(goal.id),
+            saved: taka(goal.currentAmount),
+            target: taka(goal.targetAmount),
+            status: goal.status,
+            color: goalColorAt(goal.color, goals.indexOf(goal)),
+          }))
           .sort((a, b) => b.added - a.added || b.saved - a.saved),
       },
     };
@@ -89,15 +110,33 @@ export class PeriodReportService {
   // Assets bought and sold in the period.
   private async assets(businessId: string, from: string, to: string, end: string) {
     const [bought, sold] = await Promise.all([
-      this.prisma.asset.findMany({ where: { businessId, purchaseDate: { gte: dateOf(from), lt: new Date(dateOf(to).getTime() + 86_400_000) } }, select: { id: true, name: true, purchaseDate: true, purchasePrice: true } }),
-      this.prisma.asset.findMany({ where: { businessId, soldAt: { gte: dateOf(from), lt: new Date(dateOf(end).getTime() + 86_400_000) } }, select: { id: true, name: true, soldAt: true, soldPrice: true } }),
+      this.prisma.asset.findMany({
+        where: { businessId, purchaseDate: { gte: dateOf(from), lt: new Date(dateOf(to).getTime() + 86_400_000) } },
+        select: { id: true, name: true, purchaseDate: true, purchasePrice: true },
+      }),
+      this.prisma.asset.findMany({
+        where: { businessId, soldAt: { gte: dateOf(from), lt: new Date(dateOf(end).getTime() + 86_400_000) } },
+        select: { id: true, name: true, soldAt: true, soldPrice: true },
+      }),
     ]);
     return {
       bought: { amount: taka(bought.reduce((sum, asset) => sum + Number(asset.purchasePrice), 0)), count: bought.length },
       sold: { amount: taka(sold.reduce((sum, asset) => sum + Number(asset.soldPrice ?? 0), 0)), count: sold.length },
       entries: [
-        ...bought.map((asset) => ({ date: dhakaDateKey(asset.purchaseDate), assetId: asset.id, name: asset.name, kind: 'BOUGHT' as const, amount: taka(asset.purchasePrice) })),
-        ...sold.map((asset) => ({ date: dhakaDateKey(asset.soldAt as Date), assetId: asset.id, name: asset.name, kind: 'SOLD' as const, amount: taka(asset.soldPrice) })),
+        ...bought.map((asset) => ({
+          date: dhakaDateKey(asset.purchaseDate),
+          assetId: asset.id,
+          name: asset.name,
+          kind: 'BOUGHT' as const,
+          amount: taka(asset.purchasePrice),
+        })),
+        ...sold.map((asset) => ({
+          date: dhakaDateKey(asset.soldAt as Date),
+          assetId: asset.id,
+          name: asset.name,
+          kind: 'SOLD' as const,
+          amount: taka(asset.soldPrice),
+        })),
       ].sort((a, b) => b.date.localeCompare(a.date)),
     };
   }
@@ -109,8 +148,23 @@ export class PeriodReportService {
       select: { id: true, title: true, type: true, date: true, time: true, place: true, gifts: { select: { direction: true, amount: true } } },
       orderBy: [{ date: 'asc' }, { createdAt: 'asc' }],
     });
-    const sum = (gifts: { direction: string; amount: Prisma.Decimal }[], direction: 'GAVE' | 'GOT') => taka(gifts.filter((gift) => gift.direction === direction).reduce((total, gift) => total + Number(gift.amount), 0));
-    const list = events.map((event) => ({ id: event.id, title: event.title, type: event.type, date: event.date.toISOString().slice(0, 10), time: event.time, place: event.place, gave: sum(event.gifts, 'GAVE'), got: sum(event.gifts, 'GOT') }));
-    return { count: list.length, given: taka(list.reduce((total, row) => total + row.gave, 0)), received: taka(list.reduce((total, row) => total + row.got, 0)), list };
+    const sum = (gifts: { direction: string; amount: Prisma.Decimal }[], direction: 'GAVE' | 'GOT') =>
+      taka(gifts.filter((gift) => gift.direction === direction).reduce((total, gift) => total + Number(gift.amount), 0));
+    const list = events.map((event) => ({
+      id: event.id,
+      title: event.title,
+      type: event.type,
+      date: event.date.toISOString().slice(0, 10),
+      time: event.time,
+      place: event.place,
+      gave: sum(event.gifts, 'GAVE'),
+      got: sum(event.gifts, 'GOT'),
+    }));
+    return {
+      count: list.length,
+      given: taka(list.reduce((total, row) => total + row.gave, 0)),
+      received: taka(list.reduce((total, row) => total + row.got, 0)),
+      list,
+    };
   }
 }

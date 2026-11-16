@@ -25,6 +25,7 @@ describe('the backup plan', () => {
     fk('Business', 'ownerId', 'User'),
     fk('Habit', 'userId', 'User'),
     fk('Note', 'businessId', 'Business', false),
+    fk('GroupAccessLink', 'businessId', 'Business'),
   ];
 
   it('takes every table under a workspace, parents first, and leaves the rest', () => {

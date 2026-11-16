@@ -141,6 +141,17 @@ describe('GroupAccessService joining', () => {
     expect(prisma.user.create).not.toHaveBeenCalled();
   });
 
+  it("won't use a reset link once the login also opens another owner's group", async () => {
+    const { service, credentials, sessions } = setup({
+      link: waiting({ kind: 'RESET' }),
+      member: member({ userId: 'u-1', user: { id: 'u-1', portalOnly: true } }),
+      otherOwnerGroups: 1,
+    });
+    await expect(service.accept(TOKEN, { password: 'newpass99' }, client)).rejects.toThrow();
+    expect(credentials.set).not.toHaveBeenCalled();
+    expect(sessions.revokeAllForUser).not.toHaveBeenCalled();
+  });
+
   it("won't add a group to its own owner, nor to a portal login of another owner's groups", async () => {
     await expect(setup({ link: waiting() }).service.attach(TOKEN, 'owner-1')).rejects.toThrow(/your own group/);
     const portal = setup({ link: waiting(), otherOwnerGroups: 1 });

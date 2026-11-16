@@ -23,8 +23,11 @@ export interface PlannedTable {
 
 export const ROOT = 'Business';
 // Not part of a backup: who may open the workspace stays as it is, and the
-// bell is not money.
-export const NOT_BACKED_UP = ['BusinessMember', 'UserNotification'] as const;
+// bell is not money. A group's access links are keys, not records: a restore
+// must never bring back a link already used or replaced (an old RESET link
+// would set the password of a login that has since moved on), so they are
+// left out and the owner makes new ones.
+export const NOT_BACKED_UP = ['BusinessMember', 'UserNotification', 'GroupAccessLink'] as const;
 
 // Every table that belongs to a workspace, parents before children.
 export function planBackup(fks: readonly ForeignKey[], skip: readonly string[] = NOT_BACKED_UP): PlannedTable[] {

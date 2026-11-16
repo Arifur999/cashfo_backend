@@ -229,6 +229,13 @@ export class JournalService {
     };
   }
 
+  // Whether this request's diary unlock opens the private entries (the data
+  // download asks, so it leaves them out without one).
+  async opens(user: RequestUser, unlockToken: string | undefined): Promise<boolean> {
+    const settings = await this.settings(user.id);
+    return this.unlocks.opens(unlockToken, user.id, user.sessionId, settings?.diaryPinHash ?? null);
+  }
+
   private settings(userId: string) {
     return this.prisma.writingSettings.findUnique({ where: { userId }, select: { diaryPinHash: true, pinFailures: true, pinFailedAt: true } });
   }

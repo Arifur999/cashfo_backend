@@ -12,5 +12,7 @@ import { JournalController, NotesController } from './writing.controller.js';
   imports: [UserAuthModule, JwtModule.register({})],
   controllers: [NotesController, JournalController],
   providers: [NotesService, JournalService, JournalUnlockService],
+  // AccountExportModule: the data download asks whether the diary is open.
+  exports: [JournalService],
 })
 export class WritingModule {}
