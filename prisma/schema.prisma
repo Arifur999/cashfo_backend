@@ -2147,6 +2147,7 @@ model Business {
   groupMembers                GroupMember[]
   groupContributions          GroupContribution[]
   groupCashHandovers          GroupCashHandover[]
+  groupCostWeights            GroupCostWeight[]
   groupExpenses               GroupExpense[]
   groupSettlements            GroupSettlement[]
   groupExpenseCategoryOptions GroupExpenseCategoryOption[]
@@ -3304,6 +3305,8 @@ model GroupMember {
   received      GroupContribution[]     @relation("ContributionReceiver")
   // Group cash they handed to another holder, and cash handed to them.
   handoversOut  GroupCashHandover[]     @relation("HandoverFrom")
+  // Their cost-split weight over time (GroupCostWeight).
+  costWeights   GroupCostWeight[]
   handoversIn   GroupCashHandover[]     @relation("HandoverTo")
   // GroupExpense.paidByMemberId: who paid it -- out of their own pocket
   // when the expense says so (paidFrom MEMBER), which credits them.
@@ -3465,6 +3468,28 @@ model GroupMeal {
 enum GroupMemberStatus {
   ACTIVE
   ARCHIVED
+}
+
+// A member's weight in costs shared "by shares" / by the cost split, from
+// a day on: their percent while the split is custom, 1 while it is equal.
+// Written for every active member whenever shares, the split or who is in
+// the group change, dated the day of the change, so an open month splits
+// each expense by the weights of its own date and earlier months never move
+// (the GroupSettings board: "a change of shares counts from the day it is
+// made"). The first change also writes the weights before it, from
+// 2000-01-01. Absent for a member: their current weight.
+model GroupCostWeight {
+  id            String      @id @default(uuid())
+  businessId    String
+  business      Business    @relation(fields: [businessId], references: [id])
+  groupMemberId String
+  groupMember   GroupMember @relation(fields: [groupMemberId], references: [id], onDelete: Cascade)
+  effectiveFrom DateTime    @db.Date
+  weight        Decimal     @db.Decimal(7, 2)
+  createdAt     DateTime    @default(now())
+
+  @@unique([groupMemberId, effectiveFrom])
+  @@index([businessId, effectiveFrom])
 }
 
 // Group cash moving from one holder to another (the v16 Cash book's "Hand
