@@ -63,12 +63,17 @@ const lockedNote = (names: string[]) =>
 // any workspace.
 const HABITS_FOLDER = 'Habit Tracker';
 
+// What a private journal entry says in a download made without the diary PIN.
+export const PRIVATE_LEFT_OUT = 'Private, left out: open your diary with its PIN before downloading';
+
 // Settings > Resources > Download my data: the customer's profile, their
 // Habit Tracker (habits, to-dos, books, skills, Namaz and Ramadan sheets,
 // qaza) and every workspace they own, as spreadsheets in one .zip, a folder
 // per workspace. Saved passwords (the vault) are left out on purpose, and so
 // is a workspace `isShut` says stays shut (a PIN-locked one the download
-// carries no unlock for); a note in the .zip names those.
+// carries no unlock for); a note in the .zip names those. Private journal
+// entries come in only when `diaryOpen` (the diary PIN was entered on this
+// sign-in); otherwise each is listed by date as left out.
 @Injectable()
 export class AccountExportService {
   constructor(private readonly prisma: PrismaService) {}
@@ -79,8 +84,9 @@ export class AccountExportService {
     isShut: (workspace: Business) => boolean = () => false,
     choice: ExportChoice = {},
     format: 'csv' | 'xlsx' = 'csv',
+    diaryOpen = false,
   ): Promise<{ fileName: string; data: Buffer; type: string }> {
-    const { folders, locked } = await this.folders(userId, isShut, choice);
+    const { folders, locked } = await this.folders(userId, isShut, choice, diaryOpen);
     const stamp = dhakaDateKey(new Date());
     const picked = (choice.sections?.length ?? 0) > 0 || Boolean(choice.from);
     if (format === 'xlsx') {
@@ -98,8 +104,8 @@ export class AccountExportService {
   }
 
   // The same tables as text, for the page that prints them (PDF).
-  async printable(userId: string, isShut: (workspace: Business) => boolean, choice: ExportChoice) {
-    const { folders, locked, owner } = await this.folders(userId, isShut, choice);
+  async printable(userId: string, isShut: (workspace: Business) => boolean, choice: ExportChoice, diaryOpen = false) {
+    const { folders, locked, owner } = await this.folders(userId, isShut, choice, diaryOpen);
     const text = (value: CsvCell) => (value instanceof Date ? dhakaDateKey(value) : cellText(value).replace(/^'(?=[=+\-@\t\r])/, ''));
     return {
       owner,
@@ -120,6 +126,7 @@ export class AccountExportService {
     userId: string,
     isShut: (workspace: Business) => boolean,
     choice: ExportChoice,
+    diaryOpen: boolean,
   ): Promise<{ folders: Folder[]; locked: string[]; owner: string }> {
     if ((choice.from && !choice.to) || (!choice.from && choice.to)) throw new BadRequestException('Pick both dates.');
     if (choice.from && choice.to && choice.from > choice.to) throw new BadRequestException('The start date must be before the end date.');
@@ -157,7 +164,7 @@ export class AccountExportService {
           },
         ],
       });
-      folders.push({ folder: HABITS_FOLDER, sheets: await this.habitSheets(userId) });
+      folders.push({ folder: HABITS_FOLDER, sheets: await this.habitSheets(userId, diaryOpen) });
     }
     // A workspace that happens to share the trackers' folder name gets its own.
     const used = new Set<string>([HABITS_FOLDER]);
@@ -301,7 +308,7 @@ export class AccountExportService {
 
   // The Habit Tracker: every row is the person's own (userId), or hangs off
   // one of their habits, sheets, books or skills.
-  private async habitSheets(userId: string): Promise<SheetData[]> {
+  private async habitSheets(userId: string, diaryOpen: boolean): Promise<SheetData[]> {
     const [habits, habitLogs, sheets, todos, repeats, books, bookNotes, bookGoals, skills, skillGoals, prayer, qaza, ramadanPreps] = await Promise.all([
       this.prisma.habit.findMany({ where: { userId }, orderBy: { createdAt: 'asc' } }),
       this.prisma.habitLog.findMany({ where: { habit: { userId } }, orderBy: [{ date: 'asc' }], include: { habit: { select: { name: true } } } }),
@@ -573,13 +580,14 @@ export class AccountExportService {
           skillGoals.map((g) => [g.year, g.target]),
         ),
       },
-      ...(await this.writingSheets(userId)),
+      ...(await this.writingSheets(userId, diaryOpen)),
     ];
   }
 
-  // Habit Tracker > Write: notes and the journal, private entries too (they
-  // are the person's own; "Private" says which).
-  private async writingSheets(userId: string): Promise<SheetData[]> {
+  // Habit Tracker > Write: notes and the journal. A private entry comes in
+  // only with the diary open; otherwise its date stays and every word of it
+  // is left out, as the journal itself shows it locked.
+  private async writingSheets(userId: string, diaryOpen: boolean): Promise<SheetData[]> {
     const [notes, entries] = await Promise.all([
       this.prisma.note.findMany({ where: { userId }, orderBy: { createdAt: 'asc' }, include: { category: { select: { name: true } } } }),
       this.prisma.journalEntry.findMany({ where: { userId }, orderBy: { date: 'asc' }, include: { category: { select: { name: true } } } }),
@@ -597,18 +605,11 @@ export class AccountExportService {
         name: 'journal.csv',
         ...table(
           ['Date', 'Kind', 'Mood', 'What went well', 'Grateful for', 'Tomorrow I will', 'Entry', 'Category', 'Tags', 'Private'],
-          entries.map((e) => [
-            day(e.date),
-            e.kind,
-            MOODS[e.mood],
-            e.wentWell,
-            e.gratefulFor,
-            e.tomorrow,
-            e.body,
-            e.category?.name,
-            e.tags.join(' '),
-            e.isPrivate,
-          ]),
+          entries.map((e) =>
+            e.isPrivate && !diaryOpen
+              ? [day(e.date), e.kind, null, null, null, null, PRIVATE_LEFT_OUT, null, null, true]
+              : [day(e.date), e.kind, MOODS[e.mood], e.wentWell, e.gratefulFor, e.tomorrow, e.body, e.category?.name, e.tags.join(' '), e.isPrivate],
+          ),
         ),
       },
     ];
