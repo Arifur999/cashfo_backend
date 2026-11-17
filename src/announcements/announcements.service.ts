@@ -1,4 +1,5 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { Prisma, type Announcement } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { CreateAnnouncementDto } from './dto/create-announcement.dto.js';
 import { UpdateAnnouncementDto } from './dto/update-announcement.dto.js';
@@ -13,24 +14,30 @@ function computeStatus(a: { isActive: boolean; startAt: Date; endAt: Date | null
   return 'ACTIVE';
 }
 
-// What the audit log keeps of an announcement.
-export function auditView(a: { title: string; type: string; targetPlan: string | null; startAt: Date; endAt: Date | null; isActive: boolean }) {
-  return {
-    title: a.title,
-    type: a.type,
-    targetPlan: a.targetPlan,
-    startAt: a.startAt.toISOString(),
-    endAt: a.endAt?.toISOString() ?? null,
-    isActive: a.isActive,
-  };
-}
+// The bell row an announcement makes (user-notifications/reminders.ts).
+export const bellKey = (id: string) => `announcement:${id}`;
+const bellData = (a: Pick<Announcement, 'title' | 'titleBn' | 'body' | 'bodyBn'>) => ({ title: a.title, titleBn: a.titleBn, body: a.body, bodyBn: a.bodyBn });
+
+// What the audit log keeps of one.
+const auditView = (a: Announcement): Prisma.InputJsonObject => ({
+  title: a.title,
+  titleBn: a.titleBn,
+  body: a.body,
+  bodyBn: a.bodyBn,
+  type: a.type,
+  targetPlan: a.targetPlan,
+  startAt: a.startAt.toISOString(),
+  endAt: a.endAt?.toISOString() ?? null,
+  isActive: a.isActive,
+  linkUrl: a.linkUrl,
+});
 
 @Injectable()
 export class AnnouncementsService {
   constructor(private readonly prisma: PrismaService) {}
 
   async list(activeOnly?: boolean) {
-    const all = await this.prisma.announcement.findMany({ orderBy: { startAt: 'desc' } });
+    const all = await this.prisma.announcement.findMany({ where: { deletedAt: null }, orderBy: { startAt: 'desc' } });
     const withStatus = all.map((a) => ({ ...a, status: computeStatus(a) }));
     return activeOnly ? withStatus.filter((a) => a.status === 'ACTIVE') : withStatus;
   }
@@ -47,6 +54,7 @@ export class AnnouncementsService {
     const rows = await this.prisma.announcement.findMany({
       where: {
         isActive: true,
+        deletedAt: null,
         startAt: { lte: now },
         AND: [{ OR: [{ endAt: null }, { endAt: { gt: now } }] }, { OR: [{ targetPlan: null }, { targetPlan: { in: planIds } }] }],
       },
@@ -56,14 +64,13 @@ export class AnnouncementsService {
     return rows;
   }
 
-  // Every admin write is in the audit log: what went out, by whom, from where.
   async create(dto: CreateAnnouncementDto, adminId: string, ipAddress?: string) {
     if (dto.endAt && new Date(dto.endAt) <= new Date(dto.startAt)) {
       throw new BadRequestException('endAt must be after startAt');
     }
 
     return this.prisma.$transaction(async (tx) => {
-      const created = await tx.announcement.create({
+      const made = await tx.announcement.create({
         data: {
           title: dto.title,
           titleBn: dto.titleBn,
@@ -78,19 +85,13 @@ export class AnnouncementsService {
         },
       });
       await tx.auditLog.create({
-        data: {
-          adminUserId: adminId,
-          action: 'ANNOUNCEMENT_CREATED',
-          entityType: 'Announcement',
-          entityId: created.id,
-          newValue: auditView(created),
-          ipAddress,
-        },
+        data: { adminUserId: adminId, action: 'ANNOUNCEMENT_CREATED', entityType: 'Announcement', entityId: made.id, newValue: auditView(made), ipAddress },
       });
-      return created;
+      return made;
     });
   }
 
+  // A change to the words reaches the bells it is already in, read or not.
   async update(id: string, dto: UpdateAnnouncementDto, adminId: string, ipAddress?: string) {
     const existing = await this.requireAnnouncement(id);
 
@@ -101,7 +102,7 @@ export class AnnouncementsService {
     }
 
     return this.prisma.$transaction(async (tx) => {
-      const updated = await tx.announcement.update({
+      const after = await tx.announcement.update({
         where: { id },
         data: {
           ...(dto.title !== undefined && { title: dto.title }),
@@ -116,6 +117,9 @@ export class AnnouncementsService {
           ...(dto.linkUrl !== undefined && { linkUrl: dto.linkUrl || null }),
         },
       });
+      if (after.title !== existing.title || after.titleBn !== existing.titleBn || after.body !== existing.body || after.bodyBn !== existing.bodyBn) {
+        await tx.userNotification.updateMany({ where: { key: bellKey(id) }, data: { data: bellData(after) } });
+      }
       await tx.auditLog.create({
         data: {
           adminUserId: adminId,
@@ -123,34 +127,52 @@ export class AnnouncementsService {
           entityType: 'Announcement',
           entityId: id,
           oldValue: auditView(existing),
-          newValue: auditView(updated),
+          newValue: auditView(after),
           ipAddress,
         },
       });
-      return updated;
+      return after;
     });
   }
 
-  // Gone from the apps at once; the audit log keeps what it said.
+  // Deleted for everyone: gone from the apps and from every bell at once
+  // (the feed leaves it out), kept so the admin can undo.
   async remove(id: string, adminId: string, ipAddress?: string) {
     const existing = await this.requireAnnouncement(id);
-    await this.prisma.announcement.delete({ where: { id } });
-    await this.prisma.auditLog.create({
-      data: {
-        adminUserId: adminId,
-        action: 'ANNOUNCEMENT_DELETED',
-        entityType: 'Announcement',
-        entityId: id,
-        oldValue: { title: existing.title, type: existing.type, startAt: existing.startAt.toISOString(), isActive: existing.isActive },
-        ipAddress,
-      },
-    });
+    await this.prisma.$transaction([
+      this.prisma.announcement.update({ where: { id }, data: { deletedAt: new Date() } }),
+      this.prisma.auditLog.create({
+        data: { adminUserId: adminId, action: 'ANNOUNCEMENT_DELETED', entityType: 'Announcement', entityId: id, oldValue: auditView(existing), ipAddress },
+      }),
+    ]);
     return { id };
+  }
+
+  // The admin's Undo: back in the apps, and in the bells it was in.
+  async restore(id: string, adminId: string, ipAddress?: string) {
+    const existing = await this.prisma.announcement.findUnique({ where: { id } });
+    if (!existing?.deletedAt) throw new NotFoundException('There is no deleted announcement to bring back');
+    const [restored] = await this.prisma.$transaction([
+      this.prisma.announcement.update({ where: { id }, data: { deletedAt: null } }),
+      this.prisma.auditLog.create({
+        data: { adminUserId: adminId, action: 'ANNOUNCEMENT_RESTORED', entityType: 'Announcement', entityId: id, newValue: auditView(existing), ipAddress },
+      }),
+    ]);
+    return { ...restored, status: computeStatus(restored) };
+  }
+
+  // The bell rows that show an announcement: none of those deleted, turned
+  // off or gone.
+  async hiddenFromBell(ids: string[]): Promise<Set<string>> {
+    if (ids.length === 0) return new Set();
+    const shown = await this.prisma.announcement.findMany({ where: { id: { in: ids }, deletedAt: null, isActive: true }, select: { id: true } });
+    const keep = new Set(shown.map((row) => row.id));
+    return new Set(ids.filter((id) => !keep.has(id)));
   }
 
   private async requireAnnouncement(id: string) {
     const announcement = await this.prisma.announcement.findUnique({ where: { id } });
-    if (!announcement) {
+    if (!announcement || announcement.deletedAt) {
       throw new NotFoundException('Announcement not found');
     }
     return announcement;

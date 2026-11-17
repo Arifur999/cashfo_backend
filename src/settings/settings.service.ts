@@ -51,6 +51,9 @@ const DEFAULTS = {
   admin_two_step_required: false,
 } as const;
 
+// The keys Admin › Settings' General card and New sign-ups switch save.
+const GENERAL_KEYS = ['platform_name', 'support_email', 'default_currency', 'default_timezone', 'signups_open'];
+
 const KEY_TO_FIELD: Record<string, keyof PlatformSettings> = {
   platform_name: 'platformName',
   support_email: 'supportEmail',
@@ -107,7 +110,8 @@ export class SettingsService {
   constructor(private readonly prisma: PrismaService) {}
 
   // For per-request readers. update() clears it, so this process sees its
-  // own changes at once.
+  // own changes at once; so does forget(), for a setting saved elsewhere
+  // (the Help card's support email).
   async getCached(): Promise<PlatformSettings> {
     if (this.cached && Date.now() - this.cached.at < CACHE_TTL_MS) {
       return this.cached.value;
@@ -115,6 +119,10 @@ export class SettingsService {
     const value = await this.get();
     this.cached = { value, at: Date.now() };
     return value;
+  }
+
+  forget() {
+    this.cached = null;
   }
 
   async get(): Promise<PlatformSettings> {
@@ -201,13 +209,13 @@ export class SettingsService {
     return this.getReferralSettingsForAdmin();
   }
 
-  // The admin page's copy: the settings, plus who changed one last and when
-  // ("Last changed by Nadia Rahman on 14 Sep").
+  // The admin page's copy: the settings, plus who changed one of General's
+  // last and when ("Last changed by Nadia Rahman on 14 September 2026").
   async getForAdmin() {
     const [settings, latest] = await Promise.all([
       this.get(),
       this.prisma.platformSetting.findFirst({
-        where: { updatedBy: { not: null } },
+        where: { key: { in: GENERAL_KEYS }, updatedBy: { not: null } },
         orderBy: { updatedAt: 'desc' },
         select: { updatedAt: true, updatedBy: true },
       }),
