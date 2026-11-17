@@ -25,7 +25,8 @@ const KEEP_MS = 90 * 24 * 60 * 60 * 1000;
 // A deleted row waits in Deleted this long, then goes for good.
 const BIN_MS = 30 * 24 * 60 * 60 * 1000;
 
-const FEED_SELECT = { id: true, businessId: true, type: true, data: true, readAt: true, createdAt: true, deletedAt: true } as const;
+const FEED_SELECT = { id: true, key: true, businessId: true, type: true, data: true, readAt: true, createdAt: true, deletedAt: true } as const;
+const ANNOUNCEMENT_KEY = 'announcement:';
 
 // The bell's feed in the customer app. There is no scheduler: reading the
 // feed runs the reminder checks (budget, loan due dates, savings check-ins,
@@ -58,20 +59,31 @@ export class UserNotificationsService {
       this.prefs.get(userId),
     ]);
     // Rows of an alert turned off in the bell are left out, and read, so
-    // the count says what the bell shows.
+    // the count says what the bell shows; so are announcements an admin
+    // deleted for everyone or turned off.
+    const announcementOf = (row: (typeof all)[number]) =>
+      row.type === 'ANNOUNCEMENT' && row.key.startsWith(ANNOUNCEMENT_KEY) ? row.key.slice(ANNOUNCEMENT_KEY.length) : null;
+    const goneAnnouncements = await this.announcementsService.hiddenFromBell([...new Set([...all, ...bin].flatMap((row) => announcementOf(row) ?? []))]);
     const hidden = all.filter((row) => {
+      const announcement = announcementOf(row);
+      if (announcement !== null && goneAnnouncements.has(announcement)) return true;
       const alert = alertOfRow(row.type, row.data as Record<string, unknown> | null);
       return alert !== null && !prefs.alerts[alert]?.app;
     });
     if (hidden.some((row) => !row.readAt)) await this.prisma.userNotification.updateMany({ where: { id: { in: hidden.filter((row) => !row.readAt).map((row) => row.id) } }, data: { readAt: new Date() } });
     const unreadCount = await this.prisma.userNotification.count({ where: { userId, readAt: null, deletedAt: null } });
     const rows = all.filter((row) => !hidden.includes(row));
-    const businessIds = [...new Set([...rows, ...bin].flatMap((row) => (row.businessId ? [row.businessId] : [])))];
+    // The Deleted tab leaves out an announcement an admin deleted for everyone, too.
+    const binned = bin.filter((row) => {
+      const announcement = announcementOf(row);
+      return announcement === null || !goneAnnouncements.has(announcement);
+    });
+    const businessIds = [...new Set([...rows, ...binned].flatMap((row) => (row.businessId ? [row.businessId] : [])))];
     const workspaces = businessIds.length ? await this.prisma.business.findMany({ where: { id: { in: businessIds }, pinHash: { not: null } }, select: { id: true, pinHash: true } }) : [];
     const shut = new Set(workspaces.filter((workspace) => this.unlocks.isShut(user, workspace, unlockTokens)).map((workspace) => workspace.id));
-    const close = <T extends { businessId: string | null }>(row: T) => (row.businessId && shut.has(row.businessId) ? { ...row, data: {}, locked: true } : row);
+    const close = ({ key: _key, ...row }: (typeof all)[number]) => (row.businessId && shut.has(row.businessId) ? { ...row, data: {}, locked: true } : row);
     // deleted: the bell's Deleted tab, newest deletion first.
-    return { data: rows.map(close), unreadCount, deleted: bin.map(close) };
+    return { data: rows.map(close), unreadCount, deleted: binned.map(close) };
   }
 
   // Its read state stays as it was, so Restore (and Undo) bring it back
@@ -148,7 +160,14 @@ export class UserNotificationsService {
       const drafts = await this.collect(userId, now);
       if (drafts.length > 0) {
         await this.prisma.userNotification.createMany({
-          data: drafts.map((draft) => ({ userId, key: draft.key, type: draft.type, businessId: draft.businessId, data: draft.data as Prisma.InputJsonObject, ...(draft.at && { createdAt: draft.at }) })),
+          data: drafts.map((draft) => ({
+            userId,
+            key: draft.key,
+            type: draft.type,
+            businessId: draft.businessId,
+            data: draft.data as Prisma.InputJsonObject,
+            ...(draft.at && { createdAt: draft.at }),
+          })),
           skipDuplicates: true,
         });
       }
@@ -164,7 +183,10 @@ export class UserNotificationsService {
   // ones: they have no budget, loans or savings), as the switches allow.
   private async collect(userId: string, now: Date): Promise<ReminderDraft[]> {
     const [user, workspaces] = await Promise.all([
-      this.prisma.user.findUniqueOrThrow({ where: { id: userId }, select: { remindBudget: true, remindLoans: true, remindSavings: true, notificationPrefs: true } }),
+      this.prisma.user.findUniqueOrThrow({
+        where: { id: userId },
+        select: { remindBudget: true, remindLoans: true, remindSavings: true, notificationPrefs: true },
+      }),
       this.prisma.business.findMany({ where: { ownerId: userId, deletedAt: null }, select: { id: true, type: true, planId: true } }),
     ]);
     const today = dhakaToday();
@@ -180,7 +202,12 @@ export class UserNotificationsService {
         drafts.push(...budgetReminders(workspace.id, month, lines));
       }
       if (user.remindLoans) {
-        drafts.push(...loanReminders(workspace.id, await this.receivablesPayablesService.dueWithin(workspace.id, resolvePrefs(user.notificationPrefs).loanDaysBefore || LOAN_DAYS)));
+        drafts.push(
+          ...loanReminders(
+            workspace.id,
+            await this.receivablesPayablesService.dueWithin(workspace.id, resolvePrefs(user.notificationPrefs).loanDaysBefore || LOAN_DAYS),
+          ),
+        );
       }
       if (user.remindSavings) {
         const goals = await this.savingsGoalsService.list(workspace.id, 'ACTIVE');

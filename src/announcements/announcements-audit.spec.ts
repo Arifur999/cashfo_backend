@@ -21,6 +21,8 @@ const fakePrisma = () => {
       findUnique: vi.fn(async () => row),
     },
     auditLog: { create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => audits.push(data)) },
+    // An edit to the words reaches the bell rows the announcement is in.
+    userNotification: { updateMany: vi.fn(async () => ({ count: 0 })) },
   };
   const prisma = { ...client, $transaction: vi.fn(async (fn: (tx: typeof client) => unknown) => fn(client)) };
   return { prisma: prisma as unknown as PrismaService, audits };

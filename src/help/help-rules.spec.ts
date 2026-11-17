@@ -17,8 +17,9 @@ describe('help rules', () => {
 
   it('reads the stored company loosely', () => {
     expect(companyOf(null)).toEqual(EMPTY_COMPANY);
-    expect(companyOf({ name: 'Smartly', openDays: ['sat', 'xyz', 'sat'], opensAt: '25:00', replyHours: 3 })).toMatchObject({
+    expect(companyOf({ name: 'Smartly', taglineBn: 'সহজ হিসাব', openDays: ['sat', 'xyz', 'sat'], opensAt: '25:00', replyHours: 3 })).toMatchObject({
       name: 'Smartly',
+      taglineBn: 'সহজ হিসাব',
       openDays: ['sat'],
       opensAt: '09:00',
       replyHours: 3,
